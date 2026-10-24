@@ -1,0 +1,230 @@
+"""Reusable spawn-based CPU work with bounded submission and caller progress."""
+
+from __future__ import annotations
+
+import multiprocessing as mp
+import os
+import queue
+import time
+from collections.abc import Callable, Iterable, Sized
+from concurrent.futures import FIRST_COMPLETED, CancelledError, ProcessPoolExecutor, wait
+from typing import Any
+
+from .types.processing import ProgressUpdate
+
+_EVENTS = None
+_STOP = None
+
+
+def _initialize(events, stop):
+    global _EVENTS, _STOP
+    _EVENTS, _STOP = events, stop
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMBA_NUM_THREADS"):
+        os.environ[name] = "1"
+    os.environ["MPLBACKEND"] = "Agg"
+
+
+class WorkerProgress:
+    """Cooperative worker progress reporter supplied to every CPU function.
+
+    Args:
+        run_id: Executor run identifier.
+        job_id: Job position in its input stream.
+    """
+
+    def __init__(self, run_id: int, job_id: int):
+        self.run_id, self.job_id = run_id, job_id
+        self._last = 0.0
+
+    def check_cancelled(self) -> None:
+        """Raise CancelledError when the calling process requests cancellation."""
+        if _STOP.is_set():
+            raise CancelledError("CPU processing cancelled")
+
+    def report(self, completed: float, total: float, description: str = "") -> None:
+        """Report fractional progress and check cooperative cancellation.
+
+        Args:
+            completed: Completed units in this job's current stage.
+            total: Total units, positive unless the job is empty.
+            description: Current stage description.
+        """
+        self.check_cancelled()
+        fraction = 1.0 if total == 0 else min(1.0, max(0.0, completed / total))
+        now = time.monotonic()
+        if now - self._last >= 0.02 or fraction in (0.0, 1.0):
+            _EVENTS.put((self.run_id, self.job_id, fraction, description))
+            self._last = now
+
+
+def _execute(function, payload, run_id, job_id):
+    from threadpoolctl import threadpool_limits
+
+    reporter = WorkerProgress(run_id, job_id)
+    reporter.check_cancelled()
+    with threadpool_limits(limits=1):
+        result = function(payload, reporter)
+    reporter.check_cancelled()
+    return result
+
+
+class CpuExecutor:
+    """Reusable CPU executor with parent-only callbacks and ordered results.
+
+    Args:
+        num_cpus: Positive worker count; None uses available CPUs minus one.
+        max_pending: Maximum submitted jobs, defaulting to twice the worker count.
+
+    Notes:
+        Worker functions must be importable and accept (payload, reporter).
+        Use a context manager and a main guard in standalone Python programs.
+        A single configured CPU still runs in a spawned child process.
+    """
+
+    def __init__(self, num_cpus: int | None = None, *, max_pending: int | None = None):
+        available = getattr(os, "process_cpu_count", os.cpu_count)() or 1
+        default = max(1, available - 1)
+        if os.name == "nt":
+            default = min(default, 61)
+        self.num_cpus = default if num_cpus is None else num_cpus
+        for value in (self.num_cpus, max_pending if max_pending is not None else 1):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError("CPU count and pending limit must be positive integers")
+        if os.name == "nt" and self.num_cpus > 61:
+            raise ValueError("Windows ProcessPoolExecutor supports at most 61 CPUs")
+        self.max_pending = max_pending or 2 * self.num_cpus
+        self._pool = self._events = self._stop = None
+        self._run_id, self._busy = 0, False
+
+    def _ensure_pool(self):
+        if self._pool is None:
+            context = mp.get_context("spawn")
+            self._events, self._stop = context.Queue(), context.Event()
+            self._pool = ProcessPoolExecutor(
+                max_workers=self.num_cpus,
+                mp_context=context,
+                initializer=_initialize,
+                initargs=(self._events, self._stop),
+            )
+
+    def map(
+        self,
+        function: Callable,
+        jobs: Iterable,
+        *,
+        total: int | None = None,
+        progress: Callable[[ProgressUpdate], None] | None = None,
+        cancel_event=None,
+    ) -> list[Any]:
+        """Execute bounded jobs, forwarding partial progress and returning input order.
+
+        Args:
+            function: Importable function accepting payload and WorkerProgress.
+            jobs: Finite iterable of picklable payloads, consumed lazily.
+            total: Job count, required for iterables without a length.
+            progress: Callback invoked in this calling process/thread.
+            cancel_event: Caller event exposing is_set(), such as threading.Event.
+
+        Returns:
+            Results ordered like jobs, regardless of completion order.
+
+        Raises:
+            CancelledError: Caller or worker requested cancellation.
+            ValueError: Job count/configuration is invalid.
+            Exception: Worker or callback failed; remaining jobs are cancelled.
+        """
+        if self._busy:
+            raise RuntimeError("An executor cannot run overlapping map calls")
+        if total is None:
+            if not isinstance(jobs, Sized):
+                raise ValueError("Supply total for an iterable without a length")
+            total = len(jobs)
+        if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+            raise ValueError("Total must be a nonnegative integer")
+
+        def check():
+            if cancel_event is not None and cancel_event.is_set():
+                raise CancelledError("CPU processing cancelled")
+
+        check()
+        if total == 0:
+            if progress:
+                progress(ProgressUpdate(0, 0, "Complete"))
+            return []
+        self._ensure_pool()
+        self._busy = True
+        self._run_id += 1
+        run_id = self._run_id
+        fractions, results = [0.0] * total, [None] * total
+        iterator, pending, submitted, done_count = iter(jobs), {}, 0, 0
+
+        def emit(description):
+            if progress:
+                progress(ProgressUpdate(sum(fractions), total, description))
+
+        try:
+            emit("Starting")
+            while done_count < total:
+                check()
+                while len(pending) < self.max_pending and submitted < total:
+                    check()
+                    try:
+                        payload = next(iterator)
+                    except StopIteration as exc:
+                        raise ValueError("Job iterable contains fewer jobs than total") from exc
+                    future = self._pool.submit(_execute, function, payload, run_id, submitted)
+                    pending[future] = submitted
+                    submitted += 1
+                completed, _ = wait(pending, timeout=0.03, return_when=FIRST_COMPLETED)
+                while True:
+                    try:
+                        event_run, index, fraction, description = self._events.get_nowait()
+                    except queue.Empty:
+                        break
+                    if event_run == run_id:
+                        fractions[index] = max(fractions[index], fraction)
+                        emit(description)
+                for future in completed:
+                    index = pending.pop(future)
+                    results[index] = future.result()
+                    fractions[index] = 1.0
+                    done_count += 1
+                    emit("Job complete")
+            check()
+            try:
+                next(iterator)
+            except StopIteration:
+                pass
+            else:
+                raise ValueError("Job iterable contains more jobs than total")
+            emit("Complete")
+            check()
+            return results
+        except BaseException:
+            self._stop.set()
+            for future in pending:
+                future.cancel()
+            self.close()
+            raise
+        finally:
+            self._busy = False
+
+    def close(self) -> None:
+        """Wait for workers and release all process/queue resources."""
+        if self._pool is not None:
+            self._pool.shutdown(wait=True, cancel_futures=True)
+            self._pool = None
+            while True:
+                try:
+                    self._events.get_nowait()
+                except queue.Empty:
+                    break
+            self._events.close()
+            self._events.join_thread()
+            self._events = self._stop = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()

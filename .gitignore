@@ -8,5 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
+.verify*/
+.ruff_cache/
 
 .idea/
+/docs/superpowers/

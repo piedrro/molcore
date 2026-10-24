@@ -8,15 +8,30 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "picassosr",
-    "cellpose",
-    "opencv-python",
-    "tqdm",
-    "trackpy",
-    "shapely",
-    "numba",
+    "astropy",
+    "cellpose>=4.2,<5",
+    "dask[array]",
+    "h5py",
+    "numpy",
+    "picassosr>=0.11,<0.12",
+    "pyyaml",
+    "scipy",
+    "threadpoolctl",
     "tifffile",
 ]
+
+[dependency-groups]
+dev = ["ruff"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
 [build-system]
 requires = ["uv_build>=0.13.5,<0.14.0"]
