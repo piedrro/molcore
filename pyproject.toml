@@ -1,0 +1,23 @@
+[project]
+name = "molcore"
+version = "0.1.0"
+description = "Core functionality for SMLM Apps"
+readme = "README.md"
+authors = [
+    { name = "Piers Turner", email = "piers.turner@physics.ox.ac.uk" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "picassosr",
+    "cellpose",
+    "opencv-python",
+    "tqdm",
+    "trackpy",
+    "shapely",
+    "numba",
+    "tifffile",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.5,<0.14.0"]
+build-backend = "uv_build"
