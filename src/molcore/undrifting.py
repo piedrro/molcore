@@ -3,44 +3,114 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from ._logging import logged
 from ._processing import backend_version, check_snapshot, executor, record, snapshot
 from .types.experiment import Experiment
 from .types.processing import DriftResult, DriftSettings
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from .cpu import CpuExecutor, WorkerProgress
+    from .types import CancelEvent, ProgressCallback
+
 
 class _AimProgress:
-    def __init__(self, reporter, segments):
+    def __init__(self, reporter: WorkerProgress, segments: Any) -> None:
+        """Initialise the object and validate its configuration.
+
+        Args:
+            reporter: Worker progress and cooperative cancellation reporter.
+            segments: Segments used by this operation.
+        """
         self.reporter, self.segments, self.phase = reporter, max(1, segments), 0
         self.description = "AIM drift estimation (1/2)"
 
-    def set_value(self, value, *args, **kwargs):
+    @logged
+    def set_value(self, value: Any, *args: Any, **kwargs: Any) -> None:
+        """Set value.
+
+        Args:
+            value: Value supplied by the caller or connected control.
+            *args: Additional positional values supplied by the caller.
+            **kwargs: Additional named options for this operation.
+        """
         self.reporter.report((self.phase + min(1.0, value / self.segments)) / 2, 1, self.description)
 
-    def zero_progress(self, description=None, *args, **kwargs):
+    @logged
+    def zero_progress(self, description: str | None = None, *args: Any, **kwargs: Any) -> None:
+        """Zero progress.
+
+        Args:
+            description: Human-readable description of the current processing stage.
+            *args: Additional positional values supplied by the caller.
+            **kwargs: Additional named options for this operation.
+        """
         self.phase += 1
         self.description = description or "AIM drift estimation (2/2)"
         self.reporter.check_cancelled()
 
-    def setMaximum(self, value):
+    @logged
+    def setMaximum(self, value: Any) -> None:
+        """Setmaximum.
+
+        Args:
+            value: Value supplied by the caller or connected control.
+        """
         self.segments = max(1, value)
 
-    def setMinimum(self, value):
+    @logged
+    def setMinimum(self, value: Any) -> None:
+        """Setminimum.
+
+        Args:
+            value: Value supplied by the caller or connected control.
+        """
         pass
 
-    def setLabelText(self, text):
+    @logged
+    def setLabelText(self, text: str) -> None:
+        """Setlabeltext.
+
+        Args:
+            text: Text supplied by the control or caller.
+        """
         self.description = text
 
-    def get_iterator(self, start=0, end=100):
+    @logged
+    def get_iterator(self, start: int = 0, end: int = 100) -> range:
+        """Get iterator.
+
+        Args:
+            start: Start used by this operation.
+            end: End used by this operation.
+
+        Returns:
+            Result retaining the input format or backend-specific representation.
+        """
         return range(start, end)
 
-    def close(self):
+    @logged
+    def close(self) -> None:
+        """Close."""
         self.reporter.check_cancelled()
 
 
-def _job(payload, reporter):
+@logged
+def _job(payload: tuple, reporter: WorkerProgress) -> Any:
+    """Job.
+
+    Args:
+        payload: Serializable worker inputs; large arrays remain bounded to a job or image chunk.
+        reporter: Worker progress and cooperative cancellation reporter.
+
+    Returns:
+        Result retaining the input format or backend-specific representation.
+    """
     columns, info, settings = payload
     import pandas as pd
 
@@ -61,10 +131,20 @@ def _job(payload, reporter):
         locs["lpx"] = np.ones(len(locs))
         locs["lpy"] = np.ones(len(locs))
 
-        def segmentation(value):
+        def segmentation(value: Any) -> None:
+            """Segmentation.
+
+            Args:
+                value: Value supplied by the caller or connected control.
+            """
             reporter.report(0.4 * value / segments, 1, "Rendering RCC segments")
 
-        def correlation(value):
+        def correlation(value: Any) -> None:
+            """Correlation.
+
+            Args:
+                value: Value supplied by the caller or connected control.
+            """
             pairs = max(1, segments * (segments - 1) / 2)
             reporter.report(0.4 + 0.6 * value / pairs, 1, "Correlating RCC segments")
 
@@ -94,7 +174,18 @@ def _job(payload, reporter):
     return values
 
 
-def _prepare(experiment, acquisition_id, channel, settings):
+def _prepare(experiment: Experiment, acquisition_id: str, channel: str, settings: DriftSettings) -> tuple:
+    """Prepare.
+
+    Args:
+        experiment: Scientific model supplying acquisitions and result tables.
+        acquisition_id: Source acquisition identifier.
+        channel: Logical source channel name.
+        settings: Validated settings controlling this operation.
+
+    Returns:
+        Computed tuple value.
+    """
     expected = snapshot(experiment, acquisition_id)
     acquisition = experiment.acquisitions[acquisition_id]
     view = acquisition.channels[channel]
@@ -137,7 +228,32 @@ def _prepare(experiment, acquisition_id, channel, settings):
     return expected, (columns, info, settings), view.source_frames[start : last + 1].copy()
 
 
-def _many(experiment, selections, *, settings, apply, num_cpus, cpu, progress, cancel_event):
+def _many(
+    experiment: Experiment,
+    selections: Mapping[str, str],
+    *,
+    settings: DriftSettings,
+    apply: bool,
+    num_cpus: int | None,
+    cpu: CpuExecutor | None,
+    progress: ProgressCallback | None,
+    cancel_event: CancelEvent | None,
+) -> Any:
+    """Many.
+
+    Args:
+        experiment: Scientific model supplying acquisitions and result tables.
+        selections: Mapping from acquisition identifiers to logical channel names.
+        settings: Validated settings controlling this operation.
+        apply: Whether to commit successful results to the model.
+        num_cpus: Worker process count; None uses the executor default.
+        cpu: Optional borrowed CPU executor; ownership remains with the caller.
+        progress: Optional callback receiving structured progress updates.
+        cancel_event: Optional event whose is_set() requests cooperative cancellation.
+
+    Returns:
+        Result retaining the input format or backend-specific representation.
+    """
     installed = backend_version()
     prepared = {
         acquisition_id: _prepare(experiment, acquisition_id, channel, settings)
@@ -176,10 +292,23 @@ def _many(experiment, selections, *, settings, apply, num_cpus, cpu, progress, c
     return results
 
 
-def _run(experiment, acquisition_id, channel, **kwargs):
+@logged
+def _run(experiment: Experiment, acquisition_id: str, channel: str, **kwargs: Any) -> Any:
+    """Run.
+
+    Args:
+        experiment: Scientific model supplying acquisitions and result tables.
+        acquisition_id: Source acquisition identifier.
+        channel: Logical source channel name.
+        **kwargs: Additional named options for this operation.
+
+    Returns:
+        Result retaining the input format or backend-specific representation.
+    """
     return _many(experiment, {acquisition_id: channel}, **kwargs)[acquisition_id]
 
 
+@logged
 def estimate_drift(
     experiment: Experiment,
     acquisition_id: str,
@@ -187,9 +316,9 @@ def estimate_drift(
     *,
     settings: DriftSettings | None = None,
     num_cpus: int | None = None,
-    cpu=None,
-    progress=None,
-    cancel_event=None,
+    cpu: CpuExecutor | None = None,
+    progress: ProgressCallback | None = None,
+    cancel_event: CancelEvent | None = None,
 ) -> DriftResult:
     """Estimate drift from a MolCore localization partition without applying it.
 
@@ -219,6 +348,7 @@ def estimate_drift(
     )
 
 
+@logged
 def undrift(
     experiment: Experiment,
     acquisition_id: str,
@@ -226,9 +356,9 @@ def undrift(
     *,
     settings: DriftSettings | None = None,
     num_cpus: int | None = None,
-    cpu=None,
-    progress=None,
-    cancel_event=None,
+    cpu: CpuExecutor | None = None,
+    progress: ProgressCallback | None = None,
+    cancel_event: CancelEvent | None = None,
 ) -> DriftResult:
     """Estimate and select drift without modifying original images or coordinates.
 
@@ -262,6 +392,7 @@ def undrift(
     )
 
 
+@logged
 def undrift_many(
     experiment: Experiment,
     selections: dict[str, str],
@@ -269,9 +400,9 @@ def undrift_many(
     settings: DriftSettings | None = None,
     apply: bool = True,
     num_cpus: int | None = None,
-    cpu=None,
-    progress=None,
-    cancel_event=None,
+    cpu: CpuExecutor | None = None,
+    progress: ProgressCallback | None = None,
+    cancel_event: CancelEvent | None = None,
 ) -> dict[str, DriftResult]:
     """Estimate independent acquisition drifts concurrently through shared CPU tools.
 

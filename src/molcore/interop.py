@@ -4,12 +4,19 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import h5py
 import numpy as np
 import yaml
 
+from ._logging import logged
 
+if TYPE_CHECKING:
+    from .types import Segmentation
+
+
+@logged
 def to_records(columns: Mapping[str, np.ndarray]) -> np.ndarray:
     """Convert equal-length named columns into a structured NumPy array.
 
@@ -32,6 +39,7 @@ def to_records(columns: Mapping[str, np.ndarray]) -> np.ndarray:
     return result
 
 
+@logged
 def from_records(records: np.ndarray) -> dict[str, np.ndarray]:
     """Detach named columns from a structured NumPy array.
 
@@ -46,7 +54,8 @@ def from_records(records: np.ndarray) -> dict[str, np.ndarray]:
     return {name: records[name].copy() for name in records.dtype.names}
 
 
-def write_picasso(path, columns: Mapping[str, np.ndarray], metadata: list[dict]) -> None:
+@logged
+def write_picasso(path: str | Path, columns: Mapping[str, np.ndarray], metadata: list[dict]) -> None:
     """Write Picasso's locs dataset and companion YAML metadata documents.
 
     Args:
@@ -72,7 +81,8 @@ def write_picasso(path, columns: Mapping[str, np.ndarray], metadata: list[dict])
     path.with_suffix(".yaml").write_text(text, encoding="utf-8")
 
 
-def read_picasso(path) -> tuple[dict[str, np.ndarray], list[dict]]:
+@logged
+def read_picasso(path: str | Path) -> tuple[dict[str, np.ndarray], list[dict]]:
     """Read Picasso localizations and optional companion YAML metadata.
 
     Args:
@@ -92,7 +102,16 @@ def read_picasso(path) -> tuple[dict[str, np.ndarray], list[dict]]:
     return result, metadata
 
 
-def _timeline(rows, frame_column):
+def _timeline(rows: dict[str, np.ndarray], frame_column: str | None) -> np.ndarray:
+    """Timeline.
+
+    Args:
+        rows: Named measurement arrays retaining stable IDs and source-frame provenance.
+        frame_column: Frame column used by this operation.
+
+    Returns:
+        Computed NumPy array value.
+    """
     if frame_column == "frame" and len(np.unique(rows.get("acquisition_id", []))) > 1:
         raise ValueError("Multiple acquisitions require an explicit sequence_frame timeline")
     if frame_column not in rows:
@@ -100,6 +119,7 @@ def _timeline(rows, frame_column):
     return rows[frame_column]
 
 
+@logged
 def napari_points(rows: Mapping[str, np.ndarray], *, frame_column: str = "frame") -> np.ndarray:
     """Convert a localization subset into napari (time, y, x) points.
 
@@ -113,6 +133,7 @@ def napari_points(rows: Mapping[str, np.ndarray], *, frame_column: str = "frame"
     return np.column_stack([_timeline(rows, frame_column), rows["y"], rows["x"]]).astype(float)
 
 
+@logged
 def napari_tracks(rows: Mapping[str, np.ndarray], *, frame_column: str = "frame") -> np.ndarray:
     """Convert joined track rows into napari (track_id, time, y, x) data.
 
@@ -130,7 +151,8 @@ def napari_tracks(rows: Mapping[str, np.ndarray], *, frame_column: str = "frame"
     return data[np.lexsort((data[:, 1], data[:, 0]))]
 
 
-def napari_labels(segmentation) -> np.ndarray:
+@logged
+def napari_labels(segmentation: Segmentation) -> np.ndarray:
     """Return detached label data suitable for a napari labels layer.
 
     Args:

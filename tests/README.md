@@ -35,3 +35,16 @@ A local synthetic benchmark with 1,000,000 localization rows measured warmed
 queries of 0.128 ms for one ID and 0.152 ms for a 1,000-row frame selection.
 Index construction is a one-time cost after table edits; these measurements
 are host-specific and are not test thresholds.
+
+Scientific API verification adds 34 tests covering measurement identity and
+persistence, transactional rollback and concurrency checks, safe dependency cleanup,
+partition isolation, affine/ALEX conversions, synthetic photometry, drift, masking,
+missing pixels, cancellation, spawned Trackpy workers, actual-time MSD and diffusion.
+The new tests and scientific example pass on Python 3.12 and 3.14. The independent
+review findings were reproduced and corrected through regression tests.
+
+Autocontrast verification adds 14 tests for deterministic lazy sampling, ALEX frame
+provenance, independent/shared limits, masks, nonfinite/empty/constant inputs,
+float64 extremes and percentile precision, progress/cancellation and stale inputs.
+They pass on Python 3.12 and 3.14. `examples/autocontrast.py` demonstrates display-only
+limits while asserting original pixels are unchanged.

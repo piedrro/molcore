@@ -2,14 +2,30 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import ArrayLike
 
+from .._locking import model_locked
+from .._logging import logged
+from ._shared import CoordinateSpace
 
-def identifiers(values, *, nullable=False):
-    """Normalize identifiers without signed/unsigned floating-point promotion."""
+if TYPE_CHECKING:
+    from ..types import AcquisitionSequence, Experiment
+
+
+@logged
+def identifiers(values: Any, *, nullable: bool = False) -> np.ndarray:
+    """Normalize identifiers without signed/unsigned floating-point promotion.
+
+    Args:
+        values: Input values to validate, convert or display.
+        nullable: Nullable used by this operation.
+
+    Returns:
+        Computed NumPy array value.
+    """
     array = np.atleast_1d(np.asarray(values, dtype=object))
     if array.ndim != 1:
         raise ValueError("Identifiers must be one-dimensional")
@@ -26,8 +42,16 @@ def identifiers(values, *, nullable=False):
     return np.array(result, dtype=np.uint64)
 
 
-def columns(values):
-    """Broadcast scalar fields into detached, one-dimensional columns."""
+@logged
+def columns(values: Any) -> dict[str, np.ndarray]:
+    """Broadcast scalar fields into detached, one-dimensional columns.
+
+    Args:
+        values: Input values to validate, convert or display.
+
+    Returns:
+        Detached named result columns.
+    """
     arrays = {k: np.atleast_1d(v) for k, v in values.items()}
     lengths = [len(v) for v in arrays.values() if len(v) != 1]
     n = max(lengths) if lengths else (1 if arrays else 0)
@@ -43,7 +67,17 @@ def columns(values):
     return result, n
 
 
-def integers(values, name):
+@logged
+def integers(values: Any, name: str) -> np.ndarray:
+    """Integers.
+
+    Args:
+        values: Input values to validate, convert or display.
+        name: Identifier or field name used to address this value.
+
+    Returns:
+        Computed NumPy array value.
+    """
     values = np.asarray(values)
     if values.dtype.kind not in "iu" or np.any(values < 0):
         raise ValueError(f"{name} must contain nonnegative integers")
@@ -53,23 +87,50 @@ def integers(values, name):
 class ColumnTable:
     """Base for result tables with detached query output and cached indexes."""
 
-    def __init__(self, experiment):
+    def __init__(self, experiment: Experiment) -> None:
+        """Initialise the object and validate its configuration.
+
+        Args:
+            experiment: Scientific model supplying acquisitions and result tables.
+        """
         self.experiment = experiment
         self._data, self._indexes = {}, {}
         self._next_id = 1
         self.revision = 0
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """Return the number of available items.
+
+        Returns:
+            Computed int value.
+        """
         return len(self._data.get("id", ()))
 
-    def _index(self, name):
+    def _index(self, name: str) -> tuple[np.ndarray, np.ndarray]:
+        """Index.
+
+        Args:
+            name: Identifier or field name used to address this value.
+
+        Returns:
+            Computed dict[Any, NumPy array] value.
+        """
         if name not in self._indexes:
             values = self._data[name]
             order = np.argsort(values, kind="stable")
             self._indexes[name] = (values[order], order)
         return self._indexes[name]
 
-    def _where(self, _candidate=None, **selectors):
+    def _where(self, _candidate: Any = None, **selectors: Any) -> np.ndarray:
+        """Where.
+
+        Args:
+            _candidate:  candidate used by this operation.
+            **selectors: Additional named options for this operation.
+
+        Returns:
+            Computed NumPy array value.
+        """
         candidates = _candidate
         # Start with stable IDs where possible, then filter the small candidate set.
         for name, values in sorted(selectors.items(), key=lambda item: item[0] != "id"):
@@ -91,7 +152,18 @@ class ColumnTable:
             candidates = np.unique(selected)
         return np.arange(len(self)) if candidates is None else np.sort(candidates)
 
-    def _range(self, frame_range, sequence=None):
+    def _range(
+        self, frame_range: tuple[int, int] | None, sequence: AcquisitionSequence | None = None
+    ) -> np.ndarray | None:
+        """Range.
+
+        Args:
+            frame_range: Optional half-open camera-frame interval.
+            sequence: Sequence used by this operation.
+
+        Returns:
+            Computed NumPy array value.
+        """
         if frame_range is None:
             return None
         start, stop = frame_range
@@ -114,14 +186,32 @@ class ColumnTable:
         lo, hi = np.searchsorted(frames, [start, stop])
         return order[lo:hi]
 
-    def _append(self, incoming):
+    def _append(self, incoming: dict[str, np.ndarray]) -> Any:
+        """Append.
+
+        Args:
+            incoming: Validated named columns to append to the table.
+
+        Returns:
+            Result retaining the input format or backend-specific representation.
+        """
         n, old_n = len(incoming["id"]), len(self)
         combined = {}
         for name in self._data.keys() | incoming.keys():
             old, new = self._data.get(name), incoming.get(name)
             template = old if new is None else new
 
-            def missing(count, name=name, template=template):
+            def missing(count: int, name: str = name, template: Any = template) -> np.ndarray:
+                """Missing.
+
+                Args:
+                    count: Number of items to allocate or process.
+                    name: Identifier or field name used to address this value.
+                    template: Template used by this operation.
+
+                Returns:
+                    Result retaining the input format or backend-specific representation.
+                """
                 if name in ("localization_id", "track_id"):
                     return np.zeros(count, dtype=np.uint64)
                 if template.dtype.kind in "US":
@@ -139,7 +229,16 @@ class ColumnTable:
         self._indexes.clear()
         self.revision += 1
 
-    def _ids(self, incoming, n):
+    def _ids(self, incoming: dict[str, np.ndarray], n: Any) -> np.ndarray:
+        """Ids.
+
+        Args:
+            incoming: Validated named columns to append to the table.
+            n: Number of rows being allocated or processed.
+
+        Returns:
+            Computed NumPy array value.
+        """
         ids = incoming.get("id", np.arange(self._next_id, self._next_id + n, dtype=np.uint64))
         ids = identifiers(ids)
         existing = self._data.get("id", np.array([], dtype=np.uint64))
@@ -147,7 +246,12 @@ class ColumnTable:
             raise ValueError("IDs must be unique, monotonically allocated and never reused")
         return ids
 
-    def _frames(self, incoming):
+    def _frames(self, incoming: dict[str, np.ndarray]) -> None:
+        """Frames.
+
+        Args:
+            incoming: Validated named columns to append to the table.
+        """
         integers(incoming["frame"], "Camera frames")
         for acquisition_id, channel in set(zip(incoming["acquisition_id"], incoming["channel"], strict=True)):
             acquisition = self.experiment.acquisitions.get(str(acquisition_id))
@@ -162,6 +266,101 @@ class ColumnTable:
 class LocalizationTable(ColumnTable):
     """The active localizations with immutable originals and editable positions."""
 
+    def _edit_rows(self, ids: ArrayLike | None) -> tuple[np.ndarray, np.ndarray]:
+        """Edit rows.
+
+        Args:
+            ids: Stable entity IDs; None selects the available partition.
+
+        Returns:
+            Computed NumPy array value.
+        """
+        ids = identifiers(ids)
+        lookup = {int(value): index for index, value in enumerate(self._data.get("id", []))}
+        if len(np.unique(ids)) != len(ids) or any(int(i) not in lookup for i in ids):
+            raise ValueError("Expected distinct existing localization IDs")
+        return ids, np.array([lookup[int(i)] for i in ids], dtype=int)
+
+    @model_locked
+    @logged
+    def update_measurements(self, ids: ArrayLike, **values: ArrayLike) -> None:
+        """Atomically update numeric measurement columns in supplied ID order.
+
+        Scalars broadcast. New columns are float64 with NaN in unassigned rows.
+        Structural fields and manual coordinate overrides cannot be measurements.
+        Dependent observations are invalidated; positions and IDs are preserved.
+
+        Args:
+            ids: Stable entity IDs; None selects the available partition.
+            **values: Additional named options for this operation.
+        """
+        ids, selected = self._edit_rows(ids)
+        reserved = {
+            "id",
+            "x",
+            "y",
+            "frame",
+            "acquisition_id",
+            "channel",
+            "track_id",
+            "localization_id",
+            "sequence_frame",
+            "molecule_id",
+            "timestamp",
+            "cycle_index",
+        }
+        prepared = {}
+        for name, value in values.items():
+            if not isinstance(name, str) or not name or name in reserved or name.startswith(("edit_", "_")):
+                raise ValueError("Structural columns cannot be updated as measurements")
+            array = np.asarray(value)
+            if array.dtype.kind not in "iuf" or array.ndim > 1:
+                raise ValueError("Measurements must be real numeric scalars or 1D arrays")
+            if array.ndim and len(array) != len(ids):
+                raise ValueError("Measurement lengths must match IDs")
+            old = self._data.get(name)
+            if old is not None and old.dtype.kind not in "iuf":
+                raise ValueError("Existing column is not numeric")
+            dtype = np.result_type(old.dtype, array.dtype) if old is not None else np.dtype(float)
+            column = old.astype(dtype, copy=True) if old is not None else np.full(len(self), np.nan)
+            column[selected] = array
+            prepared[name] = column
+        if not len(ids) or not prepared:
+            return
+        self._data.update(prepared)
+        self._indexes.clear()
+        self.revision += 1
+        tracks = [
+            t for t, members in self.experiment.tracks._members.items() if np.intersect1d(ids, members).size
+        ]
+        self.experiment.observations._invalidate(ids=ids, tracks=tracks)
+
+    @model_locked
+    @logged
+    def move_many(self, ids: ArrayLike, *, x: ArrayLike, y: ArrayLike) -> None:
+        """Atomically set effective raw positions in ID order, preserving originals.
+
+        Args:
+            ids: Stable entity IDs; None selects the available partition.
+            x: X used by this operation.
+            y: Y used by this operation.
+        """
+        ids, selected = self._edit_rows(ids)
+        prepared = []
+        for value in (x, y):
+            array = np.asarray(value, dtype=float)
+            if array.ndim > 1 or (array.ndim and len(array) != len(ids)) or not np.isfinite(array).all():
+                raise ValueError("Supply finite scalar positions or one position per ID")
+            prepared.append(array)
+        if not len(ids):
+            return
+        for name, array in zip(("edit_x", "edit_y"), prepared, strict=True):
+            self._data[name][selected] = array
+        self.revision += 1
+        self.experiment._changed(ids)
+
+    @model_locked
+    @logged
     def add(self, **values: Any) -> np.ndarray:
         """Validate and append localizations atomically.
 
@@ -190,20 +389,23 @@ class LocalizationTable(ColumnTable):
         incoming["edit_x"], incoming["edit_y"] = np.full(n, np.nan), np.full(n, np.nan)
         self._append(incoming)
         self._next_id = max(self._next_id, int(incoming["id"].max()) + 1) if n else self._next_id
+        if self is self.experiment.localizations:
+            self.experiment.photon_sequences._localizations_changed(incoming["acquisition_id"])
         return incoming["id"].copy()
 
+    @logged
     def query(
         self,
         *,
-        acquisition_id=None,
-        channel=None,
-        frame_range=None,
-        ids=None,
-        sequence_id=None,
-        space="raw",
-        original=False,
-        segmentation_id=None,
-        label=None,
+        acquisition_id: str | None = None,
+        channel: str | None = None,
+        frame_range: tuple[int, int] | None = None,
+        ids: ArrayLike | None = None,
+        sequence_id: str | None = None,
+        space: CoordinateSpace | str = "raw",
+        original: bool = False,
+        segmentation_id: str | None = None,
+        label: str | None = None,
     ) -> dict[str, np.ndarray]:
         """Return detached columns matching acquisition, frame, ID or mask filters.
 
@@ -221,8 +423,6 @@ class LocalizationTable(ColumnTable):
         Returns:
             Dictionary of detached NumPy columns, including effective x and y.
         """
-        from ._shared import CoordinateSpace
-
         space = CoordinateSpace(space)
         if sequence_id is not None and acquisition_id is not None:
             raise ValueError("Select either acquisition_id or sequence_id")
@@ -265,6 +465,8 @@ class LocalizationTable(ColumnTable):
             result["x"], result["y"] = self.experiment.transforms.coordinates(result, space=space)
         return result
 
+    @model_locked
+    @logged
     def move(self, localization_id: int | np.integer, *, x: float, y: float) -> None:
         """Set a manual position without modifying imported coordinates.
 
@@ -280,6 +482,8 @@ class LocalizationTable(ColumnTable):
         self.revision += 1
         self.experiment._changed([localization_id])
 
+    @model_locked
+    @logged
     def delete(self, ids: ArrayLike) -> None:
         """Delete localizations and remove their incident track memberships.
 
@@ -298,6 +502,8 @@ class LocalizationTable(ColumnTable):
         self.revision += 1
         self.experiment.tracks._remove_localizations(ids)
 
+    @model_locked
+    @logged
     def replace(self, acquisition_id: str, channel: str, **values: Any) -> np.ndarray:
         """Replace one active partition, preserving every other partition.
 
@@ -326,12 +532,16 @@ class LocalizationTable(ColumnTable):
         self._indexes.clear()
         self.revision += 1
         self._next_id = staged._next_id
+        if self is self.experiment.localizations:
+            self.experiment.photon_sequences._localizations_changed([acquisition_id])
         return ids
 
 
 class ObservationTable(ColumnTable):
     """Channel measurements anchored to molecules and optional results."""
 
+    @model_locked
+    @logged
     def add(self, **values: Any) -> np.ndarray:
         """Append channel measurements with source timing and optional anchors.
 
@@ -363,16 +573,17 @@ class ObservationTable(ColumnTable):
         self._next_id = max(self._next_id, int(incoming["id"].max()) + 1) if n else self._next_id
         return incoming["id"].copy()
 
+    @logged
     def query(
         self,
         *,
-        molecule_id=None,
-        acquisition_id=None,
-        channel=None,
-        frame_range=None,
-        ids=None,
-        include_stale=False,
-    ):
+        molecule_id: Any = None,
+        acquisition_id: str | None = None,
+        channel: str | None = None,
+        frame_range: tuple[int, int] | None = None,
+        ids: ArrayLike | None = None,
+        include_stale: bool = False,
+    ) -> dict[str, np.ndarray]:
         """Return detached active measurements, optionally including stale rows.
 
         Args:
@@ -412,7 +623,14 @@ class ObservationTable(ColumnTable):
             selected = selected[self._data["valid"][selected]]
         return {k: v[selected].copy() for k, v in self._data.items()}
 
-    def _invalidate(self, ids=(), tracks=()):
+    def _invalidate(self, ids: ArrayLike | None = (), tracks: ArrayLike | None = ()) -> None:
+        """Invalidate.
+
+        Args:
+            ids: Stable entity IDs; None selects the available partition.
+            tracks: Track IDs to invalidate, or whether this operation selects whole tracks.
+        """
+        self.experiment.photon_sequences._invalidate(ids=ids, tracks=tracks)
         if self._data:
             mask = np.isin(self._data["localization_id"], identifiers(ids)) | np.isin(
                 self._data["track_id"], identifiers(tracks)
@@ -420,7 +638,13 @@ class ObservationTable(ColumnTable):
             self._data["valid"][mask] = False
             self.revision += 1
 
-    def _invalidate_partition(self, acquisition_id, channel=None):
+    def _invalidate_partition(self, acquisition_id: str, channel: str | None = None) -> None:
+        """Invalidate partition.
+
+        Args:
+            acquisition_id: Source acquisition identifier.
+            channel: Logical source channel name.
+        """
         if self._data:
             mask = self._data["acquisition_id"] == acquisition_id
             if channel is not None:
@@ -432,14 +656,36 @@ class ObservationTable(ColumnTable):
 class TrackTable:
     """Track membership without duplicated coordinates."""
 
-    def __init__(self, experiment):
+    def __init__(self, experiment: Experiment) -> None:
+        """Initialise the object and validate its configuration.
+
+        Args:
+            experiment: Scientific model supplying acquisitions and result tables.
+        """
         self.experiment, self._members, self.metadata = experiment, {}, {}
         self._next_id, self.revision = 1, 0
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """Return the number of available items.
+
+        Returns:
+            Computed int value.
+        """
         return len(self._members)
 
-    def _validate(self, ids, *, sequence_id=None, segmentation_id=None):
+    def _validate(
+        self, ids: ArrayLike | None, *, sequence_id: str | None = None, segmentation_id: str | None = None
+    ) -> np.ndarray:
+        """Validate.
+
+        Args:
+            ids: Stable entity IDs; None selects the available partition.
+            sequence_id: Optional sequence identifier defining acquisition order and frame offsets.
+            segmentation_id: Optional segmentation identifier restricting the selected objects.
+
+        Returns:
+            Computed NumPy array value.
+        """
         ids = identifiers(ids)
         if ids.ndim != 1 or not len(ids) or len(np.unique(ids)) != len(ids):
             raise ValueError("A track requires distinct localization IDs")
@@ -464,6 +710,8 @@ class TrackTable:
                 raise ValueError("Track must remain inside one segmentation label")
         return rows["id"][np.argsort(timeline, kind="stable")].astype(np.uint64)
 
+    @model_locked
+    @logged
     def add(
         self,
         localization_ids: ArrayLike,
@@ -497,8 +745,16 @@ class TrackTable:
         self.revision += 1
         return track
 
+    @logged
     def query(
-        self, *, track_id=None, frame_range=None, space="raw", sequence_id=None
+        self,
+        *,
+        track_id: int | ArrayLike | None = None,
+        frame_range: tuple[int, int] | None = None,
+        space: CoordinateSpace = CoordinateSpace.RAW,
+        sequence_id: str | None = None,
+        acquisition_id: str | list[str] | None = None,
+        channel: str | list[str] | None = None,
     ) -> dict[str, np.ndarray]:
         """Join memberships to current localization coordinates on demand.
 
@@ -507,27 +763,94 @@ class TrackTable:
             frame_range: Half-open camera-frame range.
             space: Requested coordinate space.
             sequence_id: Optional sequence defining frame offsets.
+            acquisition_id: Optional acquisition selector; filters returned members.
+            channel: Optional logical channel selector.
 
         Returns:
             Localization columns plus track_id, sorted by track and frame.
         """
-        tracks = list(self._members) if track_id is None else np.atleast_1d(track_id)
+        space = CoordinateSpace(space)
+        tracks = list(self._members) if track_id is None else identifiers(track_id)
+        partition = None
+        if acquisition_id is not None or channel is not None:
+            partition = self.experiment.localizations.query(acquisition_id=acquisition_id, channel=channel)[
+                "id"
+            ]
         chunks = []
         for track in tracks:
             if int(track) not in self._members:
                 raise ValueError("Unknown track ID")
+            members = self._members[int(track)]
+            if partition is not None:
+                members = members[np.isin(members, partition)]
+            if not len(members):
+                continue
             rows = self.experiment.localizations.query(
-                ids=self._members[int(track)], frame_range=frame_range, space=space, sequence_id=sequence_id
+                ids=members, frame_range=frame_range, space=space, sequence_id=sequence_id
             )
             rows["track_id"] = np.full(len(rows["id"]), track, dtype=np.uint64)
             order = np.argsort(rows.get("sequence_frame", rows["frame"]), kind="stable")
             chunks.append({k: v[order] for k, v in rows.items()})
         if not chunks:
-            rows = self.experiment.localizations.query(ids=[])
+            rows = self.experiment.localizations.query(ids=[], space=space, sequence_id=sequence_id)
             rows["track_id"] = np.array([], dtype=np.uint64)
             return rows
         return {k: np.concatenate([c[k] for c in chunks]) for k in chunks[0]}
 
+    @model_locked
+    @logged
+    def replace(
+        self,
+        acquisition_id: str,
+        channel: str,
+        memberships: list[ArrayLike],
+        *,
+        segmentation_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> np.ndarray:
+        """Replace wholly contained partition tracks atomically, retaining localization IDs.
+
+        Memberships is an iterable of nonempty localization-ID arrays. Spanning
+        tracks intersecting the partition are rejected, including empty replacements.
+
+        Args:
+            acquisition_id: Source acquisition identifier.
+            channel: Logical source channel name.
+            memberships: Memberships used by this operation.
+            segmentation_id: Optional segmentation identifier restricting the selected objects.
+            metadata: Additional structured provenance and acquisition metadata.
+
+        Returns:
+            Computed NumPy array value.
+        """
+        from copy import deepcopy
+
+        if channel not in self.experiment.acquisitions[acquisition_id].channels:
+            raise ValueError("Unknown channel")
+        partition = self.experiment.localizations.query(acquisition_id=acquisition_id, channel=channel)["id"]
+        old = []
+        for track, members in self._members.items():
+            inside = np.isin(members, partition)
+            if inside.any():
+                if not inside.all():
+                    raise ValueError("Partition intersects a spanning track")
+                old.append(track)
+        staged = deepcopy(self, {id(self.experiment): self.experiment})
+        for track in old:
+            del staged._members[track], staged.metadata[track]
+        result = []
+        for members in memberships:
+            members = identifiers(members)
+            if not np.isin(members, partition).all():
+                raise ValueError("Track members must belong to the selected partition")
+            result.append(staged.add(members, segmentation_id=segmentation_id, metadata=metadata))
+        self._members, self.metadata, self._next_id = staged._members, staged.metadata, staged._next_id
+        self.revision += 1
+        self.experiment.observations._invalidate(tracks=old)
+        return np.asarray(result, dtype=np.uint64)
+
+    @model_locked
+    @logged
     def delete(self, track_id: int) -> None:
         """Delete a track without deleting its localizations.
 
@@ -541,6 +864,8 @@ class TrackTable:
         del self._members[track_id], self.metadata[track_id]
         self.revision += 1
 
+    @model_locked
+    @logged
     def split(self, track_id: int, *, frame: int) -> int:
         """Split at a camera frame, using sequence frames for crossing tracks.
 
@@ -569,6 +894,8 @@ class TrackTable:
         self.experiment.observations._invalidate(tracks=[track_id])
         return new
 
+    @model_locked
+    @logged
     def merge(self, track_ids: ArrayLike) -> int:
         """Merge compatible tracks, keeping the first track's identifier.
 
@@ -593,6 +920,8 @@ class TrackTable:
         self.revision += 1
         return tracks[0]
 
+    @model_locked
+    @logged
     def reassign(self, localization_ids: ArrayLike, track_id: int) -> None:
         """Move memberships atomically to an existing compatible track.
 
@@ -611,7 +940,12 @@ class TrackTable:
         self.experiment.observations._invalidate(tracks=[track_id])
         self.revision += 1
 
-    def _remove_localizations(self, ids):
+    def _remove_localizations(self, ids: ArrayLike | None) -> None:
+        """Remove localizations.
+
+        Args:
+            ids: Stable entity IDs; None selects the available partition.
+        """
         for track in list(self._members):
             members = self._members[track]
             keep = ~np.isin(members, ids)

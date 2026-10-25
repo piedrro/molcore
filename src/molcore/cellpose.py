@@ -9,9 +9,11 @@ from copy import deepcopy
 from dataclasses import asdict
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from ._logging import logged
 from ._processing import check_snapshot, executor, snapshot
 from .cpu import CpuExecutor
 from .storage import _json
@@ -26,11 +28,22 @@ from .types import (
 )
 from .types.images import CachedSource
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from .cpu import WorkerProgress
+    from .types import CancelEvent
+
 _BUILTIN_MODELS = frozenset({"cpsam_v2", "cpsam", "cpdino", "cpdino-vitb"})
 _MODEL_CACHE = {}
 
 
-def _backend_version():
+def _backend_version() -> str:
+    """Backend version.
+
+    Returns:
+        Computed str value.
+    """
     try:
         installed = version("cellpose")
     except PackageNotFoundError as exc:
@@ -41,7 +54,15 @@ def _backend_version():
     return installed
 
 
-def _resolve_model(settings):
+def _resolve_model(settings: CellposeSettings) -> tuple:
+    """Resolve model.
+
+    Args:
+        settings: Validated settings controlling this operation.
+
+    Returns:
+        Computed tuple value.
+    """
     candidate = Path(settings.pretrained_model).expanduser()
     if candidate.is_file():
         candidate = candidate.resolve()
@@ -52,12 +73,28 @@ def _resolve_model(settings):
     return settings.pretrained_model, None
 
 
-def _fingerprint(image):
+def _fingerprint(image: np.ndarray) -> tuple[tuple[int, ...], str, bytes]:
+    """Fingerprint.
+
+    Args:
+        image: Two-dimensional source image.
+
+    Returns:
+        Computed str value.
+    """
     image = np.ascontiguousarray(image)
     return image.shape, image.dtype.str, hashlib.blake2b(image.view(np.uint8), digest_size=16).digest()
 
 
-def _target_token(segmentation):
+def _target_token(segmentation: Segmentation) -> tuple | None:
+    """Target token.
+
+    Args:
+        segmentation: Segmentation used by this operation.
+
+    Returns:
+        Computed tuple value.
+    """
     if segmentation is None:
         return None
     return (
@@ -74,7 +111,17 @@ def _target_token(segmentation):
     )
 
 
-def _source(experiment, request, frame):
+def _source(experiment: Experiment, request: SegmentationRequest, frame: int | None) -> Any:
+    """Source.
+
+    Args:
+        experiment: Scientific model supplying acquisitions and result tables.
+        request: Source-bound segmentation request, including channel and original camera frame.
+        frame: Original camera-frame index for the requested source image.
+
+    Returns:
+        Result retaining the input format or backend-specific representation.
+    """
     view = experiment.acquisitions[request.acquisition_id].channels[request.channel]
     if request.space == CoordinateSpace.RAW:
         image = view[view.channel_index(frame)]
@@ -88,7 +135,17 @@ def _source(experiment, request, frame):
     return image
 
 
-def _load_model(model_ref, model_stat, settings):
+def _load_model(model_ref: Any, model_stat: Any, settings: CellposeSettings) -> Any:
+    """Load model.
+
+    Args:
+        model_ref: Model ref used by this operation.
+        model_stat: Model stat used by this operation.
+        settings: Validated settings controlling this operation.
+
+    Returns:
+        Result retaining the input format or backend-specific representation.
+    """
     import torch
     from cellpose import models
 
@@ -122,14 +179,35 @@ def _load_model(model_ref, model_stat, settings):
 
 
 class _Progress:
-    def __init__(self, reporter):
+    def __init__(self, reporter: WorkerProgress) -> None:
+        """Initialise the object and validate its configuration.
+
+        Args:
+            reporter: Worker progress and cooperative cancellation reporter.
+        """
         self.reporter = reporter
 
-    def setValue(self, value):
+    @logged
+    def setValue(self, value: Any) -> None:
+        """Setvalue.
+
+        Args:
+            value: Value supplied by the caller or connected control.
+        """
         self.reporter.report(0.2 + 0.7 * min(1.0, max(0.0, value / 100)), 1, "Cellpose inference")
 
 
-def _job(payload, reporter):
+@logged
+def _job(payload: tuple, reporter: WorkerProgress) -> Any:
+    """Job.
+
+    Args:
+        payload: Serializable worker inputs; large arrays remain bounded to a job or image chunk.
+        reporter: Worker progress and cooperative cancellation reporter.
+
+    Returns:
+        Result retaining the input format or backend-specific representation.
+    """
     request, frame, segmentation_id, image, source_path, settings, model_ref, model_stat = payload
     reporter.report(0.05, 1, "Loading Cellpose model")
     model = _load_model(model_ref, model_stat, settings)
@@ -179,6 +257,7 @@ def _job(payload, reporter):
     return result
 
 
+@logged
 def segment_many(
     experiment: Experiment,
     requests: Sequence[SegmentationRequest],
@@ -188,7 +267,7 @@ def segment_many(
     num_cpus: int | None = None,
     cpu: CpuExecutor | None = None,
     progress: Callable[[ProgressUpdate], None] | None = None,
-    cancel_event=None,
+    cancel_event: CancelEvent | None = None,
 ) -> dict[str, Segmentation]:
     """Segment model-bound source frames and stage every result before application.
 
@@ -252,7 +331,12 @@ def segment_many(
             )
         )
 
-    def jobs():
+    def jobs() -> Iterator[Any]:
+        """Jobs.
+
+        Yields:
+            Values produced by the iterator, retaining their original order.
+        """
         for request, frame, identifier, source_path, _, fingerprint, _ in prepared:
             image = _source(experiment, request, frame)
             if _fingerprint(image) != fingerprint:
@@ -283,6 +367,7 @@ def segment_many(
     return results
 
 
+@logged
 def segment(
     experiment: Experiment,
     acquisition_id: str,
@@ -296,7 +381,7 @@ def segment(
     num_cpus: int | None = None,
     cpu: CpuExecutor | None = None,
     progress: Callable[[ProgressUpdate], None] | None = None,
-    cancel_event=None,
+    cancel_event: CancelEvent | None = None,
 ) -> Segmentation:
     """Segment one MolCore channel frame with the Cellpose 4 backend.
 

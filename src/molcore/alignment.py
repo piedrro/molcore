@@ -2,16 +2,35 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import numpy as np
 
+from ._logging import logged
 from ._processing import check_snapshot, executor, snapshot
 from .types._shared import Calibration
 from .types.experiment import Experiment
 from .types.processing import AlignmentResult
 from .types.tables import identifiers
 
+if TYPE_CHECKING:
+    from numpy.typing import ArrayLike
 
-def _job(payload, reporter):
+    from .cpu import CpuExecutor, WorkerProgress
+    from .types import CancelEvent, ProgressCallback
+
+
+@logged
+def _job(payload: tuple, reporter: WorkerProgress) -> tuple:
+    """Job.
+
+    Args:
+        payload: Serializable worker inputs; large arrays remain bounded to a job or image chunk.
+        reporter: Worker progress and cooperative cancellation reporter.
+
+    Returns:
+        Computed tuple value.
+    """
     source, target, source_ids, target_ids, model, match_radius, matched = payload
     reporter.report(0, 1, "Matching channel fiducials")
     if not matched:
@@ -42,7 +61,20 @@ def _job(payload, reporter):
     return matrix, residuals, source_ids, target_ids
 
 
-def _rows(experiment, acquisition_id, channel, ids):
+def _rows(
+    experiment: Experiment, acquisition_id: str, channel: str, ids: ArrayLike | None
+) -> dict[str, np.ndarray]:
+    """Rows.
+
+    Args:
+        experiment: Scientific model supplying acquisitions and result tables.
+        acquisition_id: Source acquisition identifier.
+        channel: Logical source channel name.
+        ids: Stable entity IDs; None selects the available partition.
+
+    Returns:
+        Detached named result columns.
+    """
     rows = experiment.localizations.query(acquisition_id=acquisition_id, channel=channel, ids=ids)
     if len(rows["id"]) == 0:
         raise ValueError("No fiducial localizations in selected channel")
@@ -56,23 +88,45 @@ def _rows(experiment, acquisition_id, channel, ids):
     return np.column_stack([rows["x"], rows["y"]]), rows["id"]
 
 
+@logged
 def _run(
-    experiment,
-    acquisition_id,
-    source_channel,
-    target_channel,
+    experiment: Experiment,
+    acquisition_id: str,
+    source_channel: str,
+    target_channel: str,
     *,
-    source_ids,
-    target_ids,
-    model,
-    match_radius,
-    name,
-    apply,
-    num_cpus,
-    cpu,
-    progress,
-    cancel_event,
-):
+    source_ids: ArrayLike | None,
+    target_ids: ArrayLike | None,
+    model: str,
+    match_radius: float,
+    name: str,
+    apply: bool,
+    num_cpus: int | None,
+    cpu: CpuExecutor | None,
+    progress: ProgressCallback | None,
+    cancel_event: CancelEvent | None,
+) -> Any:
+    """Run.
+
+    Args:
+        experiment: Scientific model supplying acquisitions and result tables.
+        acquisition_id: Source acquisition identifier.
+        source_channel: Source channel used by this operation.
+        target_channel: Logical target channel in the same acquisition.
+        source_ids: Optional stable IDs restricting source localizations.
+        target_ids: Optional stable IDs restricting target localizations.
+        model: Model or fitting method selected by the caller.
+        match_radius: Match radius used by this operation.
+        name: Identifier or field name used to address this value.
+        apply: Whether to commit successful results to the model.
+        num_cpus: Worker process count; None uses the executor default.
+        cpu: Optional borrowed CPU executor; ownership remains with the caller.
+        progress: Optional callback receiving structured progress updates.
+        cancel_event: Optional event whose is_set() requests cooperative cancellation.
+
+    Returns:
+        Result retaining the input format or backend-specific representation.
+    """
     if source_channel == target_channel or model not in ("translation", "affine"):
         raise ValueError("Choose distinct channels and translation or affine alignment")
     matched = source_ids is not None and target_ids is not None
@@ -140,20 +194,21 @@ def _run(
     )
 
 
+@logged
 def estimate_alignment(
     experiment: Experiment,
     acquisition_id: str,
     source_channel: str,
     target_channel: str,
     *,
-    source_ids=None,
-    target_ids=None,
+    source_ids: ArrayLike | None = None,
+    target_ids: ArrayLike | None = None,
     model: str = "affine",
     match_radius: float | None = None,
     num_cpus: int | None = None,
-    cpu=None,
-    progress=None,
-    cancel_event=None,
+    cpu: CpuExecutor | None = None,
+    progress: ProgressCallback | None = None,
+    cancel_event: CancelEvent | None = None,
 ) -> AlignmentResult:
     """Fit channel correspondences without changing the calibration selection.
 
@@ -192,21 +247,22 @@ def estimate_alignment(
     )
 
 
+@logged
 def align_channels(
     experiment: Experiment,
     acquisition_id: str,
     source_channel: str,
     target_channel: str,
     *,
-    source_ids=None,
-    target_ids=None,
+    source_ids: ArrayLike | None = None,
+    target_ids: ArrayLike | None = None,
     model: str = "affine",
     match_radius: float | None = None,
     name: str | None = None,
     num_cpus: int | None = None,
-    cpu=None,
-    progress=None,
-    cancel_event=None,
+    cpu: CpuExecutor | None = None,
+    progress: ProgressCallback | None = None,
+    cancel_event: CancelEvent | None = None,
 ) -> AlignmentResult:
     """Estimate and select a named source-channel registration calibration.
 

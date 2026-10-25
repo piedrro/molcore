@@ -4,12 +4,25 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version
+from typing import TYPE_CHECKING, Any
 
+from ._logging import logged
 from .cpu import CpuExecutor
 from .types._shared import StaleResultError
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
-def backend_version():
+    from .types import Experiment
+
+
+@logged
+def backend_version() -> str:
+    """Backend version.
+
+    Returns:
+        Computed str value.
+    """
     try:
         installed = version("picassosr")
     except PackageNotFoundError as exc:
@@ -19,7 +32,17 @@ def backend_version():
     return installed
 
 
-def snapshot(experiment, acquisition_id):
+@logged
+def snapshot(experiment: Experiment, acquisition_id: str) -> tuple:
+    """Snapshot.
+
+    Args:
+        experiment: Scientific model supplying acquisitions and result tables.
+        acquisition_id: Source acquisition identifier.
+
+    Returns:
+        Computed tuple value.
+    """
     acquisition = experiment.acquisitions[acquisition_id]
     return (
         experiment.localizations.revision,
@@ -30,13 +53,31 @@ def snapshot(experiment, acquisition_id):
     )
 
 
-def check_snapshot(experiment, acquisition_id, expected):
+@logged
+def check_snapshot(experiment: Experiment, acquisition_id: str, expected: tuple | None) -> None:
+    """Check snapshot.
+
+    Args:
+        experiment: Scientific model supplying acquisitions and result tables.
+        acquisition_id: Source acquisition identifier.
+        expected: Source revision token used to reject stale results.
+    """
     if snapshot(experiment, acquisition_id) != expected:
         raise StaleResultError("Processing inputs changed during computation; no result was applied")
 
 
 @contextmanager
-def executor(cpu, num_cpus):
+@logged
+def executor(cpu: CpuExecutor | None, num_cpus: int | None) -> Iterator[Any]:
+    """Executor.
+
+    Args:
+        cpu: Optional borrowed CPU executor; ownership remains with the caller.
+        num_cpus: Worker process count; None uses the executor default.
+
+    Yields:
+        Values produced by the iterator, retaining their original order.
+    """
     if cpu is not None:
         if num_cpus is not None:
             raise ValueError("Set num_cpus on the supplied CpuExecutor, or omit cpu")
@@ -46,7 +87,17 @@ def executor(cpu, num_cpus):
             yield created
 
 
-def record(experiment, stage, acquisition_id, channel, values):
+@logged
+def record(experiment: Experiment, stage: Any, acquisition_id: str, channel: str, values: Any) -> None:
+    """Record.
+
+    Args:
+        experiment: Scientific model supplying acquisitions and result tables.
+        stage: Stage used by this operation.
+        acquisition_id: Source acquisition identifier.
+        channel: Logical source channel name.
+        values: Input values to validate, convert or display.
+    """
     experiment.processing.settings.setdefault(stage, {}).setdefault(acquisition_id, {})[channel] = values
     if "backend" in values:
         experiment.processing.software["picassosr"] = values["backend"]

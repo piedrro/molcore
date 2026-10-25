@@ -5,13 +5,24 @@ from __future__ import annotations
 from collections.abc import Sequence
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any
+from threading import RLock
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from .._locking import model_locked
+from .._logging import logged
 from ._shared import ImagePolicy, ProcessingMetadata, Segmentation
 from .acquisition import Acquisition, AcquisitionSequence
+from .photons import PhotonSequenceStore
 from .tables import LocalizationTable, ObservationTable, TrackTable
+
+if TYPE_CHECKING:
+    from types import TracebackType
+
+    from numpy.typing import ArrayLike
+
+    from .scientific import CancelEvent, ProgressCallback
 
 
 class Experiment:
@@ -26,11 +37,18 @@ class Experiment:
         localizations: Active indexed localization table.
         tracks: Editable localization-to-track memberships.
         observations: Channel measurements and their validity flags.
+        photon_sequences: Independent frame-resolved photon/intensity sequences.
         segmentations: Static segmentation datasets keyed by identifier.
         processing: Analysis settings and installed software versions.
     """
 
     def __init__(self, *, metadata: dict[str, Any] | None = None) -> None:
+        """Initialise the object and validate its configuration.
+
+        Args:
+            metadata: Additional structured provenance and acquisition metadata.
+        """
+        self._lock = RLock()
         self.metadata = dict(metadata or {})
         self.acquisitions: dict[str, Acquisition] = {}
         self.sequences: dict[str, AcquisitionSequence] = {}
@@ -38,6 +56,7 @@ class Experiment:
         self.localizations = LocalizationTable(self)
         self.tracks = TrackTable(self)
         self.observations = ObservationTable(self)
+        self.photon_sequences = PhotonSequenceStore(self)
         self.processing = ProcessingMetadata(software={"molcore": "0.1.0"})
         for package in ("numpy", "h5py", "tifffile", "picassosr", "torch", "trackpy", "cellpose"):
             try:
@@ -51,6 +70,8 @@ class Experiment:
         self.calibrations = self.transforms.calibrations
         self.crops = CropStore(self)
 
+    @model_locked
+    @logged
     def add_acquisition(self, acquisition: Acquisition) -> Acquisition:
         """Register an acquisition without replacing an existing identifier.
 
@@ -65,6 +86,106 @@ class Experiment:
         self.acquisitions[acquisition.id] = acquisition
         return acquisition
 
+    @logged
+    def remove_acquisition(self, id: str, *, cascade: bool = False) -> None:
+        """Remove an acquisition, explicitly cascading scientific dependents.
+
+        Cascading removes affected sequences and whole spanning tracks, retaining
+        other acquisitions' localizations and reusable named calibrations. Borrowed
+        sources are not closed. Built-in sources reopen files per read; dropping
+        the acquisition releases its source reference without disturbing other owners.
+
+        Args:
+            id: Optional stable identifier; None allocates a new identifier.
+            cascade: Cascade used by this operation.
+        """
+        from ..staging import transact
+
+        if id not in self.acquisitions:
+            raise ValueError("Unknown acquisition")
+
+        def remove(model: Experiment) -> None:
+            """Remove.
+
+            Args:
+                model: Model or fitting method selected by the caller.
+            """
+            ids = model.localizations.query(acquisition_id=id)["id"]
+            sequences = {k for k, s in model.sequences.items() if id in s.offsets}
+            tracks = [
+                t
+                for t, members in model.tracks._members.items()
+                if np.intersect1d(ids, members).size or model.tracks.metadata[t]["sequence_id"] in sequences
+            ]
+            masks = [k for k, s in model.segmentations.items() if s.acquisition_id == id]
+            observations = model.observations
+            rows = observations._data
+            dependent = (
+                len(ids)
+                or tracks
+                or sequences
+                or masks
+                or any(s.acquisition_id == id for s in model.photon_sequences.query(include_stale=True))
+                or np.any(rows.get("acquisition_id", np.array([])) == id)
+                or id in model.transforms._drift
+                or any(a == id for a, _ in model.transforms._selected)
+                or any(
+                    id in values for values in model.processing.settings.values() if isinstance(values, dict)
+                )
+                or any(
+                    id in run.get("acquisitions", [])
+                    for run in model.processing.settings.get("photometry", {}).values()
+                )
+            )
+            if dependent and not cascade:
+                raise ValueError("Acquisition has dependent state; pass cascade=True")
+            for sequence in model.photon_sequences.query(acquisition_id=id, include_stale=True):
+                model.photon_sequences.remove(sequence.id)
+            if rows:
+                keep = (
+                    (rows["acquisition_id"] != id)
+                    & ~np.isin(rows["localization_id"], ids)
+                    & ~np.isin(rows["track_id"], tracks)
+                )
+                observations._data = {k: v[keep] for k, v in rows.items()}
+                observations._indexes.clear()
+                observations.revision += 1
+            for track in tracks:
+                model.tracks.delete(track)
+            model.localizations.delete(ids)
+            for key in sequences:
+                del model.sequences[key]
+            for key in masks:
+                del model.segmentations[key]
+            model.transforms._selected = {k: v for k, v in model.transforms._selected.items() if k[0] != id}
+            model.transforms._drift.pop(id, None)
+            model.transforms.revision += 1
+            for stage, values in model.processing.settings.items():
+                if not isinstance(values, dict):
+                    continue
+                if stage in ("photometry", "photon_sequences"):
+                    for run_id, run in list(values.items()):
+                        if id in run.get("acquisitions", []):
+                            run["acquisitions"].remove(id)
+                            if stage == "photon_sequences":
+                                run["sequence_ids"] = [
+                                    key
+                                    for key in run.get("sequence_ids", [])
+                                    if key in model.photon_sequences
+                                ]
+                            if not run["acquisitions"]:
+                                del values[run_id]
+                elif stage == "cellpose":
+                    for mask_id in masks:
+                        values.pop(mask_id, None)
+                else:
+                    values.pop(id, None)
+            del model.acquisitions[id]
+
+        transact(self, remove)
+
+    @model_locked
+    @logged
     def add_sequence(
         self,
         acquisition_ids: Sequence[str],
@@ -95,6 +216,8 @@ class Experiment:
         self.sequences[sequence.id] = sequence
         return sequence
 
+    @model_locked
+    @logged
     def add_segmentation(self, segmentation: Segmentation) -> None:
         """Add or replace a static segmentation and invalidate its dependents.
 
@@ -111,6 +234,7 @@ class Experiment:
         self.segmentations[segmentation.id] = segmentation
         self.observations._invalidate_partition(segmentation.acquisition_id)
 
+    @logged
     def segmentation_labels(self, segmentation_id: str, rows: dict[str, np.ndarray]) -> np.ndarray:
         """Find object labels at effective localization coordinates.
 
@@ -140,14 +264,21 @@ class Experiment:
         labels[inside] = segmentation.labels[yi[inside], xi[inside]]
         return labels
 
-    def _changed(self, ids):
+    def _changed(self, ids: ArrayLike | None) -> None:
+        """Changed.
+
+        Args:
+            ids: Stable entity IDs; None selects the available partition.
+        """
         ids = np.asarray(ids, dtype=np.uint64)
+        self.photon_sequences._localizations_changed(self.localizations.query(ids=ids)["acquisition_id"])
         tracks = [
             track for track, members in self.tracks._members.items() if np.intersect1d(members, ids).size
         ]
         self.observations._invalidate(ids=ids, tracks=tracks)
         self.crops.invalidate(ids)
 
+    @logged
     def save(
         self,
         path: str | Path,
@@ -155,20 +286,35 @@ class Experiment:
         layout: str = "hdf5",
         image_policy: str | ImagePolicy = "none",
         crop_width: int = 7,
+        progress: ProgressCallback | None = None,
+        cancel_event: CancelEvent | None = None,
     ) -> None:
         """Write a versioned, atomic experiment snapshot.
 
         Args:
             path: Destination file or directory.
             layout: Either hdf5 or directory.
-            image_policy: none, localization_crops, track_crops, both, or full.
+            image_policy: ImagePolicy selecting no pixels, full movies, or any combination
+                of localisation, track and photon-sequence crops. both retains its
+                original localisation-plus-track meaning; all_crops includes all three.
             crop_width: Odd pixel width used when saving crops.
+            progress: Optional callback receiving structured save progress.
+            cancel_event: Optional event requesting cancellation before atomic replacement.
         """
         from ..storage import save_experiment
 
-        save_experiment(self, path, layout=layout, image_policy=image_policy, crop_width=crop_width)
+        save_experiment(
+            self,
+            path,
+            layout=layout,
+            image_policy=image_policy,
+            crop_width=crop_width,
+            progress=progress,
+            cancel_event=cancel_event,
+        )
 
     @classmethod
+    @logged
     def open(cls, path: str | Path) -> Experiment:
         """Restore eager result tables and lazy image/crop descriptors.
 
@@ -182,13 +328,31 @@ class Experiment:
 
         return open_experiment(path)
 
+    @logged
     def close(self) -> None:
         """Release image-source resources and memory caches."""
         for acquisition in self.acquisitions.values():
             acquisition.close()
 
-    def __enter__(self):
+    def __enter__(self) -> Experiment:
+        """Enter the managed resource lifetime.
+
+        Returns:
+            Computed Experiment value.
+        """
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Release managed resources on exit.
+
+        Args:
+            exc_type: Exc type used by this operation.
+            exc_value: Exc value used by this operation.
+            traceback: Traceback used by this operation.
+        """
         self.close()

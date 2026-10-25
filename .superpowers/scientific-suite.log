@@ -1,0 +1,31 @@
+trackpy.linking.linking.link_iter:  Frame 1: 0 trajectories present.
+trackpy.linking.linking.link_iter:  Frame 2: 1 trajectories present.
+trackpy.linking.linking.link_iter:  Frame 3: 0 trajectories present.
+trackpy.linking.linking.link_iter:  Frame 4: 1 trajectories present.
+======================================================================
+ERROR: test_cancel_save_before_replace (test_file_tools.FileTests.test_cancel_save_before_replace)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Piers\PycharmProjects\molcore\tests\test_file_tools.py", line 76, in test_cancel_save_before_replace
+    self.model.save(path, image_policy='full', progress=progress, cancel_event=cancel)
+TypeError: Experiment.save() got an unexpected keyword argument 'progress'
+
+======================================================================
+ERROR: test_ui_widgets (unittest.loader._FailedTest.test_ui_widgets)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_ui_widgets
+Traceback (most recent call last):
+  File "C:\Users\Piers\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\unittest\loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Piers\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\unittest\loader.py", line 339, in _get_module_from_name
+    __import__(name)
+  File "C:\Users\Piers\PycharmProjects\molcore\tests\test_ui_widgets.py", line 15, in <module>
+    from molcore.ui import (ChannelAlignmentWidget, FileToolsWidget, LocalisationWidget,
+ImportError: cannot import name 'ChannelAlignmentWidget' from 'molcore.ui' (C:\Users\Piers\PycharmProjects\molcore\src\molcore\ui\__init__.py)
+
+
+----------------------------------------------------------------------
+Ran 85 tests in 105.057s
+
+FAILED (errors=2)

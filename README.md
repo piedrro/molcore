@@ -1,10 +1,11 @@
 # MolCore
 
 Shared, GUI-independent data foundations for napari-moltrack and napari-molseeq.
-MolCore stores images, localizations, tracks, molecule observations, segmentations,
+MolCore stores images, localizations, tracks, photon sequences, observations, segmentations,
 calibrations and processing provenance. Processing modules provide
 Picasso localisation and drift estimation, affine channel alignment, and Cellpose 4
-segmentation. Tracking algorithms remain in the consuming applications.
+segmentation. Shared Trackpy linking, aperture photometry, multichannel traces and trajectory statistics
+are available as headless processors; presentation remains in the consuming applications.
 
 ## Installation
 
@@ -23,6 +24,15 @@ Ruff is kept in the development dependency group. MolCore's APIs remain independ
 of napari and GUI code.
 
 ## Basic workflow
+
+Independent frame-resolved photon/intensity sequences and all combinations of
+localisation, track and photon-sequence crop storage are described in
+[photon sequences](docs/photon-sequences.md).
+
+For embeddable Qt analysis tools, see [shared widgets](docs/shared-widgets.md) and
+run `python examples/shared_widgets.py`. Optional UI dependencies are installed
+with `pip install "molcore[ui]"`; the host supplies its Qt binding. See
+[logging and type contracts](docs/logging.md) for diagnostics and library conventions.
 
 ```python
 import numpy as np
@@ -115,6 +125,10 @@ each read, including in spawned processes.
 | `localization_crops` | Crops at active localization positions |
 | `track_crops` | Crops at measured track members |
 | `both` | Union of localization and track crops |
+| `photon_sequence_crops` | Crops at photon-sequence sample positions |
+| `localization_and_photon_crops` | Localisation and photon-sequence crops |
+| `track_and_photon_crops` | Track and photon-sequence crops |
+| `all_crops` | All three crop categories |
 | `full` | Original camera frames, stored once |
 
 Use `crop_width` to choose the saved odd pixel width. Track crops preserve measured
@@ -131,6 +145,7 @@ widths. Segmentation source images are saved independently of movie policy.
 
 Saves are single-writer snapshots replaced atomically after successful writing.
 The versioned format uses JSON metadata and typed HDF5 datasets, never pickle.
+Molcore writes format version 3 and still reads format-version-1 and -2 files.
 Processing settings and package-version manifests round-trip with the experiment.
 
 ## CPU processing
@@ -267,4 +282,18 @@ uv run python examples/foundation.py
 Tests run on Python 3.12 and 3.14. CI covers Windows and Linux. Version one supports
 2D time series, static masks, affine registration and result tables in RAM.
 Nonlinear transforms, dynamic segmentation, synchronized multi-camera streams,
-processing histories and tracking algorithms are outside this release.
+full processing histories are outside this release.
+
+## Shared scientific processing
+
+Typed settings and enum choices now support aperture photometry, stationary and
+moving multichannel traces, Trackpy linking and actual-time trajectory statistics.
+Stable-ID measurement/position updates, atomic mixed updates, partition track
+replacement, safe acquisition removal and bulk frame/coordinate conversions are
+also available. See [the scientific API guide](docs/scientific-api.md) and
+[the runnable headless example](examples/scientific.py).
+
+Autocontrast is available through `molcore.contrast.autocontrast` for arrays and
+`autocontrast_channels` for lazy acquisition channels. Typed percentile/min-max
+settings, masks and per-channel/shared display limits preserve original pixels.
+See [the scientific API guide](docs/scientific-api.md#display-autocontrast).

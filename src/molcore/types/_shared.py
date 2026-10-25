@@ -9,6 +9,8 @@ from typing import Any, Protocol, runtime_checkable
 import numpy as np
 from numpy.typing import NDArray
 
+from .._logging import logged
+
 
 class ChannelName(StrEnum):
     """Conventional channel names; custom strings remain valid everywhere."""
@@ -46,6 +48,10 @@ class ImagePolicy(StrEnum):
     LOCALIZATION_CROPS = "localization_crops"
     TRACK_CROPS = "track_crops"
     BOTH = "both"
+    PHOTON_SEQUENCE_CROPS = "photon_sequence_crops"
+    LOCALIZATION_AND_PHOTON_CROPS = "localization_and_photon_crops"
+    TRACK_AND_PHOTON_CROPS = "track_and_photon_crops"
+    ALL_CROPS = "all_crops"
     FULL = "full"
 
 
@@ -73,7 +79,8 @@ class ChannelSpec:
     frame_start: int = 0
     frame_step: int = 1
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        """Validate the immutable record after construction."""
         if self.frame_start < 0 or self.frame_step < 1:
             raise ValueError("Channel start/step must be nonnegative/positive")
         if self.roi is not None:
@@ -117,8 +124,21 @@ class ImageSource(Protocol):
     shape: tuple[int, int, int]
     dtype: np.dtype
 
-    def __getitem__(self, key: Any) -> NDArray: ...
-    def close(self) -> None: ...
+    def __getitem__(self, key: Any) -> NDArray:
+        """Getitem.
+
+        Args:
+            key: NumPy-style frame and optional spatial selection.
+
+        Returns:
+            Computed NDArray value.
+        """
+        ...
+
+    @logged
+    def close(self) -> None:
+        """Close."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -135,7 +155,8 @@ class Calibration:
     matrix: NDArray = field(default_factory=lambda: np.eye(3))
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        """Validate the immutable record after construction."""
         matrix = np.array(self.matrix, dtype=float, copy=True)
         object.__setattr__(self, "matrix", matrix)
         if (
@@ -161,6 +182,8 @@ class Crop:
         camera_frame: Original camera frame.
         origin: Upper-left (x, y) crop origin in raw channel pixels.
         localization_id: Optional localization anchor.
+        photon_sequence_id: Optional independent photon-sequence identifier.
+        sample_index: Zero-based sample within the photon sequence, when applicable.
     """
 
     pixels: NDArray
@@ -170,6 +193,8 @@ class Crop:
     camera_frame: int
     origin: tuple[int, int]  # x, y in channel space
     localization_id: int | None = None
+    photon_sequence_id: str | None = None
+    sample_index: int | None = None
 
 
 @dataclass
@@ -213,7 +238,8 @@ class Segmentation:
     mask_path: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        """Validate the immutable record after construction."""
         self.labels = np.array(self.labels, copy=True)
         if self.labels.ndim != 2 or self.labels.dtype.kind not in "biu" or np.any(self.labels < 0):
             raise ValueError("Labels must be a nonnegative integer 2D array")

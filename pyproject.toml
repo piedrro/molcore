@@ -13,12 +13,17 @@ dependencies = [
     "dask[array]",
     "h5py",
     "numpy",
+    "scikit-learn",
     "picassosr>=0.11,<0.12",
     "pyyaml",
     "scipy",
     "threadpoolctl",
+    "trackpy>=0.7,<0.8",
     "tifffile",
 ]
+
+[project.optional-dependencies]
+ui = ["qtpy>=2.4", "pyqtgraph>=0.13"]
 
 [dependency-groups]
 dev = ["ruff"]

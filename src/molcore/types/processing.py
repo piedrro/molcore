@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .._logging import logged
 from ._shared import CoordinateSpace
 
 
@@ -37,7 +38,8 @@ class CellposeSettings:
     gpu: bool = False
     use_bfloat16: bool = False
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        """Validate the immutable record after construction."""
         if not isinstance(self.pretrained_model, (str, Path)) or not str(self.pretrained_model).strip():
             raise ValueError("Specify a Cellpose 4 model name or weight path")
         object.__setattr__(self, "pretrained_model", str(self.pretrained_model))
@@ -72,7 +74,8 @@ class SegmentationRequest:
     segmentation_id: str | None = None
     space: CoordinateSpace = CoordinateSpace.RAW
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        """Validate the immutable record after construction."""
         if (
             not isinstance(self.acquisition_id, str)
             or not self.acquisition_id
@@ -124,8 +127,13 @@ class ProgressUpdate:
     description: str = ""
 
     @property
+    @logged
     def percent(self) -> float:
-        """Completion percentage, monotonically increasing within one CPU call."""
+        """Completion percentage, monotonically increasing within one CPU call.
+
+        Returns:
+            Computed float value.
+        """
         return 100.0 if self.total == 0 else 100 * self.completed / self.total
 
 
@@ -145,7 +153,8 @@ class CameraSettings:
     gain: float
     em: bool = False
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        """Validate the immutable record after construction."""
         if (
             not np.isfinite([self.baseline, self.sensitivity, self.gain]).all()
             or min(self.sensitivity, self.gain) <= 0
@@ -173,7 +182,8 @@ class LocalisationSettings:
     tolerance: float = 1e-3
     max_iterations: int = 1000
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        """Validate the immutable record after construction."""
         object.__setattr__(self, "fit_method", FitMethod(self.fit_method))
         for name in ("box_size", "chunk_size", "max_iterations"):
             value = getattr(self, name)
@@ -206,7 +216,8 @@ class DriftSettings:
     intersect_distance: float = 0.15
     search_radius: float = 0.5
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        """Validate the immutable record after construction."""
         object.__setattr__(self, "method", DriftMethod(self.method))
         if (
             isinstance(self.segment_frames, bool)

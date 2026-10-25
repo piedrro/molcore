@@ -3,22 +3,48 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from ._logging import logged
 from ._processing import backend_version, check_snapshot, executor, record, snapshot
 from .types.experiment import Experiment
 from .types.processing import CameraSettings, DetectionResult, LocalisationResult, LocalisationSettings
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
-def _empty(fitted=False):
+    from .cpu import CpuExecutor, WorkerProgress
+    from .types import CancelEvent, ProgressCallback
+
+
+def _empty(fitted: bool = False) -> dict[str, np.ndarray]:
+    """Empty.
+
+    Args:
+        fitted: Fitted used by this operation.
+
+    Returns:
+        Detached named result columns.
+    """
     names = ["x", "y", "net_gradient"]
     if fitted:
         names += ["photons", "bg", "sx", "sy", "lpx", "lpy", "ellipticity", "fit_state", "iterations"]
     return {"frame": np.array([], dtype=np.uint64), **{k: np.array([], dtype=float) for k in names}}
 
 
-def _job(payload, reporter):
+@logged
+def _job(payload: tuple, reporter: WorkerProgress) -> tuple:
+    """Job.
+
+    Args:
+        payload: Serializable worker inputs; large arrays remain bounded to a job or image chunk.
+        reporter: Worker progress and cooperative cancellation reporter.
+
+    Returns:
+        Computed tuple value.
+    """
     images, frames, settings, camera, candidates, fitting = payload
     import pandas as pd
     from picasso import localize
@@ -49,7 +75,14 @@ def _job(payload, reporter):
             )
             initial = seeds.initial_parameters_gauss(spots, settings.box_size)
 
-            def fitted(count, index=index, spots=spots):
+            def fitted(count: int, index: int = index, spots: Any = spots) -> None:
+                """Fitted.
+
+                Args:
+                    count: Number of items to allocate or process.
+                    index: Zero-based item or logical-channel frame index.
+                    spots: Spots used by this operation.
+                """
                 reporter.report(index + 0.2 + 0.7 * count / len(spots), len(frames), "Fitting localisations")
 
             theta, chi_square, states, iterations = gaussfit.fit_spots(
@@ -85,29 +118,59 @@ def _job(payload, reporter):
     return _combine(chunks, fitting), failed_fits
 
 
-def _combine(chunks, fitting):
+def _combine(chunks: tuple[int, ...] | str, fitting: bool) -> dict[str, np.ndarray]:
+    """Combine.
+
+    Args:
+        chunks: Dask chunk dimensions; None uses one camera frame per chunk.
+        fitting: Fitting used by this operation.
+
+    Returns:
+        Detached named result columns.
+    """
     chunks = [chunk for chunk in chunks if len(chunk["frame"])]
     if not chunks:
         return _empty(fitting)
     return {name: np.concatenate([chunk[name] for chunk in chunks]) for name in chunks[0]}
 
 
+@logged
 def _run(
-    experiment,
-    acquisition_id,
-    channel,
+    experiment: Experiment,
+    acquisition_id: str,
+    channel: str,
     *,
-    settings,
-    camera,
-    detections,
-    fitting,
-    frame_range,
-    apply,
-    num_cpus,
-    cpu,
-    progress,
-    cancel_event,
-):
+    settings: LocalisationSettings,
+    camera: CameraSettings | None,
+    detections: Any,
+    fitting: bool,
+    frame_range: tuple[int, int] | None,
+    apply: bool,
+    num_cpus: int | None,
+    cpu: CpuExecutor | None,
+    progress: ProgressCallback | None,
+    cancel_event: CancelEvent | None,
+) -> Iterator[Any]:
+    """Run.
+
+    Args:
+        experiment: Scientific model supplying acquisitions and result tables.
+        acquisition_id: Source acquisition identifier.
+        channel: Logical source channel name.
+        settings: Validated settings controlling this operation.
+        camera: Camera used by this operation.
+        detections: Detections used by this operation.
+        fitting: Fitting used by this operation.
+        frame_range: Optional half-open camera-frame interval.
+        apply: Whether to commit successful results to the model.
+        num_cpus: Worker process count; None uses the executor default.
+        cpu: Optional borrowed CPU executor; ownership remains with the caller.
+        progress: Optional callback receiving structured progress updates.
+        cancel_event: Optional event whose is_set() requests cooperative cancellation.
+
+    Yields:
+        Values produced by the iterator, retaining their original order.
+    """
     installed = backend_version()
     if frame_range is not None and apply:
         raise ValueError("Subset processing is a preview; pass apply=False")
@@ -142,7 +205,12 @@ def _run(
         ):
             raise ValueError("Detection positions must have a complete fit box inside the channel")
 
-    def jobs():
+    def jobs() -> Iterator[Any]:
+        """Jobs.
+
+        Yields:
+            Values produced by the iterator, retaining their original order.
+        """
         for start in range(0, len(indices), settings.chunk_size):
             selected = indices[start : start + settings.chunk_size]
             frames = view.source_frames[selected].copy()
@@ -182,6 +250,7 @@ def _run(
     return LocalisationResult(acquisition_id, str(channel), result, settings, ids, failed_fits)
 
 
+@logged
 def detect(
     experiment: Experiment,
     acquisition_id: str,
@@ -190,9 +259,9 @@ def detect(
     settings: LocalisationSettings | None = None,
     frame_range: tuple[int, int] | None = None,
     num_cpus: int | None = None,
-    cpu=None,
-    progress=None,
-    cancel_event=None,
+    cpu: CpuExecutor | None = None,
+    progress: ProgressCallback | None = None,
+    cancel_event: CancelEvent | None = None,
 ) -> DetectionResult:
     """Detect candidates in MolCore channel frames using Picasso net gradient.
 
@@ -227,6 +296,7 @@ def detect(
     )
 
 
+@logged
 def fit(
     experiment: Experiment,
     detections: DetectionResult,
@@ -235,9 +305,9 @@ def fit(
     settings: LocalisationSettings | None = None,
     apply: bool = True,
     num_cpus: int | None = None,
-    cpu=None,
-    progress=None,
-    cancel_event=None,
+    cpu: CpuExecutor | None = None,
+    progress: ProgressCallback | None = None,
+    cancel_event: CancelEvent | None = None,
 ) -> LocalisationResult:
     """Fit typed detections and optionally replace their active model partition.
 
@@ -272,6 +342,7 @@ def fit(
     )
 
 
+@logged
 def localise(
     experiment: Experiment,
     acquisition_id: str,
@@ -282,9 +353,9 @@ def localise(
     frame_range: tuple[int, int] | None = None,
     apply: bool = True,
     num_cpus: int | None = None,
-    cpu=None,
-    progress=None,
-    cancel_event=None,
+    cpu: CpuExecutor | None = None,
+    progress: ProgressCallback | None = None,
+    cancel_event: CancelEvent | None = None,
 ) -> LocalisationResult:
     """Detect and fit a MolCore channel through bounded CPU image chunks.
 

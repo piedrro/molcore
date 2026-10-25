@@ -5,13 +5,29 @@ from __future__ import annotations
 import os
 from collections import OrderedDict
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from .._logging import logged
 from ._shared import ImageUnavailableError
 
+if TYPE_CHECKING:
+    import dask.array as da
+    from numpy.typing import ArrayLike
 
-def _shape(shape):
+    from ..types import ImageSource
+
+
+def _shape(shape: tuple[int, ...]) -> tuple[int, int, int]:
+    """Shape.
+
+    Args:
+        shape: Array dimensions in time, y, x order.
+
+    Returns:
+        Computed tuple[int, int, int] value.
+    """
     shape = tuple(int(n) for n in shape)
     if len(shape) == 2:
         shape = (1, *shape)
@@ -20,7 +36,17 @@ def _shape(shape):
     return shape
 
 
-def selection(key, length):
+@logged
+def selection(key: int | slice | ArrayLike, length: int) -> tuple[np.ndarray, bool, tuple]:
+    """Selection.
+
+    Args:
+        key: NumPy-style frame and optional spatial selection.
+        length: Number of valid items in the indexed source.
+
+    Returns:
+        Computed NumPy array value.
+    """
     parts = key if isinstance(key, tuple) else (key,)
     parts = parts or (slice(None),)
     ellipses = [i for i, part in enumerate(parts) if part is Ellipsis]
@@ -58,7 +84,15 @@ def selection(key, length):
 class Source:
     """Common lazy indexing for stacks with frame-addressable pixels."""
 
-    def __getitem__(self, key) -> np.ndarray:
+    def __getitem__(self, key: int | slice | ArrayLike) -> np.ndarray:
+        """Getitem.
+
+        Args:
+            key: NumPy-style frame and optional spatial selection.
+
+        Returns:
+            Computed NumPy array value.
+        """
         indices, scalar, spatial = selection(key, self.shape[0])
         if scalar:
             return self._frame(int(indices[0]))[spatial or (...,)]
@@ -66,9 +100,11 @@ class Source:
         data = np.stack(frames) if frames else np.empty((0, *self.shape[1:]), dtype=self.dtype)
         return data[(slice(None), *spatial)]
 
+    @logged
     def close(self) -> None:
         """Sources own no persistent handles; each read closes its file."""
 
+    @logged
     def materialize(self) -> ArraySource:
         """Load this stack into RAM.
 
@@ -77,7 +113,8 @@ class Source:
         """
         return ArraySource(self[:])
 
-    def as_dask(self, chunks=None):
+    @logged
+    def as_dask(self, chunks: tuple[int, ...] | str | None = None) -> da.Array:
         """Expose deferred frame reads through Dask.
 
         Args:
@@ -102,11 +139,21 @@ class Source:
         )
 
     @property
-    def ndim(self):
-        """Number of array dimensions, always three."""
+    @logged
+    def ndim(self) -> int:
+        """Number of array dimensions, always three.
+
+        Returns:
+            Computed int value.
+        """
         return 3
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """Return the number of available items.
+
+        Returns:
+            Computed int value.
+        """
         return self.shape[0]
 
 
@@ -117,7 +164,12 @@ class ArraySource(Source):
         array: Real-valued 2D image or (time, y, x) NumPy-compatible stack.
     """
 
-    def __init__(self, array):
+    def __init__(self, array: ArrayLike) -> None:
+        """Initialise the object and validate its configuration.
+
+        Args:
+            array: Input pixel array; image stacks use time, y, x axis order.
+        """
         array = np.asarray(array)
         self.shape = _shape(array.shape)
         if array.dtype.kind not in "biuf":
@@ -125,7 +177,15 @@ class ArraySource(Source):
         self.array = array.reshape(self.shape)
         self.dtype = array.dtype
 
-    def _frame(self, index):
+    def _frame(self, index: int) -> np.ndarray:
+        """Read one original image frame from the bound source.
+
+        Args:
+            index: Zero-based item or logical-channel frame index.
+
+        Returns:
+            Computed NumPy array value.
+        """
         return self.array[index]
 
 
@@ -139,7 +199,12 @@ class TiffSource(Source):
         ValueError: The first series is not a supported 2D time stack.
     """
 
-    def __init__(self, path):
+    def __init__(self, path: str | Path) -> None:
+        """Initialise the object and validate its configuration.
+
+        Args:
+            path: Input or output filesystem path.
+        """
         import tifffile
 
         self.path = str(Path(path).resolve())
@@ -155,7 +220,15 @@ class TiffSource(Source):
             except ValueError as exc:
                 raise ValueError("TIFF must be frame-addressable or memory-mappable") from exc
 
-    def _frame(self, index):
+    def _frame(self, index: int) -> np.ndarray:
+        """Read one original image frame from the bound source.
+
+        Args:
+            index: Zero-based item or logical-channel frame index.
+
+        Returns:
+            Computed NumPy array value.
+        """
         import tifffile
 
         if not Path(self.path).is_file():
@@ -178,7 +251,13 @@ class FitsSource(Source):
         ImportError: The Astropy runtime dependency is absent.
     """
 
-    def __init__(self, path, hdu=0):
+    def __init__(self, path: str | Path, hdu: int | str = 0) -> None:
+        """Initialise the object and validate its configuration.
+
+        Args:
+            path: Input or output filesystem path.
+            hdu: Hdu used by this operation.
+        """
         try:
             from astropy.io import fits
         except ImportError as exc:
@@ -189,7 +268,15 @@ class FitsSource(Source):
             self.shape = _shape(tuple(header[f"NAXIS{i}"] for i in range(header["NAXIS"], 0, -1)))
             self.dtype = np.dtype(file[hdu].section[(slice(0, 1),) * header["NAXIS"]].dtype)
 
-    def _frame(self, index):
+    def _frame(self, index: int) -> np.ndarray:
+        """Read one original image frame from the bound source.
+
+        Args:
+            index: Zero-based item or logical-channel frame index.
+
+        Returns:
+            Computed NumPy array value.
+        """
         from astropy.io import fits
 
         if not Path(self.path).is_file():
@@ -207,7 +294,13 @@ class HDF5Source(Source):
         dataset: Absolute dataset name containing a 2D image or 3D time stack.
     """
 
-    def __init__(self, path, dataset):
+    def __init__(self, path: str | Path, dataset: str | None) -> None:
+        """Initialise the object and validate its configuration.
+
+        Args:
+            path: Input or output filesystem path.
+            dataset: Dataset used by this operation.
+        """
         import h5py
 
         self.path, self.dataset = str(Path(path).resolve()), dataset
@@ -215,7 +308,15 @@ class HDF5Source(Source):
             self.shape = _shape(file[dataset].shape)
             self.dtype = file[dataset].dtype
 
-    def _frame(self, index):
+    def _frame(self, index: int) -> np.ndarray:
+        """Read one original image frame from the bound source.
+
+        Args:
+            index: Zero-based item or logical-channel frame index.
+
+        Returns:
+            Computed NumPy array value.
+        """
         import h5py
 
         if not Path(self.path).is_file():
@@ -234,10 +335,27 @@ class MissingSource(Source):
         reason: Explanation included when a pixel read is attempted.
     """
 
-    def __init__(self, shape, dtype, reason="Raw images were not saved"):
+    def __init__(
+        self, shape: tuple[int, ...], dtype: np.dtype | str, reason: str = "Raw images were not saved"
+    ) -> None:
+        """Initialise the object and validate its configuration.
+
+        Args:
+            shape: Array dimensions in time, y, x order.
+            dtype: NumPy-compatible element dtype.
+            reason: Reason used by this operation.
+        """
         self.shape, self.dtype, self.reason = _shape(shape), np.dtype(dtype), reason
 
-    def _frame(self, index):
+    def _frame(self, index: int) -> np.ndarray:
+        """Read one original image frame from the bound source.
+
+        Args:
+            index: Zero-based item or logical-channel frame index.
+
+        Returns:
+            Computed NumPy array value.
+        """
         raise ImageUnavailableError(self.reason)
 
 
@@ -249,7 +367,13 @@ class CachedSource(Source):
         max_bytes: Maximum cached pixel bytes; oversized frames bypass the cache.
     """
 
-    def __init__(self, source, max_bytes=64 * 1024 * 1024):
+    def __init__(self, source: ImageSource, max_bytes: int = 64 * 1024 * 1024) -> None:
+        """Initialise the object and validate its configuration.
+
+        Args:
+            source: Image source providing lazy frame access.
+            max_bytes: Max bytes used by this operation.
+        """
         if max_bytes < 0:
             raise ValueError("Cache budget must be nonnegative")
         self.source, self.max_bytes = source, int(max_bytes)
@@ -257,11 +381,24 @@ class CachedSource(Source):
         self._cache, self._pid = OrderedDict(), os.getpid()
 
     @property
-    def cached_bytes(self):
-        """Number of pixel bytes currently held by this process's cache."""
+    @logged
+    def cached_bytes(self) -> int:
+        """Number of pixel bytes currently held by this process's cache.
+
+        Returns:
+            Computed int value.
+        """
         return sum(frame.nbytes for frame in self._cache.values())
 
-    def _frame(self, index):
+    def _frame(self, index: int) -> np.ndarray:
+        """Read one original image frame from the bound source.
+
+        Args:
+            index: Zero-based item or logical-channel frame index.
+
+        Returns:
+            Computed NumPy array value.
+        """
         if self._pid != os.getpid():
             self._cache.clear()
             self._pid = os.getpid()
@@ -277,9 +414,16 @@ class CachedSource(Source):
         self._cache[index] = frame
         return frame
 
-    def __getstate__(self):
+    def __getstate__(self) -> dict[str, Any]:
+        """Getstate.
+
+        Returns:
+            Computed dict[str, Any] value.
+        """
         return {**self.__dict__, "_cache": OrderedDict()}
 
-    def close(self):
+    @logged
+    def close(self) -> None:
+        """Close."""
         self._cache.clear()
         self.source.close()

@@ -7,19 +7,43 @@ import os
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import h5py
 import numpy as np
 
+from ._logging import logged
 from .crops import validate_width
 from .types._shared import Calibration, ChannelSpec, Crop, ImagePolicy, Segmentation
 from .types.images import CachedSource, FitsSource, HDF5Source, MissingSource, TiffSource
+from .types.photons import PhotonSequence
 
-FORMAT_VERSION = 1
+if TYPE_CHECKING:
+    from .types import Experiment, ImageSource
+    from .types.scientific import CancelEvent, ProgressCallback
+
+FORMAT_VERSION = 3
 
 
-def _json(value):
-    def convert(item):
+def _json(value: Any) -> str:
+    """Json.
+
+    Args:
+        value: Value supplied by the caller or connected control.
+
+    Returns:
+        Computed str value.
+    """
+
+    def convert(item: Any) -> Any:
+        """Convert.
+
+        Args:
+            item: Item used by this operation.
+
+        Returns:
+            JSON-compatible representation of the input value.
+        """
         if isinstance(item, np.ndarray):
             return item.tolist()
         if isinstance(item, np.generic):
@@ -31,8 +55,14 @@ def _json(value):
     return json.dumps(value, default=convert, ensure_ascii=False, allow_nan=False)
 
 
-def _write_columns(group, data):
+def _write_columns(group: Any, data: dict[str, np.ndarray]) -> None:
     # Numeric dataset names allow arbitrary user column names, including '/'.
+    """Write columns.
+
+    Args:
+        group: Group used by this operation.
+        data: Named arrays to read, combine or serialize.
+    """
     for index, (name, values) in enumerate(data.items()):
         values = np.asarray(values)
         if values.dtype.kind == "U":
@@ -44,7 +74,15 @@ def _write_columns(group, data):
         ds.attrs["name"], ds.attrs["numpy_dtype"] = name, values.dtype.str
 
 
-def _read_columns(group):
+def _read_columns(group: Any) -> dict[str, np.ndarray]:
+    """Read columns.
+
+    Args:
+        group: Group used by this operation.
+
+    Returns:
+        Detached named result columns.
+    """
     result = {}
     for ds in group.values():
         dtype = np.dtype(ds.attrs["numpy_dtype"])
@@ -52,7 +90,17 @@ def _read_columns(group):
     return result
 
 
-def _external(source, directory, destination):
+def _external(source: ImageSource, directory: Path | None, destination: Path) -> dict[str, Any] | None:
+    """External.
+
+    Args:
+        source: Image source providing lazy frame access.
+        directory: Base directory for resolving external image references.
+        destination: Resolved destination used for atomic output replacement.
+
+    Returns:
+        Result retaining the input format or backend-specific representation.
+    """
     while isinstance(source, CachedSource):
         source = source.source
     if not isinstance(source, (TiffSource, FitsSource, HDF5Source)):
@@ -71,7 +119,20 @@ def _external(source, directory, destination):
     return spec
 
 
-def _load_external(spec, directory, shape, dtype):
+def _load_external(
+    spec: ChannelSpec, directory: Path | None, shape: tuple[int, ...], dtype: np.dtype | str
+) -> ImageSource:
+    """Load external.
+
+    Args:
+        spec: Spec used by this operation.
+        directory: Base directory for resolving external image references.
+        shape: Array dimensions in time, y, x order.
+        dtype: NumPy-compatible element dtype.
+
+    Returns:
+        Result retaining the input format or backend-specific representation.
+    """
     path = (directory / spec["path"]).resolve()
     if not path.is_file():
         return MissingSource(shape, dtype, f"External images unavailable: {path}")
@@ -89,11 +150,32 @@ def _load_external(spec, directory, shape, dtype):
     return source
 
 
-def _write_crops(file, experiment, policy, width):
+def _write_crops(file: Any, experiment: Experiment, policy: str, width: int) -> list[int]:
+    """Write crops.
+
+    Args:
+        file: File used by this operation.
+        experiment: Scientific model supplying acquisitions and result tables.
+        policy: Policy used by this operation.
+        width: Odd crop width in camera pixels.
+
+    Returns:
+        Result retaining the input format or backend-specific representation.
+    """
     ids = set()
-    if policy in (ImagePolicy.LOCALIZATION_CROPS, ImagePolicy.BOTH):
+    if policy in (
+        ImagePolicy.LOCALIZATION_CROPS,
+        ImagePolicy.BOTH,
+        ImagePolicy.LOCALIZATION_AND_PHOTON_CROPS,
+        ImagePolicy.ALL_CROPS,
+    ):
         ids.update(int(i) for i in experiment.localizations._data.get("id", []))
-    if policy in (ImagePolicy.TRACK_CROPS, ImagePolicy.BOTH):
+    if policy in (
+        ImagePolicy.TRACK_CROPS,
+        ImagePolicy.BOTH,
+        ImagePolicy.TRACK_AND_PHOTON_CROPS,
+        ImagePolicy.ALL_CROPS,
+    ):
         for members in experiment.tracks._members.values():
             ids.update(int(i) for i in members)
     if not ids:
@@ -127,7 +209,124 @@ def _write_crops(file, experiment, policy, width):
     return ids
 
 
-def save_experiment(experiment, path, *, layout="hdf5", image_policy="none", crop_width=7):
+def _write_photon_sequences(file: h5py.File, experiment: Experiment) -> None:
+    """Serialize independent sequence samples independently of image policies.
+
+    Args:
+        file: Staged destination HDF5 file.
+        experiment: Owner providing photon-sequence records and validity.
+    """
+    root = file.create_group("photon_sequences")
+    root.attrs["revision"] = experiment.photon_sequences.revision
+    for index, sequence in enumerate(experiment.photon_sequences.query(include_stale=True)):
+        group = root.create_group(str(index))
+        group.attrs["info"] = _json(
+            dict(
+                id=sequence.id,
+                acquisition_id=sequence.acquisition_id,
+                channel=sequence.channel,
+                unit=sequence.unit,
+                method=sequence.method,
+                depends_on_transforms=sequence.depends_on_transforms,
+                depends_on_localizations=sequence.depends_on_localizations,
+                molecule_id=sequence.molecule_id,
+                run_id=sequence.run_id,
+                localization_id=sequence.localization_id,
+                track_id=sequence.track_id,
+                metadata=sequence.metadata,
+                stale=experiment.photon_sequences.is_stale(sequence.id),
+            )
+        )
+        for name in ("frames", "photons", "timestamps", "valid", "positions", "localization_ids"):
+            value = getattr(sequence, name)
+            if value is not None:
+                group.create_dataset(name, data=value)
+        _write_columns(group.create_group("measurements"), sequence.measurements)
+
+
+def _write_photon_crops(
+    file: h5py.File, experiment: Experiment, policy: ImagePolicy, width: int, cancel_event: CancelEvent | None
+) -> list[tuple[str, int]]:
+    """Stream selected photon-sequence crops while retaining sample provenance.
+
+    Args:
+        file: Staged HDF5 output.
+        experiment: Model supplying sequence positions and source pixels.
+        policy: Selected microscopy-pixel inclusion policy.
+        width: Odd crop width in channel pixels.
+        cancel_event: Optional cooperative cancellation event.
+
+    Returns:
+        Sequence/sample keys in saved pixel-row order.
+    """
+    from .files import report
+
+    if policy not in (
+        ImagePolicy.PHOTON_SEQUENCE_CROPS,
+        ImagePolicy.LOCALIZATION_AND_PHOTON_CROPS,
+        ImagePolicy.TRACK_AND_PHOTON_CROPS,
+        ImagePolicy.ALL_CROPS,
+    ):
+        return []
+    sequences = experiment.photon_sequences.query(include_stale=True)
+    for sequence in sequences:
+        if sequence.positions is None:
+            raise ValueError(f"Photon sequence {sequence.id!r} has no crop positions")
+    count = sum(int(np.isfinite(s.positions).all(axis=1).sum()) for s in sequences)
+    if not count:
+        return []
+    group = file.create_group("photon_crops")
+    group.attrs["width"] = width
+    dtype = np.result_type(*(experiment.acquisitions[s.acquisition_id].source.dtype for s in sequences))
+    pixels = group.create_dataset(
+        "pixels", (count, width, width), dtype=dtype, chunks=(1, width, width), compression="gzip"
+    )
+    valid = group.create_dataset(
+        "valid", (count, width, width), dtype=bool, chunks=(1, width, width), compression="gzip"
+    )
+    keys, frames, origins, acquisitions, channels, anchors = [], [], [], [], [], []
+    for sequence in sequences:
+        for index, crop in enumerate(
+            experiment.crops.photon_sequence(sequence.id, width=width, include_stale=True)
+        ):
+            report(None, cancel_event)
+            if crop is None:
+                continue
+            row = len(keys)
+            pixels[row], valid[row] = crop.pixels, crop.valid
+            keys.append((sequence.id, index))
+            frames.append(crop.camera_frame)
+            origins.append(crop.origin)
+            acquisitions.append(crop.acquisition_id)
+            channels.append(crop.channel)
+            anchors.append(crop.localization_id or 0)
+    for name, values in (
+        ("sequence_ids", [key[0] for key in keys]),
+        ("acquisitions", acquisitions),
+        ("channels", channels),
+    ):
+        group.create_dataset(name, data=np.asarray(values, dtype=object), dtype=h5py.string_dtype())
+    for name, values in (
+        ("sample_indices", [key[1] for key in keys]),
+        ("frames", frames),
+        ("origins", origins),
+        ("ids", anchors),
+    ):
+        group.create_dataset(name, data=np.asarray(values, dtype=np.uint64 if name == "ids" else np.int64))
+    return keys
+
+
+@logged
+def save_experiment(
+    experiment: Experiment,
+    path: str | Path,
+    *,
+    layout: str | None = "hdf5",
+    image_policy: str = "none",
+    crop_width: int = 7,
+    progress: ProgressCallback | None = None,
+    cancel_event: CancelEvent | None = None,
+) -> None:
     """Write an experiment snapshot without modifying the previous snapshot on failure.
 
     Args:
@@ -136,11 +335,16 @@ def save_experiment(experiment, path, *, layout="hdf5", image_policy="none", cro
         layout: hdf5 embeds selected content; directory may reference external images.
         image_policy: Raw-image inclusion policy.
         crop_width: Positive odd pixel width for saved crops.
+        progress: Optional callback receiving structured save progress.
+        cancel_event: Optional event requesting cancellation before atomic replacement.
 
     Raises:
         ValueError: Layout, metadata or crop settings are invalid.
         OSError: Writing or atomic replacement fails.
     """
+    from .files import report
+
+    report(progress, cancel_event, 0, 1, "Saving experiment")
     if layout not in ("hdf5", "directory"):
         raise ValueError("Layout must be hdf5 or directory")
     policy = ImagePolicy(image_policy)
@@ -159,6 +363,7 @@ def save_experiment(experiment, path, *, layout="hdf5", image_policy="none", cro
             file.attrs["processing"] = _json(asdict(experiment.processing))
             acquisitions = file.create_group("acquisitions")
             for index, acquisition in enumerate(experiment.acquisitions.values()):
+                report(None, cancel_event)
                 group = acquisitions.create_group(str(index))
                 info = {
                     "id": acquisition.id,
@@ -184,6 +389,7 @@ def save_experiment(experiment, path, *, layout="hdf5", image_policy="none", cro
                         compression="gzip",
                     )
                     for frame in range(n):
+                        report(progress, cancel_event, frame, max(1, n), f"Saving images: {acquisition.id}")
                         dataset[frame] = acquisition.source[frame]
                 elif layout == "directory":
                     info["external"] = _external(acquisition.source, destination.parent, destination)
@@ -226,6 +432,7 @@ def save_experiment(experiment, path, *, layout="hdf5", image_policy="none", cro
                 group.create_dataset("displacement", data=displacement)
             segmentations = file.create_group("segmentations")
             for index, segmentation in enumerate(experiment.segmentations.values()):
+                report(None, cancel_event)
                 group = segmentations.create_group(str(index))
                 info = {k: v for k, v in vars(segmentation).items() if k not in ("labels", "source_image")}
                 group.attrs["info"] = _json(info)
@@ -233,7 +440,10 @@ def save_experiment(experiment, path, *, layout="hdf5", image_policy="none", cro
                 if segmentation.source_image is not None:
                     group.create_dataset("source", data=segmentation.source_image, compression="gzip")
             saved_crop_ids = _write_crops(file, experiment, policy, crop_width)
+            _write_photon_sequences(file, experiment)
+            saved_photon_keys = _write_photon_crops(file, experiment, policy, crop_width, cancel_event)
             file.flush()
+        report(progress, cancel_event, 1, 1, "Committing experiment snapshot")
         os.replace(temp_name, destination)
         # A replaced snapshot has new crop row indices and possibly no images.
         experiment.crops._saved = {
@@ -243,6 +453,13 @@ def save_experiment(experiment, path, *, layout="hdf5", image_policy="none", cro
         }
         for index, localization_id in enumerate(saved_crop_ids):
             experiment.crops._saved[localization_id, crop_width] = (str(destination), index)
+        experiment.crops._photon_saved = {
+            key: value
+            for key, value in experiment.crops._photon_saved.items()
+            if Path(value[0]).resolve() != destination
+        }
+        for index, (sequence_id, sample_index) in enumerate(saved_photon_keys):
+            experiment.crops._photon_saved[sequence_id, sample_index, crop_width] = (str(destination), index)
         for index, acquisition in enumerate(experiment.acquisitions.values()):
             source = acquisition.source
             while isinstance(source, CachedSource):
@@ -258,7 +475,8 @@ def save_experiment(experiment, path, *, layout="hdf5", image_policy="none", cro
             Path(temp_name).unlink()
 
 
-def open_experiment(path):
+@logged
+def open_experiment(path: str | Path) -> Experiment:
     """Open a supported snapshot, eagerly restoring tables and lazily reading pixels.
 
     Args:
@@ -277,7 +495,11 @@ def open_experiment(path):
     if path.is_dir():
         path = path / "experiment.h5"
     with h5py.File(path, "r") as file:
-        if file.attrs.get("format") != "molcore" or file.attrs.get("format_version") != FORMAT_VERSION:
+        if file.attrs.get("format") != "molcore" or file.attrs.get("format_version") not in (
+            1,
+            2,
+            FORMAT_VERSION,
+        ):
             raise ValueError("Unsupported MolCore format/version")
         experiment = Experiment(metadata=json.loads(file.attrs["metadata"]))
         processing = json.loads(file.attrs["processing"])
@@ -340,21 +562,48 @@ def open_experiment(path):
             width = int(file["crops"].attrs["width"])
             for index, localization_id in enumerate(file["crops/ids"][:]):
                 experiment.crops._saved[int(localization_id), width] = (str(path), index)
+        if "photon_sequences" in file:
+            for group in file["photon_sequences"].values():
+                info = json.loads(group.attrs["info"])
+                stale = info.pop("stale", False)
+                sequence = PhotonSequence(
+                    **info,
+                    frames=group["frames"][:],
+                    photons=group["photons"][:],
+                    timestamps=group["timestamps"][:],
+                    valid=group["valid"][:],
+                    positions=group["positions"][:] if "positions" in group else None,
+                    localization_ids=group["localization_ids"][:] if "localization_ids" in group else None,
+                    measurements=_read_columns(group["measurements"]) if "measurements" in group else {},
+                )
+                experiment.photon_sequences._data[sequence.id] = sequence
+                if stale:
+                    experiment.photon_sequences._stale.add(sequence.id)
+            experiment.photon_sequences.revision = int(file["photon_sequences"].attrs["revision"])
+        if "photon_crops" in file:
+            group = file["photon_crops"]
+            width = int(group.attrs["width"])
+            for index, (sequence_id, sample_index) in enumerate(
+                zip(group["sequence_ids"].asstr()[:], group["sample_indices"][:], strict=True)
+            ):
+                experiment.crops._photon_saved[sequence_id, int(sample_index), width] = (str(path), index)
     return experiment
 
 
-def read_crop(path, index):
+@logged
+def read_crop(path: str | Path, index: int, *, group_name: str = "crops") -> Crop:
     """Read one saved crop without loading neighbouring crop pixels.
 
     Args:
         path: Snapshot containing a crop dataset.
         index: Row index in the saved crop dataset.
+        group_name: Localisation or independent photon crop dataset group.
 
     Returns:
         Crop with raw-channel origin, validity and source provenance.
     """
     with h5py.File(path, "r") as file:
-        group = file["crops"]
+        group = file[group_name]
         return Crop(
             group["pixels"][index],
             group["valid"][index],
@@ -362,5 +611,7 @@ def read_crop(path, index):
             group["channels"].asstr()[index],
             int(group["frames"][index]),
             tuple(int(v) for v in group["origins"][index]),
-            int(group["ids"][index]),
+            int(group["ids"][index]) or None,
+            group["sequence_ids"].asstr()[index] if "sequence_ids" in group else None,
+            int(group["sample_indices"][index]) if "sample_indices" in group else None,
         )

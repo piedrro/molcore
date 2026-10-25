@@ -8,15 +8,27 @@ import queue
 import time
 from collections.abc import Callable, Iterable, Sized
 from concurrent.futures import FIRST_COMPLETED, CancelledError, ProcessPoolExecutor, wait
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from ._logging import logged
 from .types.processing import ProgressUpdate
+
+if TYPE_CHECKING:
+    from types import TracebackType
+
+    from .types import CancelEvent
 
 _EVENTS = None
 _STOP = None
 
 
-def _initialize(events, stop):
+def _initialize(events: Any, stop: Any) -> None:
+    """Initialize.
+
+    Args:
+        events: Multiprocessing queue carrying structured progress events.
+        stop: Shared cancellation event observed by spawned workers.
+    """
     global _EVENTS, _STOP
     _EVENTS, _STOP = events, stop
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMBA_NUM_THREADS"):
@@ -32,15 +44,23 @@ class WorkerProgress:
         job_id: Job position in its input stream.
     """
 
-    def __init__(self, run_id: int, job_id: int):
+    def __init__(self, run_id: int, job_id: int) -> None:
+        """Initialise the object and validate its configuration.
+
+        Args:
+            run_id: Identifier distinguishing this processing run from previous results.
+            job_id: Zero-based position of this job in the submitted input stream.
+        """
         self.run_id, self.job_id = run_id, job_id
         self._last = 0.0
 
+    @logged
     def check_cancelled(self) -> None:
         """Raise CancelledError when the calling process requests cancellation."""
         if _STOP.is_set():
             raise CancelledError("CPU processing cancelled")
 
+    @logged
     def report(self, completed: float, total: float, description: str = "") -> None:
         """Report fractional progress and check cooperative cancellation.
 
@@ -57,7 +77,18 @@ class WorkerProgress:
             self._last = now
 
 
-def _execute(function, payload, run_id, job_id):
+def _execute(function: Callable[..., Any], payload: tuple, run_id: str, job_id: int) -> Any:
+    """Execute.
+
+    Args:
+        function: Function used by this operation.
+        payload: Serializable worker inputs; large arrays remain bounded to a job or image chunk.
+        run_id: Identifier distinguishing this processing run from previous results.
+        job_id: Zero-based position of this job in the submitted input stream.
+
+    Returns:
+        Result retaining the input format or backend-specific representation.
+    """
     from threadpoolctl import threadpool_limits
 
     reporter = WorkerProgress(run_id, job_id)
@@ -81,7 +112,13 @@ class CpuExecutor:
         A single configured CPU still runs in a spawned child process.
     """
 
-    def __init__(self, num_cpus: int | None = None, *, max_pending: int | None = None):
+    def __init__(self, num_cpus: int | None = None, *, max_pending: int | None = None) -> None:
+        """Initialise the object and validate its configuration.
+
+        Args:
+            num_cpus: Worker process count; None uses the executor default.
+            max_pending: Max pending used by this operation.
+        """
         available = getattr(os, "process_cpu_count", os.cpu_count)() or 1
         default = max(1, available - 1)
         if os.name == "nt":
@@ -96,7 +133,8 @@ class CpuExecutor:
         self._pool = self._events = self._stop = None
         self._run_id, self._busy = 0, False
 
-    def _ensure_pool(self):
+    def _ensure_pool(self) -> None:
+        """Ensure pool."""
         if self._pool is None:
             context = mp.get_context("spawn")
             self._events, self._stop = context.Queue(), context.Event()
@@ -107,6 +145,7 @@ class CpuExecutor:
                 initargs=(self._events, self._stop),
             )
 
+    @logged
     def map(
         self,
         function: Callable,
@@ -114,7 +153,7 @@ class CpuExecutor:
         *,
         total: int | None = None,
         progress: Callable[[ProgressUpdate], None] | None = None,
-        cancel_event=None,
+        cancel_event: CancelEvent | None = None,
     ) -> list[Any]:
         """Execute bounded jobs, forwarding partial progress and returning input order.
 
@@ -142,7 +181,8 @@ class CpuExecutor:
         if isinstance(total, bool) or not isinstance(total, int) or total < 0:
             raise ValueError("Total must be a nonnegative integer")
 
-        def check():
+        def check() -> None:
+            """Check."""
             if cancel_event is not None and cancel_event.is_set():
                 raise CancelledError("CPU processing cancelled")
 
@@ -158,7 +198,12 @@ class CpuExecutor:
         fractions, results = [0.0] * total, [None] * total
         iterator, pending, submitted, done_count = iter(jobs), {}, 0, 0
 
-        def emit(description):
+        def emit(description: str) -> None:
+            """Emit.
+
+            Args:
+                description: Human-readable description of the current processing stage.
+            """
             if progress:
                 progress(ProgressUpdate(sum(fractions), total, description))
 
@@ -209,6 +254,7 @@ class CpuExecutor:
         finally:
             self._busy = False
 
+    @logged
     def close(self) -> None:
         """Wait for workers and release all process/queue resources."""
         if self._pool is not None:
@@ -223,8 +269,25 @@ class CpuExecutor:
             self._events.join_thread()
             self._events = self._stop = None
 
-    def __enter__(self):
+    def __enter__(self) -> CpuExecutor:
+        """Enter the managed resource lifetime.
+
+        Returns:
+            Computed CpuExecutor value.
+        """
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Release managed resources on exit.
+
+        Args:
+            exc_type: Exc type used by this operation.
+            exc_value: Exc value used by this operation.
+            traceback: Traceback used by this operation.
+        """
         self.close()

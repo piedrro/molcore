@@ -4,11 +4,21 @@ from __future__ import annotations
 
 from copy import deepcopy
 from types import MappingProxyType
+from typing import TYPE_CHECKING
 
 import numpy as np
 
+from ._locking import model_locked
+from ._logging import logged
 from .types._shared import Calibration, CoordinateSpace
 from .types.images import Source
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from numpy.typing import ArrayLike
+
+    from .types import Experiment
 
 
 class TransformManager:
@@ -18,20 +28,38 @@ class TransformManager:
         experiment: Owner used to validate references and invalidate measurements.
     """
 
-    def __init__(self, experiment):
+    def __init__(self, experiment: Experiment) -> None:
+        """Initialise the object and validate its configuration.
+
+        Args:
+            experiment: Scientific model supplying acquisitions and result tables.
+        """
         self.experiment = experiment
         self._calibrations, self._selected, self._drift = {}, {}, {}
         self.revision = 0
 
     @property
-    def calibrations(self):
-        """Read-only mapping of named registration calibrations."""
+    @logged
+    def calibrations(self) -> Mapping[str, Calibration]:
+        """Read-only mapping of named registration calibrations.
+
+        Returns:
+            Computed Mapping[str, Calibration] value.
+        """
         return MappingProxyType(self._calibrations)
 
-    def _changed(self, acquisition_id):
+    def _changed(self, acquisition_id: str) -> None:
+        """Changed.
+
+        Args:
+            acquisition_id: Source acquisition identifier.
+        """
         self.revision += 1
+        self.experiment.photon_sequences._invalidate(acquisition_id=acquisition_id)
         self.experiment.observations._invalidate_partition(acquisition_id)
 
+    @model_locked
+    @logged
     def add_calibration(self, calibration: Calibration) -> None:
         """Store a named calibration without selecting it automatically.
 
@@ -45,6 +73,8 @@ class TransformManager:
             if name == calibration.name:
                 self._changed(acquisition)
 
+    @model_locked
+    @logged
     def select(self, acquisition_id: str, channel: str, calibration_name: str) -> None:
         """Choose registration into a shared reference coordinate system.
 
@@ -60,7 +90,11 @@ class TransformManager:
         self._selected[acquisition_id, channel] = calibration_name
         self._changed(acquisition_id)
 
-    def set_drift(self, acquisition_id, displacement, *, frames=None):
+    @model_locked
+    @logged
+    def set_drift(
+        self, acquisition_id: str, displacement: ArrayLike, *, frames: ArrayLike | None = None
+    ) -> None:
         """Set observed (dx, dy) drift in reference pixels at explicit frames.
 
         Args:
@@ -86,11 +120,29 @@ class TransformManager:
         self._drift[acquisition_id] = (frames[order].copy(), displacement[order].copy())
         self._changed(acquisition_id)
 
-    def _registration(self, acquisition_id, channel):
+    def _registration(self, acquisition_id: str, channel: str) -> np.ndarray:
+        """Registration.
+
+        Args:
+            acquisition_id: Source acquisition identifier.
+            channel: Logical source channel name.
+
+        Returns:
+            Computed NumPy array value.
+        """
         name = self._selected.get((acquisition_id, channel))
         return np.eye(3) if name is None else self._calibrations[name].matrix.copy()
 
-    def _displacement(self, acquisition_id, frames):
+    def _displacement(self, acquisition_id: str, frames: ArrayLike | None) -> np.ndarray:
+        """Displacement.
+
+        Args:
+            acquisition_id: Source acquisition identifier.
+            frames: Original camera-frame indices for the selected samples.
+
+        Returns:
+            Computed NumPy array value.
+        """
         if acquisition_id not in self._drift:
             return np.zeros((len(frames), 2))
         available, displacement = self._drift[acquisition_id]
@@ -103,7 +155,15 @@ class TransformManager:
             raise ValueError("No drift supplied at requested camera frames; extrapolation is disabled")
         return displacement[indices]
 
-    def matrix(self, acquisition_id, channel, camera_frame, *, space="corrected"):
+    @logged
+    def matrix(
+        self,
+        acquisition_id: str,
+        channel: str,
+        camera_frame: int,
+        *,
+        space: CoordinateSpace | str = "corrected",
+    ) -> np.ndarray:
         """Return the raw-channel to requested-coordinate affine matrix.
 
         Args:
@@ -122,7 +182,10 @@ class TransformManager:
             matrix[:2, 2] -= self._displacement(acquisition_id, np.array([camera_frame]))[0]
         return matrix
 
-    def coordinates(self, rows, *, space="corrected"):
+    @logged
+    def coordinates(
+        self, rows: dict[str, np.ndarray], *, space: CoordinateSpace | str = "corrected"
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Transform effective raw localization coordinates without editing them.
 
         Args:
@@ -144,7 +207,55 @@ class TransformManager:
                 result[selected] -= self._displacement(a, rows["frame"][selected])
         return result[:, 0], result[:, 1]
 
-    def into_channel(self, rows, channel):
+    @logged
+    def convert_coordinates(
+        self,
+        rows: dict[str, np.ndarray],
+        *,
+        source_space: CoordinateSpace = CoordinateSpace.RAW,
+        target_space: CoordinateSpace = CoordinateSpace.RAW,
+        target_channel: str | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Convert 1D position columns between spaces and optionally channels.
+
+        Positions are bound to each row's original camera frame. Cross-channel
+        conversion uses registration even when both spaces are raw. No image is
+        resampled. Frames must exist in both source and target channels.
+
+        Args:
+            rows: Named measurement arrays retaining stable IDs and source-frame provenance.
+            source_space: Source space used by this operation.
+            target_space: Target space used by this operation.
+            target_channel: Logical target channel in the same acquisition.
+
+        Returns:
+            Computed tuple[NumPy array, NumPy array] value.
+        """
+        source_space, target_space = CoordinateSpace(source_space), CoordinateSpace(target_space)
+        required = ("x", "y", "frame", "channel", "acquisition_id")
+        arrays = {name: np.asarray(rows[name]) for name in required}
+        n = len(arrays["x"])
+        if any(v.ndim != 1 or len(v) != n for v in arrays.values()):
+            raise ValueError("Coordinate columns must have matching 1D shapes")
+        if arrays["frame"].dtype.kind not in "iu" or np.any(arrays["frame"] < 0):
+            raise ValueError("Camera frames must be nonnegative integers")
+        points = np.column_stack([arrays["x"], arrays["y"]]).astype(float)
+        if not np.isfinite(points).all():
+            raise ValueError("Coordinates must be finite")
+        output = np.empty_like(points)
+        for i in range(n):
+            a, c, frame = arrays["acquisition_id"][i], arrays["channel"][i], arrays["frame"][i]
+            target = c if target_channel is None else target_channel
+            source_matrix = self.matrix(a, c, frame, space=source_space)
+            destination = self.matrix(a, target, frame, space=target_space)
+            raw = np.linalg.solve(source_matrix, [*points[i], 1.0])
+            if target != c:
+                raw = np.linalg.solve(self._registration(a, target), self._registration(a, c) @ raw)
+            output[i] = (destination @ raw)[:2]
+        return output[:, 0], output[:, 1]
+
+    @logged
+    def into_channel(self, rows: dict[str, np.ndarray], channel: str) -> tuple[np.ndarray, np.ndarray]:
         """Map raw coordinates through the reference into another channel.
 
         Args:
@@ -162,7 +273,16 @@ class TransformManager:
             result[selected] = result[selected] @ matrix[:2, :2].T + matrix[:2, 2]
         return result[:, 0], result[:, 1]
 
-    def image(self, acquisition_id, channel, camera_frame, *, space="corrected", labels=False):
+    @logged
+    def image(
+        self,
+        acquisition_id: str,
+        channel: str,
+        camera_frame: int,
+        *,
+        space: CoordinateSpace | str = "corrected",
+        labels: bool = False,
+    ) -> np.ndarray:
         """Resample only one requested frame using inverse coordinate mapping.
 
         Args:
@@ -195,7 +315,10 @@ class TransformManager:
             cval=0,
         ).reshape(image.shape)
 
-    def view(self, acquisition_id, channel, *, space="corrected"):
+    @logged
+    def view(
+        self, acquisition_id: str, channel: str, *, space: CoordinateSpace | str = "corrected"
+    ) -> Source:
         """Create a lazy, Dask-compatible transformed channel view.
 
         Args:
@@ -212,13 +335,31 @@ class TransformManager:
 class TransformedView(Source):
     """Lazy frame resampling using a TransformManager."""
 
-    def __init__(self, manager, acquisition_id, channel, space):
+    def __init__(
+        self, manager: TransformManager, acquisition_id: str, channel: str, space: CoordinateSpace | str
+    ) -> None:
+        """Initialise the object and validate its configuration.
+
+        Args:
+            manager: Manager used by this operation.
+            acquisition_id: Source acquisition identifier.
+            channel: Logical source channel name.
+            space: Coordinate space: raw channel pixels, registered reference or drift-corrected reference.
+        """
         self.manager, self.acquisition_id, self.channel = manager, acquisition_id, channel
         self.space = CoordinateSpace(space)
         self.source = manager.experiment.acquisitions[acquisition_id].channels[channel]
         self.shape, self.dtype = self.source.shape, np.dtype(float)
 
-    def _frame(self, index):
+    def _frame(self, index: int) -> np.ndarray:
+        """Read one original image frame from the bound source.
+
+        Args:
+            index: Zero-based item or logical-channel frame index.
+
+        Returns:
+            Computed NumPy array value.
+        """
         return self.manager.image(
             self.acquisition_id, self.channel, int(self.source.source_frames[index]), space=self.space
         )
