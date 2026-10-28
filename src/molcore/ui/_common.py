@@ -164,14 +164,14 @@ class SelectionPanel(QWidget):
         """Initialise the object and validate its configuration.
 
         Args:
-            session: Shared host-owned experiment, selection and background-job coordinator.
+            session: Shared host-owned dataset, selection and background-job coordinator.
             parent: Optional Qt parent controlling widget lifetime.
         """
         super().__init__(parent)
         self.session = session
         form = QFormLayout(self)
         self.acquisition, self.channel, self.sequence = QComboBox(), QComboBox(), QComboBox()
-        self.space = combo(["raw", "registered", "corrected"])
+        self.dataset = QComboBox()
         self.frame = QSpinBox()
         self.frame.setRange(0, 0)
         self.frame_label = QLabel()
@@ -179,22 +179,23 @@ class SelectionPanel(QWidget):
         self.cpus.setRange(0, 61 if __import__("os").name == "nt" else 4096)
         self.cpus.setSpecialValueText("Automatic")
         for label, control in (
+            ("Dataset / probing round", self.dataset),
             ("Acquisition", self.acquisition),
             ("Channel", self.channel),
             ("Sequence", self.sequence),
-            ("Coordinates", self.space),
             ("Channel frame (zero-based)", self.frame),
             ("Source", self.frame_label),
             ("CPU processes", self.cpus),
         ):
             form.addRow(label, control)
         self.acquisition.currentTextChanged.connect(self._acquisition)
+        self.dataset.currentIndexChanged.connect(self._dataset)
         self.channel.currentTextChanged.connect(self._selection)
-        self.space.currentTextChanged.connect(self._selection)
         self.sequence.currentIndexChanged.connect(self._selection)
         self.frame.valueChanged.connect(self._frame)
         self.cpus.valueChanged.connect(lambda v: setattr(session, "num_cpus", v or None))
         session.selection_changed.connect(self.refresh)
+        session.dataset_changed.connect(self.refresh)
         session.experiment_changed.connect(self.refresh)
         session.frame_changed.connect(self.frame_refresh)
         session.options_changed.connect(self.options_refresh)
@@ -207,8 +208,12 @@ class SelectionPanel(QWidget):
         Args:
             *_: Additional positional values supplied by the caller.
         """
-        blockers = [QSignalBlocker(w) for w in (self.acquisition, self.channel, self.space, self.sequence)]
-        model = self.session.experiment
+        blockers = [QSignalBlocker(w) for w in (self.dataset, self.acquisition, self.channel, self.sequence)]
+        self.dataset.clear()
+        for key, dataset in self.session.experiment.datasets.items():
+            self.dataset.addItem(dataset.name, key)
+        self.dataset.setCurrentIndex(self.dataset.findData(self.session.dataset_id))
+        model = self.session.dataset
         self.acquisition.clear()
         self.acquisition.addItems(list(model.acquisitions))
         self.acquisition.setCurrentText(self.session.acquisition_id or "")
@@ -216,7 +221,6 @@ class SelectionPanel(QWidget):
         if self.session.acquisition_id in model.acquisitions:
             self.channel.addItems(list(model.acquisitions[self.session.acquisition_id].channels))
         self.channel.setCurrentText(self.session.channel or "")
-        self.space.setCurrentText(str(self.session.space))
         self.sequence.clear()
         self.sequence.addItem("Independent acquisition", None)
         for key, seq in model.sequences.items():
@@ -239,7 +243,7 @@ class SelectionPanel(QWidget):
         """Frame refresh."""
         blocker = QSignalBlocker(self.frame)
         if self.session.acquisition_id is not None:
-            view = self.session.experiment.acquisitions[self.session.acquisition_id].channels[
+            view = self.session.dataset.acquisitions[self.session.acquisition_id].channels[
                 self.session.channel
             ]
             self.frame.setRange(0, max(0, len(view) - 1))
@@ -256,6 +260,11 @@ class SelectionPanel(QWidget):
             self.frame_label.setText("No acquisition selected")
         del blocker
 
+    def _dataset(self, index: int) -> None:
+        key = self.dataset.itemData(index)
+        if key is not None and key != self.session.dataset_id:
+            self.session.select_dataset(key)
+
     def _acquisition(self, name: str) -> None:
         """Acquisition.
 
@@ -263,8 +272,8 @@ class SelectionPanel(QWidget):
             name: Identifier or field name used to address this value.
         """
         if name:
-            channel = next(iter(self.session.experiment.acquisitions[name].channels))
-            self.session.select(name, channel, space=self.space.currentText())
+            channel = next(iter(self.session.dataset.acquisitions[name].channels))
+            self.session.select(name, channel)
 
     def _selection(self, *_: Any) -> None:
         """Selection.
@@ -276,7 +285,6 @@ class SelectionPanel(QWidget):
             self.session.select(
                 self.acquisition.currentText(),
                 self.channel.currentText(),
-                space=self.space.currentText(),
                 sequence_id=self.sequence.currentData(),
             )
 
@@ -290,7 +298,7 @@ class SelectionPanel(QWidget):
             Computed NumPy array value.
         """
         if self.session.acquisition_id is not None:
-            view = self.session.experiment.acquisitions[self.session.acquisition_id].channels[
+            view = self.session.dataset.acquisitions[self.session.acquisition_id].channels[
                 self.session.channel
             ]
             if len(view):
@@ -302,7 +310,7 @@ class ToolWidget(QWidget):
         """Initialise the object and validate its configuration.
 
         Args:
-            session: Shared host-owned experiment, selection and background-job coordinator.
+            session: Shared host-owned dataset, selection and background-job coordinator.
             parent: Optional Qt parent controlling widget lifetime.
         """
         super().__init__(parent)
@@ -329,7 +337,7 @@ class ToolWidget(QWidget):
         session.progress.connect(self._progress)
         session.error.connect(self.show_error)
         session.selection_changed.connect(self.invalidate)
-        session.experiment_changed.connect(self.invalidate)
+        session.dataset_changed.connect(self.invalidate)
         session.results_changed.connect(self.invalidate)
         self._busy(session.busy)
 
@@ -417,7 +425,7 @@ class ToolWidget(QWidget):
             value: Value supplied by the caller or connected control.
             text: Text supplied by the control or caller.
         """
-        self.preview, self.preview_token = value, state_token(self.session.experiment)
+        self.preview, self.preview_token = value, state_token(self.session.dataset)
         self.summary.setPlainText(text)
         self.status.setText("Preview ready; active results unchanged")
         self.session.preview_changed.emit(value)
@@ -427,7 +435,7 @@ class ToolWidget(QWidget):
         """Require preview."""
         if self.preview is None:
             raise ValueError("Compute a preview first")
-        if state_token(self.session.experiment) != self.preview_token:
+        if state_token(self.session.dataset) != self.preview_token:
             self.invalidate()
             raise ValueError("Inputs changed; compute a new preview")
 

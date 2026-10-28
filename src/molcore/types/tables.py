@@ -12,7 +12,7 @@ from .._logging import logged
 from ._shared import CoordinateSpace
 
 if TYPE_CHECKING:
-    from ..types import AcquisitionSequence, Experiment
+    from ..types import AcquisitionSequence, Dataset
 
 
 @logged
@@ -87,13 +87,13 @@ def integers(values: Any, name: str) -> np.ndarray:
 class ColumnTable:
     """Base for result tables with detached query output and cached indexes."""
 
-    def __init__(self, experiment: Experiment) -> None:
+    def __init__(self, dataset: Dataset) -> None:
         """Initialise the object and validate its configuration.
 
         Args:
-            experiment: Scientific model supplying acquisitions and result tables.
+            dataset: Scientific model supplying acquisitions and result tables.
         """
-        self.experiment = experiment
+        self.dataset = dataset
         self._data, self._indexes = {}, {}
         self._next_id = 1
         self.revision = 0
@@ -254,7 +254,7 @@ class ColumnTable:
         """
         integers(incoming["frame"], "Camera frames")
         for acquisition_id, channel in set(zip(incoming["acquisition_id"], incoming["channel"], strict=True)):
-            acquisition = self.experiment.acquisitions.get(str(acquisition_id))
+            acquisition = self.dataset.acquisitions.get(str(acquisition_id))
             if acquisition is None or channel not in acquisition.channels:
                 raise ValueError("Unknown acquisition or channel")
             selected = (incoming["acquisition_id"] == acquisition_id) & (incoming["channel"] == channel)
@@ -331,9 +331,9 @@ class LocalizationTable(ColumnTable):
         self._indexes.clear()
         self.revision += 1
         tracks = [
-            t for t, members in self.experiment.tracks._members.items() if np.intersect1d(ids, members).size
+            t for t, members in self.dataset.tracks._members.items() if np.intersect1d(ids, members).size
         ]
-        self.experiment.observations._invalidate(ids=ids, tracks=tracks)
+        self.dataset.observations._invalidate(ids=ids, tracks=tracks)
 
     @model_locked
     @logged
@@ -357,7 +357,7 @@ class LocalizationTable(ColumnTable):
         for name, array in zip(("edit_x", "edit_y"), prepared, strict=True):
             self._data[name][selected] = array
         self.revision += 1
-        self.experiment._changed(ids)
+        self.dataset._changed(ids)
 
     @model_locked
     @logged
@@ -389,8 +389,8 @@ class LocalizationTable(ColumnTable):
         incoming["edit_x"], incoming["edit_y"] = np.full(n, np.nan), np.full(n, np.nan)
         self._append(incoming)
         self._next_id = max(self._next_id, int(incoming["id"].max()) + 1) if n else self._next_id
-        if self is self.experiment.localizations:
-            self.experiment.photon_sequences._localizations_changed(incoming["acquisition_id"])
+        if self is self.dataset.localizations:
+            self.dataset.photon_sequences._localizations_changed(incoming["acquisition_id"])
         return incoming["id"].copy()
 
     @logged
@@ -402,7 +402,7 @@ class LocalizationTable(ColumnTable):
         frame_range: tuple[int, int] | None = None,
         ids: ArrayLike | None = None,
         sequence_id: str | None = None,
-        space: CoordinateSpace | str = "raw",
+        space: CoordinateSpace | str = "corrected",
         original: bool = False,
         segmentation_id: str | None = None,
         label: str | None = None,
@@ -415,7 +415,8 @@ class LocalizationTable(ColumnTable):
             frame_range: Half-open camera-frame range, sequence-relative if selected.
             ids: Localization identifiers.
             sequence_id: Explicit acquisition sequence defining the timeline.
-            space: One of raw, registered or corrected.
+            space: Corrected by default, applying selected registration and drift;
+                raw and registered views are available explicitly.
             original: Use imported positions instead of manual position overrides.
             segmentation_id: Optional segmentation for label filtering.
             label: Label or labels to retain; defaults to all foreground labels.
@@ -426,7 +427,7 @@ class LocalizationTable(ColumnTable):
         space = CoordinateSpace(space)
         if sequence_id is not None and acquisition_id is not None:
             raise ValueError("Select either acquisition_id or sequence_id")
-        sequence = self.experiment.sequences[sequence_id] if sequence_id is not None else None
+        sequence = self.dataset.sequences[sequence_id] if sequence_id is not None else None
         selected = self._where(
             _candidate=self._range(frame_range, sequence),
             acquisition_id=list(sequence.offsets) if sequence else acquisition_id,
@@ -458,11 +459,11 @@ class LocalizationTable(ColumnTable):
                 [sequence.offsets[a] for a in result["acquisition_id"]], dtype=int
             )
         if segmentation_id is not None:
-            labels = self.experiment.segmentation_labels(segmentation_id, result)
+            labels = self.dataset.segmentation_labels(segmentation_id, result)
             keep = labels > 0 if label is None else np.isin(labels, np.atleast_1d(label))
             result = {k: v[keep] for k, v in result.items()}
         if space != "raw":
-            result["x"], result["y"] = self.experiment.transforms.coordinates(result, space=space)
+            result["x"], result["y"] = self.dataset.transforms.coordinates(result, space=space)
         return result
 
     @model_locked
@@ -480,7 +481,7 @@ class LocalizationTable(ColumnTable):
             raise ValueError("Expected an existing localization and finite coordinates")
         self._data["edit_x"][selected], self._data["edit_y"][selected] = x, y
         self.revision += 1
-        self.experiment._changed([localization_id])
+        self.dataset._changed([localization_id])
 
     @model_locked
     @logged
@@ -494,13 +495,13 @@ class LocalizationTable(ColumnTable):
         selected = self._where(id=ids)
         if len(selected) != len(np.unique(ids)):
             raise ValueError("Unknown localization ID")
-        self.experiment._changed(ids)
+        self.dataset._changed(ids)
         keep = np.ones(len(self), dtype=bool)
         keep[selected] = False
         self._data = {k: v[keep] for k, v in self._data.items()}
         self._indexes.clear()
         self.revision += 1
-        self.experiment.tracks._remove_localizations(ids)
+        self.dataset.tracks._remove_localizations(ids)
 
     @model_locked
     @logged
@@ -515,25 +516,25 @@ class LocalizationTable(ColumnTable):
         Returns:
             New localization IDs.
         """
-        staged = LocalizationTable(self.experiment)
+        staged = LocalizationTable(self.dataset)
         staged._next_id = self._next_id
         ids = staged.add(acquisition_id=acquisition_id, channel=channel, **values)
         if np.intersect1d(ids, self._data.get("id", np.array([], dtype=np.uint64))).size:
             raise ValueError("Replacement IDs must not already exist")
-        old = self.query(acquisition_id=acquisition_id, channel=channel)["id"]
+        old = self.query(acquisition_id=acquisition_id, channel=channel, space="raw")["id"]
         keep = ~np.isin(self._data.get("id", np.array([], dtype=np.uint64)), old)
-        merged = LocalizationTable(self.experiment)
+        merged = LocalizationTable(self.dataset)
         merged._data = {k: v[keep] for k, v in self._data.items()}
         # Dtype compatibility is checked before deleting results or dependents.
         merged._append(staged._data)
         self.delete(old)
-        self.experiment.observations._invalidate_partition(acquisition_id, channel)
+        self.dataset.observations._invalidate_partition(acquisition_id, channel)
         self._data = merged._data
         self._indexes.clear()
         self.revision += 1
         self._next_id = staged._next_id
-        if self is self.experiment.localizations:
-            self.experiment.photon_sequences._localizations_changed([acquisition_id])
+        if self is self.dataset.localizations:
+            self.dataset.photon_sequences._localizations_changed([acquisition_id])
         return ids
 
 
@@ -561,10 +562,10 @@ class ObservationTable(ColumnTable):
         self._frames(incoming)
         for name in ("localization_id", "track_id"):
             incoming.setdefault(name, np.zeros(n, dtype=np.uint64))
-        known = self.experiment.localizations._data.get("id", np.array([], dtype=np.uint64))
+        known = self.dataset.localizations._data.get("id", np.array([], dtype=np.uint64))
         if not np.isin(incoming["localization_id"][incoming["localization_id"] != 0], known).all():
             raise ValueError("Unknown localization anchor")
-        known_tracks = np.asarray(list(self.experiment.tracks._members), dtype=np.uint64)
+        known_tracks = np.asarray(list(self.dataset.tracks._members), dtype=np.uint64)
         if not np.isin(incoming["track_id"][incoming["track_id"] != 0], known_tracks).all():
             raise ValueError("Unknown track anchor")
         incoming["id"] = self._ids(incoming, n)
@@ -630,7 +631,7 @@ class ObservationTable(ColumnTable):
             ids: Stable entity IDs; None selects the available partition.
             tracks: Track IDs to invalidate, or whether this operation selects whole tracks.
         """
-        self.experiment.photon_sequences._invalidate(ids=ids, tracks=tracks)
+        self.dataset.photon_sequences._invalidate(ids=ids, tracks=tracks)
         if self._data:
             mask = np.isin(self._data["localization_id"], identifiers(ids)) | np.isin(
                 self._data["track_id"], identifiers(tracks)
@@ -656,13 +657,13 @@ class ObservationTable(ColumnTable):
 class TrackTable:
     """Track membership without duplicated coordinates."""
 
-    def __init__(self, experiment: Experiment) -> None:
+    def __init__(self, dataset: Dataset) -> None:
         """Initialise the object and validate its configuration.
 
         Args:
-            experiment: Scientific model supplying acquisitions and result tables.
+            dataset: Scientific model supplying acquisitions and result tables.
         """
-        self.experiment, self._members, self.metadata = experiment, {}, {}
+        self.dataset, self._members, self.metadata = dataset, {}, {}
         self._next_id, self.revision = 1, 0
 
     def __len__(self) -> int:
@@ -689,13 +690,13 @@ class TrackTable:
         ids = identifiers(ids)
         if ids.ndim != 1 or not len(ids) or len(np.unique(ids)) != len(ids):
             raise ValueError("A track requires distinct localization IDs")
-        rows = self.experiment.localizations.query(ids=ids)
+        rows = self.dataset.localizations.query(ids=ids, space="raw")
         if len(rows["id"]) != len(ids) or len(np.unique(rows["channel"])) != 1:
             raise ValueError("Track localizations must exist and share a channel")
         acquisitions = np.unique(rows["acquisition_id"])
         timeline = rows["frame"]
         if sequence_id is not None:
-            sequence = self.experiment.sequences[sequence_id]
+            sequence = self.dataset.sequences[sequence_id]
             if not set(acquisitions) <= sequence.offsets.keys():
                 raise ValueError("Track lies outside its sequence")
             timeline = rows["frame"] + np.array([sequence.offsets[a] for a in rows["acquisition_id"]])
@@ -705,7 +706,7 @@ class TrackTable:
         if len(np.unique(timeline)) != len(timeline):
             raise ValueError("Track has multiple localizations at the same camera frame")
         if segmentation_id is not None:
-            labels = self.experiment.segmentation_labels(segmentation_id, rows)
+            labels = self.dataset.segmentation_labels(segmentation_id, rows)
             if len(np.unique(labels)) != 1 or labels[0] == 0:
                 raise ValueError("Track must remain inside one segmentation label")
         return rows["id"][np.argsort(timeline, kind="stable")].astype(np.uint64)
@@ -751,7 +752,7 @@ class TrackTable:
         *,
         track_id: int | ArrayLike | None = None,
         frame_range: tuple[int, int] | None = None,
-        space: CoordinateSpace = CoordinateSpace.RAW,
+        space: CoordinateSpace | str = CoordinateSpace.CORRECTED,
         sequence_id: str | None = None,
         acquisition_id: str | list[str] | None = None,
         channel: str | list[str] | None = None,
@@ -761,7 +762,7 @@ class TrackTable:
         Args:
             track_id: Track ID or IDs; omitted selects all tracks.
             frame_range: Half-open camera-frame range.
-            space: Requested coordinate space.
+            space: Corrected by default, applying selected registration and drift.
             sequence_id: Optional sequence defining frame offsets.
             acquisition_id: Optional acquisition selector; filters returned members.
             channel: Optional logical channel selector.
@@ -773,9 +774,9 @@ class TrackTable:
         tracks = list(self._members) if track_id is None else identifiers(track_id)
         partition = None
         if acquisition_id is not None or channel is not None:
-            partition = self.experiment.localizations.query(acquisition_id=acquisition_id, channel=channel)[
-                "id"
-            ]
+            partition = self.dataset.localizations.query(
+                acquisition_id=acquisition_id, channel=channel, space="raw"
+            )["id"]
         chunks = []
         for track in tracks:
             if int(track) not in self._members:
@@ -785,14 +786,14 @@ class TrackTable:
                 members = members[np.isin(members, partition)]
             if not len(members):
                 continue
-            rows = self.experiment.localizations.query(
+            rows = self.dataset.localizations.query(
                 ids=members, frame_range=frame_range, space=space, sequence_id=sequence_id
             )
             rows["track_id"] = np.full(len(rows["id"]), track, dtype=np.uint64)
             order = np.argsort(rows.get("sequence_frame", rows["frame"]), kind="stable")
             chunks.append({k: v[order] for k, v in rows.items()})
         if not chunks:
-            rows = self.experiment.localizations.query(ids=[], space=space, sequence_id=sequence_id)
+            rows = self.dataset.localizations.query(ids=[], space=space, sequence_id=sequence_id)
             rows["track_id"] = np.array([], dtype=np.uint64)
             return rows
         return {k: np.concatenate([c[k] for c in chunks]) for k in chunks[0]}
@@ -825,9 +826,11 @@ class TrackTable:
         """
         from copy import deepcopy
 
-        if channel not in self.experiment.acquisitions[acquisition_id].channels:
+        if channel not in self.dataset.acquisitions[acquisition_id].channels:
             raise ValueError("Unknown channel")
-        partition = self.experiment.localizations.query(acquisition_id=acquisition_id, channel=channel)["id"]
+        partition = self.dataset.localizations.query(
+            acquisition_id=acquisition_id, channel=channel, space="raw"
+        )["id"]
         old = []
         for track, members in self._members.items():
             inside = np.isin(members, partition)
@@ -835,7 +838,7 @@ class TrackTable:
                 if not inside.all():
                     raise ValueError("Partition intersects a spanning track")
                 old.append(track)
-        staged = deepcopy(self, {id(self.experiment): self.experiment})
+        staged = deepcopy(self, {id(self.dataset): self.dataset})
         for track in old:
             del staged._members[track], staged.metadata[track]
         result = []
@@ -846,7 +849,7 @@ class TrackTable:
             result.append(staged.add(members, segmentation_id=segmentation_id, metadata=metadata))
         self._members, self.metadata, self._next_id = staged._members, staged.metadata, staged._next_id
         self.revision += 1
-        self.experiment.observations._invalidate(tracks=old)
+        self.dataset.observations._invalidate(tracks=old)
         return np.asarray(result, dtype=np.uint64)
 
     @model_locked
@@ -860,7 +863,7 @@ class TrackTable:
         track_id = int(track_id)
         if track_id not in self._members:
             raise ValueError("Unknown track ID")
-        self.experiment.observations._invalidate(tracks=[track_id])
+        self.dataset.observations._invalidate(tracks=[track_id])
         del self._members[track_id], self.metadata[track_id]
         self.revision += 1
 
@@ -877,7 +880,7 @@ class TrackTable:
             New track identifier; the original retains the earlier members.
         """
         meta = self.metadata[track_id]
-        rows = self.query(track_id=track_id, sequence_id=meta["sequence_id"])
+        rows = self.query(track_id=track_id, sequence_id=meta["sequence_id"], space="raw")
         timeline = rows.get("sequence_frame", rows["frame"])
         earlier, later = rows["id"][timeline < frame], rows["id"][timeline >= frame]
         if not len(earlier) or not len(later):
@@ -891,7 +894,7 @@ class TrackTable:
             segmentation_id=meta["segmentation_id"],
             metadata=meta["parameters"],
         )
-        self.experiment.observations._invalidate(tracks=[track_id])
+        self.dataset.observations._invalidate(tracks=[track_id])
         return new
 
     @model_locked
@@ -916,7 +919,7 @@ class TrackTable:
         for track in tracks[1:]:
             self.delete(track)
         self._members[tracks[0]] = validated
-        self.experiment.observations._invalidate(tracks=tracks)
+        self.dataset.observations._invalidate(tracks=tracks)
         self.revision += 1
         return tracks[0]
 
@@ -937,7 +940,7 @@ class TrackTable:
         )
         self._remove_localizations(ids)
         self._members[track_id], self.metadata[track_id] = validated, meta
-        self.experiment.observations._invalidate(tracks=[track_id])
+        self.dataset.observations._invalidate(tracks=[track_id])
         self.revision += 1
 
     def _remove_localizations(self, ids: ArrayLike | None) -> None:
@@ -950,7 +953,7 @@ class TrackTable:
             members = self._members[track]
             keep = ~np.isin(members, ids)
             if not keep.all():
-                self.experiment.observations._invalidate(tracks=[track])
+                self.dataset.observations._invalidate(tracks=[track])
                 self._members[track] = members[keep]
                 if not keep.any():
                     del self._members[track], self.metadata[track]

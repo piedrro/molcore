@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from qtpy.QtWidgets import QScrollArea, QTabWidget, QVBoxLayout, QWidget
 
 from .analysis import ClusteringWidget, ColocalisationWidget, LocalisationRenderWidget, ResultsFilterWidget
+from .dataset_alignment import DatasetAlignmentWidget
 from .dynamics import PhotometryWidget, TrackingWidget, TrajectoryStatisticsWidget
 from .files import FileToolsWidget
 from .processing import ChannelAlignmentWidget, LocalisationWidget, SegmentationWidget, UndriftingWidget
@@ -23,7 +24,7 @@ class MolCoreToolsWidget(QWidget):
         """Initialise the object and validate its configuration.
 
         Args:
-            session: Shared host-owned experiment, selection and background-job coordinator.
+            session: Shared host-owned dataset, selection and background-job coordinator.
             parent: Optional Qt parent controlling widget lifetime.
         """
         super().__init__(parent)
@@ -37,6 +38,7 @@ class MolCoreToolsWidget(QWidget):
             ("Localisation", LocalisationWidget),
             ("Drift", UndriftingWidget),
             ("Alignment", ChannelAlignmentWidget),
+            ("Dataset alignment", DatasetAlignmentWidget),
             ("Segmentation", SegmentationWidget),
             ("Tracking", TrackingWidget),
             ("Photometry", PhotometryWidget),

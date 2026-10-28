@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike
 
-    from .types import Experiment
+    from .types import Dataset
 
 
 @logged
@@ -36,18 +36,18 @@ class CropStore:
     """Resolve current raw-channel crops or lazily loaded saved crop records.
 
     Args:
-        experiment: Owner providing current positions and image sources.
+        dataset: Owner providing current positions and image sources.
     """
 
-    def __init__(self, experiment: Experiment) -> None:
+    def __init__(self, dataset: Dataset) -> None:
         """Initialise the object and validate its configuration.
 
         Args:
-            experiment: Scientific model supplying acquisitions and result tables.
+            dataset: Scientific model supplying acquisitions and result tables.
         """
-        self.experiment = experiment
+        self.dataset = dataset
         self._saved = {}
-        self._photon_saved: dict[tuple[str, int, int], tuple[str, int]] = {}
+        self._photon_saved: dict[tuple[str, int, int], tuple[str, int] | tuple[str, int, str]] = {}
 
     @logged
     def invalidate(self, ids: ArrayLike | None) -> None:
@@ -71,7 +71,7 @@ class CropStore:
         Returns:
             Result retaining the input format or backend-specific representation.
         """
-        view = self.experiment.acquisitions[row["acquisition_id"]].channels[row["channel"]]
+        view = self.dataset.acquisitions[row["acquisition_id"]].channels[row["channel"]]
         image = view[view.channel_index(camera_frame)]
         half = width // 2
         x0, y0 = int(np.floor(row["x"] + 0.5)) - half, int(np.floor(row["y"] + 0.5)) - half
@@ -101,7 +101,7 @@ class CropStore:
             ImageUnavailableError: Neither raw pixels nor a matching saved crop exists.
         """
         validate_width(width)
-        rows = self.experiment.localizations.query(ids=[localization_id])
+        rows = self.dataset.localizations.query(ids=[localization_id], space="raw")
         if len(rows["id"]) != 1:
             raise ValueError("Unknown localization ID")
         key = (int(localization_id), width)
@@ -124,8 +124,8 @@ class CropStore:
             Crop values ordered by the track's acquisition/sequence timeline.
         """
         validate_width(width)
-        meta = self.experiment.tracks.metadata[track_id]
-        rows = self.experiment.tracks.query(track_id=track_id, sequence_id=meta["sequence_id"])
+        meta = self.dataset.tracks.metadata[track_id]
+        rows = self.dataset.tracks.query(track_id=track_id, sequence_id=meta["sequence_id"], space="raw")
         for localization_id in rows["id"]:
             yield self.localization(localization_id, width=width)
 
@@ -152,8 +152,8 @@ class CropStore:
         from .types._shared import StaleResultError
 
         validate_width(width)
-        sequence = self.experiment.photon_sequences[sequence_id]
-        if self.experiment.photon_sequences.is_stale(sequence_id) and not include_stale:
+        sequence = self.dataset.photon_sequences[sequence_id]
+        if self.dataset.photon_sequences.is_stale(sequence_id) and not include_stale:
             raise StaleResultError(
                 "Photon sequence is stale; recompute or explicitly request historical crops"
             )
@@ -165,8 +165,8 @@ class CropStore:
                 continue
             key = (sequence_id, index, width)
             if key in self._photon_saved:
-                path, row = self._photon_saved[key]
-                yield read_crop(path, row, group_name="photon_crops")
+                path, row, *group = self._photon_saved[key]
+                yield read_crop(path, row, group_name=group[0] if group else "photon_crops")
                 continue
             x, y = sequence.positions[index]
             crop = self._extract(
@@ -190,7 +190,7 @@ class CropStore:
             Crops with each requested original camera frame.
         """
         validate_width(width)
-        rows = self.experiment.localizations.query(ids=[localization_id])
+        rows = self.dataset.localizations.query(ids=[localization_id], space="raw")
         if len(rows["id"]) != 1:
             raise ValueError("Unknown localization ID")
         row = {k: v[0] for k, v in rows.items()}

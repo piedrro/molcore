@@ -20,7 +20,7 @@ from .storage import _json
 from .types import (
     CellposeSettings,
     CoordinateSpace,
-    Experiment,
+    Dataset,
     ProgressUpdate,
     Segmentation,
     SegmentationRequest,
@@ -111,24 +111,22 @@ def _target_token(segmentation: Segmentation) -> tuple | None:
     )
 
 
-def _source(experiment: Experiment, request: SegmentationRequest, frame: int | None) -> Any:
+def _source(dataset: Dataset, request: SegmentationRequest, frame: int | None) -> Any:
     """Source.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         request: Source-bound segmentation request, including channel and original camera frame.
         frame: Original camera-frame index for the requested source image.
 
     Returns:
         Result retaining the input format or backend-specific representation.
     """
-    view = experiment.acquisitions[request.acquisition_id].channels[request.channel]
+    view = dataset.acquisitions[request.acquisition_id].channels[request.channel]
     if request.space == CoordinateSpace.RAW:
         image = view[view.channel_index(frame)]
     else:
-        image = experiment.transforms.image(
-            request.acquisition_id, request.channel, frame, space=request.space
-        )
+        image = dataset.transforms.image(request.acquisition_id, request.channel, frame, space=request.space)
     image = np.array(image, copy=True)
     if image.ndim != 2 or image.dtype.kind not in "biuf" or not np.isfinite(image).all():
         raise ValueError("Cellpose source must be a finite, real-valued 2D image")
@@ -259,7 +257,7 @@ def _job(payload: tuple, reporter: WorkerProgress) -> Any:
 
 @logged
 def segment_many(
-    experiment: Experiment,
+    dataset: Dataset,
     requests: Sequence[SegmentationRequest],
     *,
     settings: CellposeSettings | None = None,
@@ -272,7 +270,7 @@ def segment_many(
     """Segment model-bound source frames and stage every result before application.
 
     Args:
-        experiment: Experiment supplying images and receiving segmentations.
+        dataset: Dataset supplying images and receiving segmentations.
         requests: Channel/camera-frame bindings and optional result identifiers.
         settings: Cellpose 4 parameters; default model is cpsam_v2 on CPU.
         apply: Store successful results; False returns detached previews.
@@ -305,7 +303,7 @@ def segment_many(
     for request in requests:
         if not isinstance(request, SegmentationRequest):
             raise TypeError("Use SegmentationRequest objects for batch segmentation")
-        acquisition = experiment.acquisitions[request.acquisition_id]
+        acquisition = dataset.acquisitions[request.acquisition_id]
         view = acquisition.channels[request.channel]
         if not len(view):
             raise ValueError("Cannot segment an empty channel")
@@ -325,9 +323,9 @@ def segment_many(
                 frame,
                 identifier,
                 source_path,
-                snapshot(experiment, request.acquisition_id),
-                _fingerprint(_source(experiment, request, frame)),
-                _target_token(experiment.segmentations.get(identifier)),
+                snapshot(dataset, request.acquisition_id),
+                _fingerprint(_source(dataset, request, frame)),
+                _target_token(dataset.segmentations.get(identifier)),
             )
         )
 
@@ -338,7 +336,7 @@ def segment_many(
             Values produced by the iterator, retaining their original order.
         """
         for request, frame, identifier, source_path, _, fingerprint, _ in prepared:
-            image = _source(experiment, request, frame)
+            image = _source(dataset, request, frame)
             if _fingerprint(image) != fingerprint:
                 raise StaleResultError("Segmentation source pixels changed before inference")
             yield request, frame, identifier, image, source_path, settings, model_ref, model_stat
@@ -348,28 +346,28 @@ def segment_many(
     if _resolve_model(settings) != (model_ref, model_stat):
         raise StaleResultError("Cellpose weights changed during inference")
     for request, frame, identifier, _, expected, fingerprint, target in prepared:
-        check_snapshot(experiment, request.acquisition_id, expected)
-        if _fingerprint(_source(experiment, request, frame)) != fingerprint:
+        check_snapshot(dataset, request.acquisition_id, expected)
+        if _fingerprint(_source(dataset, request, frame)) != fingerprint:
             raise StaleResultError("Segmentation source pixels changed during inference")
-        if apply and _target_token(experiment.segmentations.get(identifier)) != target:
+        if apply and _target_token(dataset.segmentations.get(identifier)) != target:
             raise StaleResultError("Target segmentation changed during inference")
     results = {value.id: value for value in values}
     if apply and results:
-        previous = experiment.processing.settings.get("cellpose", {})
+        previous = dataset.processing.settings.get("cellpose", {})
         if not isinstance(previous, dict):
             raise ValueError("Cellpose processing metadata must be a dictionary")
         metadata = {**previous, **{value.id: deepcopy(value.metadata) for value in values}}
         for value in values:
-            experiment.add_segmentation(value)
-        experiment.processing.settings["cellpose"] = metadata
-        experiment.processing.software["cellpose"] = values[0].metadata["cellpose_version"]
-        experiment.processing.software["torch"] = values[0].metadata["torch_version"]
+            dataset.add_segmentation(value)
+        dataset.processing.settings["cellpose"] = metadata
+        dataset.processing.software["cellpose"] = values[0].metadata["cellpose_version"]
+        dataset.processing.software["torch"] = values[0].metadata["torch_version"]
     return results
 
 
 @logged
 def segment(
-    experiment: Experiment,
+    dataset: Dataset,
     acquisition_id: str,
     channel: str,
     *,
@@ -386,14 +384,14 @@ def segment(
     """Segment one MolCore channel frame with the Cellpose 4 backend.
 
     Args:
-        experiment: Experiment containing the source acquisition.
+        dataset: Dataset containing the source acquisition.
         acquisition_id: Source acquisition identifier.
         channel: Logical channel to segment.
         frame: Actual camera frame; None selects the channel's first frame.
         segmentation_id: Optional stable name for storing/replacing the result.
         space: Raw, registered or corrected source/label coordinate space.
         settings: Cellpose model, thresholds, device and normalization settings.
-        apply: Store the result in Experiment.segmentations when successful.
+        apply: Store the result in Dataset.segmentations when successful.
         num_cpus: CPU worker count; defaults to one.
         cpu: Optional reusable CpuExecutor to amortize model loading.
         progress: Parent-process ProgressUpdate callback.
@@ -404,7 +402,7 @@ def segment(
     """
     request = SegmentationRequest(acquisition_id, channel, frame, segmentation_id, space)
     results = segment_many(
-        experiment,
+        dataset,
         [request],
         settings=settings,
         apply=apply,

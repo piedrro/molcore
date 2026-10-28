@@ -11,7 +11,7 @@ from ._logging import logged
 from .types.analysis import FilterResult, FilterSettings
 
 if TYPE_CHECKING:
-    from .types import CancelEvent, CoordinateSpace, Experiment, ProgressCallback
+    from .types import CancelEvent, CoordinateSpace, Dataset, ProgressCallback
 
 
 _DEFAULT_SETTINGS = FilterSettings()
@@ -19,7 +19,7 @@ _DEFAULT_SETTINGS = FilterSettings()
 
 @logged
 def filter_results(
-    experiment: Experiment,
+    dataset: Dataset,
     acquisition_id: str,
     channel: str,
     *,
@@ -31,7 +31,7 @@ def filter_results(
     """Select finite inclusive values without removing or modifying any source rows.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         acquisition_id: Source acquisition identifier.
         channel: Logical source channel name.
         settings: Validated settings controlling this operation.
@@ -42,13 +42,13 @@ def filter_results(
     Returns:
         Computed FilterResult value.
     """
-    expected, space = start(experiment, space, progress, cancel_event)
-    partition(experiment, acquisition_id, channel, space)
+    expected, space = start(dataset, space, progress, cancel_event)
+    partition(dataset, acquisition_id, channel, space)
     if settings.target == "tracks":
-        rows = experiment.tracks.query(acquisition_id=acquisition_id, channel=channel, space=space)
-        rows = experiment.tracks.query(track_id=np.unique(rows["track_id"]), space=space)
+        rows = dataset.tracks.query(acquisition_id=acquisition_id, channel=channel, space=space)
+        rows = dataset.tracks.query(track_id=np.unique(rows["track_id"]), space=space)
     else:
-        _, rows = partition(experiment, acquisition_id, channel, space)
+        _, rows = partition(dataset, acquisition_id, channel, space)
     if settings.metric not in rows or rows[settings.metric].dtype.kind not in "iuf":
         raise ValueError("Select an available numeric metric")
     values = np.asarray(rows[settings.metric], dtype=float)
@@ -64,7 +64,7 @@ def filter_results(
     else:
         mask = np.isfinite(values) & (values >= settings.minimum) & (values <= settings.maximum)
         ids = rows["id"][mask]
-    finish(experiment, expected, progress, cancel_event)
+    finish(dataset, expected, progress, cancel_event)
     return FilterResult(
         acquisition_id,
         channel,

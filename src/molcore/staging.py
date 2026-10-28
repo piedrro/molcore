@@ -9,16 +9,16 @@ from dataclasses import asdict
 from ._locking import model_locked
 from ._logging import logged
 from .storage import _json
-from .types import Acquisition, Experiment, StaleResultError
+from .types import Acquisition, Dataset, Experiment, StaleResultError
 
 
 @model_locked
 @logged
-def state_token(experiment: Experiment) -> tuple:
+def state_token(dataset: Dataset) -> tuple:
     """Capture revisions and bindings without reading movie pixels.
 
     Args:
-        experiment: Live model to protect from stale background work.
+        dataset: Live model to protect from stale background work.
 
     Returns:
         Comparable token including result, source, calibration and mask bindings.
@@ -27,19 +27,19 @@ def state_token(experiment: Experiment) -> tuple:
         tuple(
             (
                 a,
-                experiment.localizations.revision,
-                experiment.tracks.revision,
-                experiment.transforms.revision,
+                dataset.localizations.revision,
+                dataset.tracks.revision,
+                dataset.transforms.revision,
                 id(acquisition.source),
                 tuple(
                     (name, view.roi, view.shape, view.source_frames.tobytes())
                     for name, view in acquisition.channels.items()
                 ),
             )
-            for a, acquisition in experiment.acquisitions.items()
+            for a, acquisition in dataset.acquisitions.items()
         ),
-        experiment.observations.revision,
-        tuple((k, v.matrix.tobytes(), _json(v.metadata)) for k, v in experiment.calibrations.items()),
+        dataset.observations.revision,
+        tuple((k, v.matrix.tobytes(), _json(v.metadata)) for k, v in dataset.calibrations.items()),
         tuple(
             (
                 k,
@@ -57,10 +57,10 @@ def state_token(experiment: Experiment) -> tuple:
                 if s.source_image is None
                 else (s.source_image.dtype.str, s.source_image.shape, s.source_image.tobytes()),
             )
-            for k, s in experiment.segmentations.items()
+            for k, s in dataset.segmentations.items()
         ),
-        _json(experiment.metadata),
-        _json(vars(experiment.processing)),
+        _json(dataset.metadata),
+        _json(vars(dataset.processing)),
         tuple(
             (
                 k,
@@ -72,22 +72,22 @@ def state_token(experiment: Experiment) -> tuple:
                 a.phase,
                 None if a.timestamps is None else a.timestamps.tobytes(),
             )
-            for k, a in experiment.acquisitions.items()
+            for k, a in dataset.acquisitions.items()
         ),
         tuple(
             (k, tuple(a.id for a in s.acquisitions), s.allow_cross_boundary_tracks, s.reference)
-            for k, s in experiment.sequences.items()
+            for k, s in dataset.sequences.items()
         ),
-        experiment.photon_sequences.revision,
+        dataset.photon_sequences.revision,
     )
 
 
 @logged
-def clone_experiment(experiment: Experiment) -> Experiment:
+def clone_dataset(dataset: Dataset) -> Dataset:
     """Copy scientific state while retaining borrowed lazy image descriptors.
 
     Args:
-        experiment: Model whose result arrays and metadata should be detached.
+        dataset: Model whose result arrays and metadata should be detached.
 
     Returns:
         Independent model with shared image sources, never a full-movie copy.
@@ -95,8 +95,8 @@ def clone_experiment(experiment: Experiment) -> Experiment:
     Notes:
         Owners must not modify borrowed image arrays during background jobs.
     """
-    result = Experiment(metadata=deepcopy(experiment.metadata))
-    for acquisition in experiment.acquisitions.values():
+    result = Dataset(id=dataset.id, name=dataset.name, metadata=deepcopy(dataset.metadata))
+    for acquisition in dataset.acquisitions.values():
         result.add_acquisition(
             Acquisition(
                 acquisition.source,
@@ -110,14 +110,14 @@ def clone_experiment(experiment: Experiment) -> Experiment:
                 mode=acquisition.mode,
             )
         )
-    for sequence in experiment.sequences.values():
+    for sequence in dataset.sequences.values():
         result.add_sequence(
             [a.id for a in sequence.acquisitions],
             id=sequence.id,
             allow_cross_boundary_tracks=sequence.allow_cross_boundary_tracks,
             reference=sequence.reference,
         )
-    memo = {id(experiment): result}
+    memo = {id(dataset): result}
     for name in (
         "localizations",
         "tracks",
@@ -128,10 +128,47 @@ def clone_experiment(experiment: Experiment) -> Experiment:
         "processing",
         "segmentations",
     ):
-        setattr(result, name, deepcopy(getattr(experiment, name), memo))
+        setattr(result, name, deepcopy(getattr(dataset, name), memo))
     result.calibrations = result.transforms.calibrations
-    if hasattr(experiment, "_batch_source_token"):
-        result._batch_source_token = experiment._batch_source_token
+    if hasattr(dataset, "_batch_source_token"):
+        result._batch_source_token = dataset._batch_source_token
+    return result
+
+
+def experiment_state_token(experiment: Experiment) -> tuple:
+    """Runtime freshness token for an entire experiment, without movie reads.
+
+    Args:
+        experiment: Experiment containing the probing rounds.
+
+    Returns:
+        Result of this operation.
+    """
+    with experiment._lock:
+        return (
+            _json(experiment.metadata),
+            tuple((key, id(dataset), state_token(dataset)) for key, dataset in experiment.datasets.items()),
+            experiment.alignment.revision,
+        )
+
+
+def clone_experiment(experiment: Experiment) -> Experiment:
+    """Detach every dataset and alignment while borrowing lazy image sources.
+
+    Args:
+        experiment: Experiment containing the probing rounds.
+
+    Returns:
+        Result of this operation.
+    """
+    with experiment._lock:
+        result = Experiment(metadata=deepcopy(experiment.metadata))
+        for dataset in experiment.datasets.values():
+            with dataset._lock:
+                result.add_dataset(clone_dataset(dataset))
+        result.alignment._records = deepcopy(experiment.alignment._records)
+        for name in ("reference_dataset_id", "reference_acquisition_id", "reference_channel", "revision"):
+            setattr(result.alignment, name, getattr(experiment.alignment, name))
     return result
 
 
@@ -150,8 +187,8 @@ def _scientific_inputs(token: tuple) -> tuple:
 
 @logged
 def transact[R](
-    experiment: Experiment,
-    operation: Callable[[Experiment], R],
+    dataset: Dataset,
+    operation: Callable[[Dataset], R],
     *,
     expected: tuple | None = None,
 ) -> R:
@@ -164,33 +201,33 @@ def transact[R](
     remain unchanged; independent observations/provenance may accumulate.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         operation: Operation used by this operation.
         expected: Source revision token used to reject stale results.
 
     Returns:
         Computed R value.
     """
-    with experiment._lock:
-        before = state_token(experiment)
+    with dataset._lock:
+        before = state_token(dataset)
         if expected is not None and before != expected:
-            batch_source = getattr(experiment, "_batch_source_token", None)
+            batch_source = getattr(dataset, "_batch_source_token", None)
             if batch_source != expected or _scientific_inputs(before) != _scientific_inputs(expected):
                 raise StaleResultError("Inputs changed; compute a new preview before applying")
-        staged = clone_experiment(experiment)
+        staged = clone_dataset(dataset)
         staged._transaction_source_token = before
     value = operation(staged)
-    with experiment._lock:
-        if state_token(experiment) != before:
+    with dataset._lock:
+        if state_token(dataset) != before:
             raise StaleResultError("Live state changed during transaction; staged update was discarded")
         for name in ("localizations", "tracks", "observations", "photon_sequences", "transforms", "crops"):
             item = getattr(staged, name)
-            item.experiment = experiment
-            setattr(experiment, name, item)
-        experiment.calibrations = experiment.transforms.calibrations
-        experiment.segmentations = staged.segmentations
-        experiment.processing = staged.processing
-        experiment.metadata = staged.metadata
-        experiment.acquisitions = staged.acquisitions
-        experiment.sequences = staged.sequences
+            item.dataset = dataset
+            setattr(dataset, name, item)
+        dataset.calibrations = dataset.transforms.calibrations
+        dataset.segmentations = staged.segmentations
+        dataset.processing = staged.processing
+        dataset.metadata = staged.metadata
+        dataset.acquisitions = staged.acquisitions
+        dataset.sequences = staged.sequences
     return value

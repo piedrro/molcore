@@ -12,13 +12,13 @@ import numpy as np
 from qtpy.QtCore import QThread
 from qtpy.QtWidgets import QApplication
 
-from molcore import Acquisition, ArraySource, Experiment
-from molcore.staging import clone_experiment
+from molcore import Acquisition, ArraySource, Dataset
+from molcore.staging import clone_dataset
 from molcore.ui import UiSession
 
 
-def experiment():
-    result = Experiment()
+def dataset():
+    result = Dataset()
     result.add_acquisition(Acquisition(ArraySource(np.zeros((3, 9, 9))), id="a"))
     return result
 
@@ -37,16 +37,16 @@ class SessionTests(unittest.TestCase):
         self.assertFalse(session.busy)
 
     def test_clone_detaches_results_but_keeps_lazy_sources(self):
-        original = experiment()
+        original = dataset()
         original.localizations.add(acquisition_id="a", channel="image", frame=[0], x=[3], y=[3])
-        frozen = clone_experiment(original)
+        frozen = clone_dataset(original)
         self.assertIs(frozen.acquisitions["a"].source, original.acquisitions["a"].source)
         frozen.localizations.move(1, x=4, y=4)
         self.assertEqual(original.localizations.query()["x"][0], 3)
-        self.assertIs(frozen.localizations.experiment, frozen)
+        self.assertIs(frozen.localizations.dataset, frozen)
 
     def test_background_computation_and_gui_commit(self):
-        session = UiSession(experiment())
+        session = UiSession(dataset())
         seen = []
 
         def compute(model, progress, cancel):
@@ -62,7 +62,7 @@ class SessionTests(unittest.TestCase):
         session.shutdown()
 
     def test_external_edits_reject_completion(self):
-        model = experiment()
+        model = dataset()
         session = UiSession(model)
         gate = threading.Event()
         errors, commits = [], []
@@ -76,7 +76,7 @@ class SessionTests(unittest.TestCase):
         session.shutdown()
 
     def test_cancellation_and_single_job(self):
-        session = UiSession(experiment())
+        session = UiSession(dataset())
         commits = []
 
         def compute(model, progress, cancel):
@@ -91,12 +91,12 @@ class SessionTests(unittest.TestCase):
         self.assertFalse(commits)
         session.shutdown()
 
-    def test_borrowed_experiment_is_not_closed(self):
-        model = experiment()
+    def test_borrowed_dataset_is_not_closed(self):
+        model = dataset()
         calls = []
         model.close = lambda: calls.append("closed")
         session = UiSession(model)
-        session.set_experiment(Experiment())
+        session.set_dataset(Dataset())
         session.shutdown()
         self.assertFalse(calls)
 

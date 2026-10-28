@@ -8,13 +8,13 @@ python examples/shared_widgets.py
 ```
 
 Molcore does not create a QApplication, select a binding or import napari. Choose
-your binding before importing `molcore.ui`. One session coordinates an experiment,
+your binding before importing `molcore.ui`. One session coordinates an dataset,
 selections and a cancellable background job across all embedded widgets.
 
 ```python
 from molcore.ui import MolCoreToolsWidget, TrackingWidget, UiSession
 
-session = UiSession(experiment)  # borrows the experiment
+session = UiSession(dataset)  # borrows the dataset
 tools = MolCoreToolsWidget(session, parent=host_widget)
 # Or embed one tool:
 tracking = TrackingWidget(session, parent=host_widget)
@@ -25,7 +25,7 @@ session.set_frame(0)  # original camera frame belonging to this channel
 ```
 
 Call `session.changed()` after host-side model mutations. Replace an idle model
-with `session.set_experiment(new_model)`. Call `session.shutdown()` during teardown;
+with `session.set_dataset(new_model)`. Call `session.shutdown()` during teardown;
 keep the event loop running until `shutdown_finished` when cancelling an active
 job. Closing a borrowed widget does not close its session.
 
@@ -78,13 +78,13 @@ from molcore.colocalisation import colocalise
 from molcore.rendering import render_localizations
 from molcore.types import FilterSettings, ClusteringSettings, ColocalisationSettings, RenderSettings
 
-selected = filter_results(experiment, "recording", "donor",
+selected = filter_results(dataset, "recording", "donor",
                           settings=FilterSettings("photons", 100, 1000))
-clusters = cluster_localizations(experiment, "recording", "donor",
+clusters = cluster_localizations(dataset, "recording", "donor",
                                 settings=ClusteringSettings(radius=1., min_samples=5))
-pairs = colocalise(experiment, "recording", "donor", "acceptor",
+pairs = colocalise(dataset, "recording", "donor", "acceptor",
                    settings=ColocalisationSettings(radius=2.), space="registered")
-density = render_localizations(experiment, "recording", "donor",
+density = render_localizations(dataset, "recording", "donor",
                                settings=RenderSettings(oversampling=5.))
 ```
 

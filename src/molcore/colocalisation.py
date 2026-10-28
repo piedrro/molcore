@@ -14,7 +14,7 @@ from .types.analysis import ColocalisationResult, ColocalisationSettings
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
-    from .types import CancelEvent, CoordinateSpace, Experiment, ProgressCallback
+    from .types import CancelEvent, CoordinateSpace, Dataset, ProgressCallback
 
 
 def _nearest(source: np.ndarray, target: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -42,7 +42,7 @@ _DEFAULT_SETTINGS = ColocalisationSettings()
 
 @logged
 def colocalise(
-    experiment: Experiment,
+    dataset: Dataset,
     acquisition_id: str,
     channel: str,
     target_channel: str,
@@ -60,7 +60,7 @@ def colocalise(
     use the acquisition's common reference, including any selected calibrations.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         acquisition_id: Source acquisition identifier.
         channel: Logical source channel name.
         target_channel: Logical target channel in the same acquisition.
@@ -74,11 +74,11 @@ def colocalise(
     Returns:
         Computed ColocalisationResult value.
     """
-    expected, space = start(experiment, space, progress, cancel_event)
+    expected, space = start(dataset, space, progress, cancel_event)
     if channel == target_channel:
         raise ValueError("Select two different channels")
-    source_view, source = partition(experiment, acquisition_id, channel, space, source_ids)
-    target_view, target = partition(experiment, acquisition_id, target_channel, space, target_ids)
+    source_view, source = partition(dataset, acquisition_id, channel, space, source_ids)
+    target_view, target = partition(dataset, acquisition_id, target_channel, space, target_ids)
     if space == "raw" and source_view.roi != target_view.roi:
         raise ValueError("Raw channel ROIs differ; use a common registered reference")
     xy = np.column_stack((source["x"], source["y"]))
@@ -102,7 +102,7 @@ def colocalise(
         "source_frame": source["frame"][a],
         "target_frame": target["frame"][b],
     }
-    finish(experiment, expected, progress, cancel_event)
+    finish(dataset, expected, progress, cancel_event)
     return ColocalisationResult(
         acquisition_id,
         channel,

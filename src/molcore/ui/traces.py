@@ -18,15 +18,15 @@ from ._common import combo
 if TYPE_CHECKING:
     from qtpy.QtWidgets import QWidget
 
-    from ..types import Experiment, ProgressCallback
+    from ..types import Dataset, ProgressCallback
     from .session import UiSession
 
 
-def _photon_rows(model: Experiment, acquisition_id: str) -> dict[str, np.ndarray]:
+def _photon_rows(model: Dataset, acquisition_id: str) -> dict[str, np.ndarray]:
     """Project sequences into display columns without storing observation records.
 
     Args:
-        model: Source experiment supplying validated photon samples.
+        model: Source dataset supplying validated photon samples.
         acquisition_id: Selected source acquisition.
 
     Returns:
@@ -56,7 +56,7 @@ class TraceViewerWidget(AnalysisTool):
         """Initialise the object and validate its configuration.
 
         Args:
-            session: Shared host-owned experiment, selection and background-job coordinator.
+            session: Shared host-owned dataset, selection and background-job coordinator.
             parent: Optional Qt parent controlling widget lifetime.
         """
         super().__init__(session, parent)
@@ -92,7 +92,7 @@ class TraceViewerWidget(AnalysisTool):
         a, c, space = session.acquisition_id, session.channel, session.space
         source = self.source.currentText()
 
-        def compute(model: Experiment, progress: ProgressCallback | None, cancel: Any) -> AnalysisResult:
+        def compute(model: Dataset, progress: ProgressCallback | None, cancel: Any) -> AnalysisResult:
             """Compute a detached result using the current controls.
 
             Args:

@@ -17,7 +17,7 @@ from .._locking import model_locked
 from .._logging import logged
 
 if TYPE_CHECKING:
-    from .experiment import Experiment
+    from .dataset import Dataset
 
 
 class PhotonUnit(StrEnum):
@@ -206,13 +206,13 @@ class PhotonSequence:
 class PhotonSequenceStore:
     """Own independently identified photon sequences and derived-result validity."""
 
-    def __init__(self, experiment: Experiment) -> None:
+    def __init__(self, dataset: Dataset) -> None:
         """Bind a sequence collection to its owning scientific model.
 
         Args:
-            experiment: Owner providing acquisition and optional anchor bindings.
+            dataset: Owner providing acquisition and optional anchor bindings.
         """
-        self.experiment = experiment
+        self.dataset = dataset
         self._data: dict[str, PhotonSequence] = {}
         self._stale: set[str] = set()
         self.revision = 0
@@ -263,21 +263,23 @@ class PhotonSequenceStore:
             raise TypeError("Expected PhotonSequence")
         if sequence.id in self._data:
             raise ValueError("Photon-sequence ID already exists")
-        acquisition = self.experiment.acquisitions[sequence.acquisition_id]
+        acquisition = self.dataset.acquisitions[sequence.acquisition_id]
         view = acquisition.channels[sequence.channel]
         if not np.isin(sequence.frames, view.source_frames).all():
             raise ValueError("Sequence frames must belong to the measured logical channel")
         if sequence.localization_id is not None:
-            rows = self.experiment.localizations.query(ids=[sequence.localization_id])
+            rows = self.dataset.localizations.query(ids=[sequence.localization_id], space="raw")
             if len(rows["id"]) != 1 or rows["acquisition_id"][0] != acquisition.id:
                 raise ValueError("Localization anchor must belong to the sequence acquisition")
         if sequence.track_id is not None:
-            rows = self.experiment.tracks.query(track_id=sequence.track_id, acquisition_id=acquisition.id)
+            rows = self.dataset.tracks.query(
+                track_id=sequence.track_id, acquisition_id=acquisition.id, space="raw"
+            )
             if not len(rows["id"]):
                 raise ValueError("Track anchor must include the sequence acquisition")
         sample_ids = np.unique(sequence.localization_ids[sequence.localization_ids != 0])
         if len(sample_ids):
-            anchors = self.experiment.localizations.query(ids=sample_ids)
+            anchors = self.dataset.localizations.query(ids=sample_ids, space="raw")
             if len(anchors["id"]) != len(sample_ids) or np.any(anchors["acquisition_id"] != acquisition.id):
                 raise ValueError("Sample localisation anchors must belong to the sequence acquisition")
         times = sequence.timestamps
@@ -346,8 +348,8 @@ class PhotonSequenceStore:
         """
         del self._data[id]
         self._stale.discard(id)
-        self.experiment.crops._photon_saved = {
-            k: v for k, v in self.experiment.crops._photon_saved.items() if k[0] != id
+        self.dataset.crops._photon_saved = {
+            k: v for k, v in self.dataset.crops._photon_saved.items() if k[0] != id
         }
         self.revision += 1
 

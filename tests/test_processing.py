@@ -13,7 +13,7 @@ from molcore import (
     ArraySource,
     Calibration,
     ChannelSpec,
-    Experiment,
+    Dataset,
     StaleResultError,
     alignment,
     localisation,
@@ -23,10 +23,10 @@ from molcore.cpu import CpuExecutor
 from molcore.types.processing import CameraSettings, DriftSettings, LocalisationSettings
 
 
-def spot_experiment(alex=False):
+def spot_dataset(alex=False):
     y, x = np.indices((24, 24))
     image = 20 + 3000 / (2 * np.pi * 1.2**2) * np.exp(-((x - 11.3) ** 2 + (y - 10.7) ** 2) / (2 * 1.2**2))
-    exp = Experiment()
+    exp = Dataset()
     exp.add_acquisition(
         Acquisition(
             ArraySource(np.repeat(image[None], 5, axis=0).astype(np.float32)),
@@ -52,7 +52,7 @@ class ProcessingCase(unittest.TestCase):
 @unittest.skipUnless(importlib.util.find_spec("picasso"), "Picasso processing extra not installed")
 class LocalisationTests(ProcessingCase):
     def test_nonconverged_fits_do_not_clear_active_partition(self):
-        exp = spot_experiment()
+        exp = spot_dataset()
         ids = exp.localizations.add(acquisition_id="a", channel="image", frame=0, x=1, y=1)
         with self.assertRaisesRegex(ValueError, "converge"):
             localisation.localise(
@@ -66,7 +66,7 @@ class LocalisationTests(ProcessingCase):
         self.assertEqual(exp.localizations.query()["id"].tolist(), ids.tolist())
 
     def test_detection_and_both_fits_keep_alex_camera_frames(self):
-        exp = spot_experiment(alex=True)
+        exp = spot_dataset(alex=True)
         settings = LocalisationSettings(min_net_gradient=10, box_size=7, chunk_size=2)
         detections = localisation.detect(exp, "a", "DD", settings=settings, cpu=self.cpu)
         self.assertEqual(detections.columns["frame"].tolist(), [0, 2, 4])
@@ -88,14 +88,14 @@ class LocalisationTests(ProcessingCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "processed.h5"
             exp.save(path)
-            with Experiment.open(path) as restored:
+            with Dataset.open(path) as restored:
                 settings = restored.processing.settings["localisation"]["a"]["DD"]
                 self.assertEqual(settings["settings"]["fit_method"], "mle")
                 self.assertEqual(settings["camera"]["baseline"], 0)
                 self.assertEqual(settings["failed_fits"], 0)
 
     def test_empty_fit_can_replace_partition_and_preview_does_not_mutate(self):
-        exp = spot_experiment()
+        exp = spot_dataset()
         ids = exp.localizations.add(acquisition_id="a", channel="image", frame=0, x=1, y=1)
         settings = LocalisationSettings(min_net_gradient=1e12, chunk_size=5)
         preview = localisation.localise(
@@ -116,7 +116,7 @@ class LocalisationTests(ProcessingCase):
         self.assertEqual(len(exp.localizations), 0)
 
     def test_cancelled_and_stale_runs_do_not_overwrite_active_results(self):
-        exp = spot_experiment()
+        exp = spot_dataset()
         ids = exp.localizations.add(acquisition_id="a", channel="image", frame=0, x=1, y=1)
         stop = threading.Event()
         stop.set()
@@ -142,7 +142,7 @@ class LocalisationTests(ProcessingCase):
 @unittest.skipUnless(importlib.util.find_spec("picasso"), "Picasso processing extra not installed")
 class UndriftingTests(ProcessingCase):
     def test_rcc_rejects_fewer_than_four_backend_segments_before_starting_workers(self):
-        exp = Experiment()
+        exp = Dataset()
         exp.add_acquisition(Acquisition(ArraySource(np.zeros((34, 8, 8))), id="a"))
         exp.localizations.add(acquisition_id="a", channel="image", frame=np.arange(34), x=3, y=3)
         with patch("molcore.undrifting.executor", side_effect=AssertionError("Worker must not start")):
@@ -154,7 +154,7 @@ class UndriftingTests(ProcessingCase):
     def test_batch_undrift_uses_multiple_jobs_and_preserves_selection(self):
         rng = np.random.default_rng(13)
         points = rng.uniform(10, 50, (20, 2))
-        exp = Experiment()
+        exp = Dataset()
         for name in ("a", "b"):
             exp.add_acquisition(
                 Acquisition(ArraySource(np.zeros((60, 64, 64), dtype=np.uint16)), id=name, pixel_size=100)
@@ -185,7 +185,7 @@ class UndriftingTests(ProcessingCase):
         positions += rng.normal(0, 0.02, positions.shape)
         for method in ("rcc", "aim"):
             with self.subTest(method=method):
-                exp = Experiment()
+                exp = Dataset()
                 exp.add_acquisition(
                     Acquisition(
                         ArraySource(np.zeros((160, 64, 64), dtype=np.uint16)),
@@ -198,7 +198,7 @@ class UndriftingTests(ProcessingCase):
                 exp.localizations.add(
                     acquisition_id="a", channel="DD", frame=2 * frame, x=positions[:, 0], y=positions[:, 1]
                 )
-                before = exp.localizations.query(original=True)["x"].copy()
+                before = exp.localizations.query(original=True, space="raw")["x"].copy()
                 updates = []
                 result = undrifting.undrift(
                     exp,
@@ -213,14 +213,16 @@ class UndriftingTests(ProcessingCase):
                 np.testing.assert_allclose(
                     result.displacement[-1] - result.displacement[0], [1.2, -0.8], atol=0.4
                 )
-                np.testing.assert_array_equal(exp.localizations.query(original=True)["x"], before)
+                np.testing.assert_array_equal(
+                    exp.localizations.query(original=True, space="raw")["x"], before
+                )
                 self.assertEqual(updates[-1].percent, 100)
                 self.assertTrue(any(0 < u.percent < 100 for u in updates))
 
 
 class AlignmentTests(unittest.TestCase):
     def test_affine_alignment_composes_target_reference_and_is_non_destructive(self):
-        exp = Experiment()
+        exp = Dataset()
         exp.add_acquisition(
             Acquisition(
                 ArraySource(np.zeros((1, 30, 30))),
@@ -253,13 +255,15 @@ class AlignmentTests(unittest.TestCase):
         np.testing.assert_allclose(result.matrix, matrix, atol=1e-10)
         np.testing.assert_allclose(result.reference_matrix, target_ref @ matrix, atol=1e-10)
         np.testing.assert_allclose(result.residuals, 0, atol=1e-10)
-        np.testing.assert_array_equal(exp.localizations.query(channel="source")["x"], points[:, 0])
+        np.testing.assert_array_equal(
+            exp.localizations.query(channel="source", space="raw")["x"], points[:, 0]
+        )
         np.testing.assert_allclose(
             exp.localizations.query(channel="source", space="registered")["x"], target[:, 0] + 5
         )
 
     def test_translation_matching_and_degenerate_affine_rejection(self):
-        exp = Experiment()
+        exp = Dataset()
         exp.add_acquisition(
             Acquisition(
                 ArraySource(np.zeros((1, 20, 20))),

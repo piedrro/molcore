@@ -6,12 +6,12 @@ from pathlib import Path
 
 import numpy as np
 
-from molcore import Acquisition, ArraySource, CoordinateSpace, Experiment, StaleResultError
+from molcore import Acquisition, ArraySource, CoordinateSpace, Dataset, StaleResultError
 from molcore.staging import state_token
 
 
 def fixture():
-    exp = Experiment()
+    exp = Dataset()
     exp.add_acquisition(Acquisition(ArraySource(np.ones((5, 11, 11))), id="a"))
     ids = exp.localizations.add(
         acquisition_id="a", channel="image", frame=[0, 2, 4], x=[3.0, 4.0, 5.0], y=[4.0, 4.0, 4.0]
@@ -37,7 +37,7 @@ class EditingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "test.h5"
             exp.save(path)
-            with Experiment.open(path) as restored:
+            with Dataset.open(path) as restored:
                 np.testing.assert_equal(restored.localizations.query()["id"], ids)
                 np.testing.assert_equal(restored.localizations.query()["signal"], [10.0, np.nan, 20.0])
 
@@ -87,7 +87,7 @@ class EditingTests(unittest.TestCase):
         np.testing.assert_equal(view.camera_frames([4, 0, 2]), [4, 0, 2])
         np.testing.assert_equal(view.channel_indices([4, 0, 2]), [4, 0, 2])
         exp.transforms.set_drift("a", [[1.0, 2.0]] * 5)
-        rows = exp.localizations.query()
+        rows = exp.localizations.query(space="raw")
         converted = exp.transforms.convert_coordinates(
             rows, source_space=CoordinateSpace.RAW, target_space=CoordinateSpace.CORRECTED
         )
@@ -255,7 +255,7 @@ class MappingAndBoundaryTests(unittest.TestCase):
     def test_affine_cross_channel_round_trip_and_alex_frame_rejection(self):
         from molcore import Calibration, ChannelSpec
 
-        exp = Experiment()
+        exp = Dataset()
         exp.add_acquisition(
             Acquisition(
                 ArraySource(np.ones((4, 11, 11))),
@@ -309,8 +309,8 @@ class MappingAndBoundaryTests(unittest.TestCase):
 
     def test_clone_tokens_preserve_mask_and_timing_state(self):
         from molcore import Segmentation
-        from molcore.staging import clone_experiment
+        from molcore.staging import clone_dataset
 
         exp, _ = fixture()
         exp.add_segmentation(Segmentation(id="mask", acquisition_id="a", labels=np.ones((11, 11), dtype=int)))
-        self.assertEqual(state_token(exp), state_token(clone_experiment(exp)))
+        self.assertEqual(state_token(exp), state_token(clone_dataset(exp)))

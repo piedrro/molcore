@@ -303,8 +303,8 @@ class AlignmentResult:
         acquisition_id: Acquisition identifier.
         source_channel: Channel being aligned.
         target_channel: Channel defining correspondence coordinates.
-        matrix: Source-to-target 3x3 affine matrix.
-        reference_matrix: Source-to-experiment-reference affine matrix.
+        matrix: Source-to-target 3x3 homogeneous matrix.
+        reference_matrix: Source-to-dataset-reference homogeneous matrix.
         residuals: Euclidean fit residual per matched pair, in target pixels.
         source_ids: IDs of matched source localizations.
         target_ids: IDs of matched target localizations.
@@ -320,3 +320,4 @@ class AlignmentResult:
     source_ids: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.uint64))
     target_ids: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.uint64))
     calibration_name: str | None = None
+    inliers: np.ndarray = field(default_factory=lambda: np.array([], dtype=bool))

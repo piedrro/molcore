@@ -15,7 +15,7 @@ from .photometry import apply_photometry as apply_photometry
 from .photon_sequences import apply_photon_sequences as apply_photon_sequences
 from .staging import transact
 from .tracking import apply_tracking as apply_tracking
-from .types import Calibration, Experiment
+from .types import Calibration, Dataset
 
 if TYPE_CHECKING:
     from .types import AlignmentResult, CameraSettings, DriftResult, LocalisationResult, Segmentation
@@ -23,8 +23,8 @@ if TYPE_CHECKING:
 
 @logged
 def apply_batch(
-    experiment: Experiment,
-    operations: Iterable[Callable[[Experiment], Any]],
+    dataset: Dataset,
+    operations: Iterable[Callable[[Dataset], Any]],
     *,
     expected: tuple | None = None,
 ) -> list[Any]:
@@ -34,8 +34,8 @@ def apply_batch(
     and mutations to borrowed image arrays cannot be rolled back.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
-        operations: Model-update callables executed atomically against one staged experiment.
+        dataset: Scientific model supplying acquisitions and result tables.
+        operations: Model-update callables executed atomically against one staged dataset.
         expected: Source revision token used to reject stale results.
 
     Returns:
@@ -45,7 +45,7 @@ def apply_batch(
     if not all(callable(operation) for operation in operations):
         raise ValueError("Batch operations must be callable")
 
-    def commit(model: Experiment) -> list[Any]:
+    def commit(model: Dataset) -> list[Any]:
         """Commit.
 
         Args:
@@ -57,17 +57,17 @@ def apply_batch(
         model._batch_source_token = model._transaction_source_token
         return [operation(model) for operation in operations]
 
-    return transact(experiment, commit, expected=expected)
+    return transact(dataset, commit, expected=expected)
 
 
 @logged
 def apply_localisation(
-    experiment: Experiment, result: Any, *, camera: CameraSettings | None, expected: tuple | None = None
+    dataset: Dataset, result: Any, *, camera: CameraSettings | None, expected: tuple | None = None
 ) -> LocalisationResult:
     """Replace one complete fitted partition after validating the whole update.
 
     Args:
-        experiment: Live model to update.
+        dataset: Live model to update.
         result: Detached LocalisationResult; subset previews cannot be applied.
         camera: Explicit CameraSettings used to produce the result.
         expected: Optional state token captured before computation.
@@ -80,7 +80,7 @@ def apply_localisation(
     if result.failed_fits and not len(result.columns["frame"]):
         raise ValueError("No localisation fits converged; active results were preserved")
 
-    def commit(model: Experiment) -> Any:
+    def commit(model: Dataset) -> Any:
         """Commit.
 
         Args:
@@ -105,17 +105,15 @@ def apply_localisation(
         )
         return replace(result, localization_ids=ids)
 
-    return transact(experiment, commit, expected=expected)
+    return transact(dataset, commit, expected=expected)
 
 
 @logged
-def apply_drift(
-    experiment: Experiment, results: Any, *, expected: tuple | None = None
-) -> dict[str, DriftResult]:
+def apply_drift(dataset: Dataset, results: Any, *, expected: tuple | None = None) -> dict[str, DriftResult]:
     """Apply one or more drift results atomically.
 
     Args:
-        experiment: Live model receiving reference-coordinate displacements.
+        dataset: Live model receiving reference-coordinate displacements.
         results: Mapping from acquisition identifier to DriftResult.
         expected: Optional pre-computation state token.
 
@@ -123,7 +121,7 @@ def apply_drift(
         Mapping of results marked applied.
     """
 
-    def commit(model: Experiment) -> Any:
+    def commit(model: Dataset) -> Any:
         """Commit.
 
         Args:
@@ -150,12 +148,12 @@ def apply_drift(
             )
         return {k: replace(v, applied=True) for k, v in results.items()}
 
-    return transact(experiment, commit, expected=expected)
+    return transact(dataset, commit, expected=expected)
 
 
 @logged
 def apply_alignment(
-    experiment: Experiment,
+    dataset: Dataset,
     result: Any,
     *,
     model: str = "affine",
@@ -166,9 +164,9 @@ def apply_alignment(
     """Install a fresh named calibration from an alignment preview.
 
     Args:
-        experiment: Live model receiving the selected calibration.
+        dataset: Live model receiving the selected calibration.
         result: Detached AlignmentResult.
-        model: Translation or affine fitting model recorded as provenance.
+        model: Translation, affine, or homography fit recorded as provenance.
         match_radius: Explicit automatic correspondence radius, when used.
         name: New calibration name; defaults to the acquisition/channel pair.
         expected: Optional pre-computation state token.
@@ -200,6 +198,26 @@ def apply_alignment(
                     "source_ids": result.source_ids.tolist(),
                     "target_ids": result.target_ids.tolist(),
                     "residuals": result.residuals.tolist(),
+                    "inliers": result.inliers.tolist(),
+                    "source_emission": staged.acquisitions[result.acquisition_id]
+                    .channel_specs[result.source_channel]
+                    .emission,
+                    "source_shape": list(
+                        staged.acquisitions[result.acquisition_id].channels[result.source_channel].shape[1:]
+                    ),
+                    "source_roi": list(
+                        staged.acquisitions[result.acquisition_id].channels[result.source_channel].roi
+                    ),
+                    "target_emission": staged.acquisitions[result.acquisition_id]
+                    .channel_specs[result.target_channel]
+                    .emission,
+                    "target_shape": list(
+                        staged.acquisitions[result.acquisition_id].channels[result.target_channel].shape[1:]
+                    ),
+                    "target_roi": list(
+                        staged.acquisitions[result.acquisition_id].channels[result.target_channel].roi
+                    ),
+                    "pixel_size_nm": staged.acquisitions[result.acquisition_id].pixel_size,
                 },
             )
         )
@@ -219,17 +237,17 @@ def apply_alignment(
         )
         return replace(result, calibration_name=name)
 
-    return transact(experiment, commit, expected=expected)
+    return transact(dataset, commit, expected=expected)
 
 
 @logged
 def apply_segmentations(
-    experiment: Experiment, results: Any, *, expected: tuple | None = None
+    dataset: Dataset, results: Any, *, expected: tuple | None = None
 ) -> dict[str, Segmentation]:
     """Validate and store every mask before exposing any part of a batch.
 
     Args:
-        experiment: Live model receiving static masks and source provenance.
+        dataset: Live model receiving static masks and source provenance.
         results: Mapping of segmentation IDs to detached Segmentation objects.
         expected: Optional pre-computation state token.
 
@@ -237,7 +255,7 @@ def apply_segmentations(
         Applied segmentation mapping.
     """
 
-    def commit(model: Experiment) -> Any:
+    def commit(model: Dataset) -> Any:
         """Commit.
 
         Args:
@@ -263,4 +281,4 @@ def apply_segmentations(
                 model.processing.software[package] = cellpose_values[0].metadata[f"{package}_version"]
         return results
 
-    return transact(experiment, commit, expected=expected)
+    return transact(dataset, commit, expected=expected)

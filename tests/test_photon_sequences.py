@@ -8,14 +8,14 @@ from pathlib import Path
 
 import numpy as np
 
-from molcore import Acquisition, ArraySource, Experiment, PhotonSequence, PhotonUnit
+from molcore import Acquisition, ArraySource, Dataset, PhotonSequence, PhotonUnit
 from molcore.photon_sequences import from_observations
-from molcore.staging import clone_experiment, state_token, transact
+from molcore.staging import clone_dataset, state_token, transact
 
 
 class PhotonSequenceTests(unittest.TestCase):
     def setUp(self):
-        self.model = Experiment()
+        self.model = Dataset()
         self.images = np.arange(5 * 9 * 9, dtype=np.uint16).reshape(5, 9, 9)
         self.model.add_acquisition(
             Acquisition(ArraySource(self.images), id="a", timestamps=np.arange(5) * 0.2)
@@ -75,7 +75,7 @@ class PhotonSequenceTests(unittest.TestCase):
             for policy, (_, _, photons) in policies.items():
                 path = Path(directory) / f"{policy}.h5"
                 self.model.save(path, image_policy=policy, crop_width=3)
-                with Experiment.open(path) as loaded:
+                with Dataset.open(path) as loaded:
                     np.testing.assert_allclose(
                         loaded.photon_sequences["p"].photons, [10.0, np.nan, -1.0], equal_nan=True
                     )
@@ -98,7 +98,7 @@ class PhotonSequenceTests(unittest.TestCase):
         before = state_token(self.model)
         self.model.photon_sequences.add(self.sequence(localization_id=lid))
         self.assertNotEqual(before, state_token(self.model))
-        cloned = clone_experiment(self.model)
+        cloned = clone_dataset(self.model)
         self.assertFalse(cloned.photon_sequences["p"].photons.flags.writeable)
         transact(self.model, lambda model: model.photon_sequences.add(self.sequence(id="q")))
         self.assertEqual(len(self.model.photon_sequences), 2)
@@ -150,7 +150,7 @@ class PhotonSequenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "missing.h5"
             self.model.save(path, image_policy="photon_sequence_crops", crop_width=3)
-            with Experiment.open(path) as loaded:
+            with Dataset.open(path) as loaded:
                 crops = list(loaded.crops.photon_sequence("p", width=3))
                 self.assertIsNone(crops[1])
                 self.assertEqual(crops[2].sample_index, 2)
@@ -164,7 +164,7 @@ class PhotonSequenceTests(unittest.TestCase):
             with h5py.File(path, "r+") as stream:
                 stream.attrs["format_version"] = 1
                 del stream["photon_sequences"]
-            with Experiment.open(path) as loaded:
+            with Dataset.open(path) as loaded:
                 self.assertEqual(len(loaded.photon_sequences), 0)
 
     def test_crop_only_snapshot_can_be_resaved_without_movies(self):
@@ -172,7 +172,7 @@ class PhotonSequenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "photons.h5"
             self.model.save(path, image_policy="photon_sequence_crops", crop_width=3)
-            with Experiment.open(path) as loaded:
+            with Dataset.open(path) as loaded:
                 loaded.save(path, image_policy="photon_sequence_crops", crop_width=3)
                 self.assertEqual(
                     list(loaded.crops.photon_sequence("p", width=3))[1].pixels[1, 1], self.images[2, 4, 4]
@@ -185,7 +185,7 @@ class PhotonSequenceTests(unittest.TestCase):
     def test_alternating_channels_preserve_original_camera_frames(self):
         from molcore import ChannelSpec
 
-        model = Experiment()
+        model = Dataset()
         model.add_acquisition(
             Acquisition(
                 ArraySource(self.images),
@@ -270,7 +270,7 @@ class PhotonSequenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "primary.h5"
             self.model.save(path, image_policy="photon_sequence_crops", crop_width=3)
-            with Experiment.open(path) as loaded:
+            with Dataset.open(path) as loaded:
                 stored = loaded.photon_sequences[applied.sequence_ids[0]]
                 np.testing.assert_allclose(
                     stored.measurements["signal_sum"], preview.sequences[0].measurements["signal_sum"]

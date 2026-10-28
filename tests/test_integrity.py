@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from molcore import Acquisition, ArraySource, Calibration, Experiment, Segmentation
+from molcore import Acquisition, ArraySource, Calibration, Dataset, Segmentation
 
 
 class IntegrityTests(unittest.TestCase):
@@ -18,7 +18,7 @@ class IntegrityTests(unittest.TestCase):
         self.assertEqual(len(self.exp.localizations), 0)
 
     def setUp(self):
-        self.exp = Experiment()
+        self.exp = Dataset()
         self.exp.add_acquisition(Acquisition(ArraySource(np.zeros((5, 7, 7))), id="a"))
 
     def test_large_ids_remain_distinct_when_selected_by_python_integers(self):

@@ -10,7 +10,7 @@ from molcore import (
     ContrastMethod,
     ContrastScope,
     ContrastSettings,
-    Experiment,
+    Dataset,
 )
 from molcore.contrast import autocontrast, autocontrast_channels
 
@@ -22,8 +22,8 @@ def main() -> None:
     original = movie.copy()
     frame = autocontrast(movie[0], settings=ContrastSettings(percentiles=(1.0, 99.0)))
     print("Frame display limits:", frame.limits)
-    experiment = Experiment()
-    experiment.add_acquisition(
+    dataset = Dataset()
+    dataset.add_acquisition(
         Acquisition(
             ArraySource(movie),
             id="recording",
@@ -33,9 +33,9 @@ def main() -> None:
             },
         )
     )
-    per_channel = autocontrast_channels(experiment, "recording")
+    per_channel = autocontrast_channels(dataset, "recording")
     shared = autocontrast_channels(
-        experiment,
+        dataset,
         "recording",
         scope=ContrastScope.SHARED,
         settings=ContrastSettings(method=ContrastMethod.MIN_MAX, max_frames=None),

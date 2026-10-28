@@ -1,4 +1,4 @@
-"""Model-based affine channel alignment without modifying raw coordinates."""
+"""Robust optical channel alignment without modifying raw coordinates."""
 
 from __future__ import annotations
 
@@ -8,8 +8,9 @@ import numpy as np
 
 from ._logging import logged
 from ._processing import check_snapshot, executor, snapshot
+from .transforms import project_points
 from .types._shared import Calibration
-from .types.experiment import Experiment
+from .types.dataset import Dataset
 from .types.processing import AlignmentResult
 from .types.tables import identifiers
 
@@ -18,6 +19,117 @@ if TYPE_CHECKING:
 
     from .cpu import CpuExecutor, WorkerProgress
     from .types import CancelEvent, ProgressCallback
+
+
+def _homography(source: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """Fit a normalized DLT homography, rejecting degenerate correspondences."""
+    normalized, transforms = [], []
+    for points in (source, target):
+        center = points.mean(axis=0)
+        radius = np.sqrt(np.mean(np.sum((points - center) ** 2, axis=1)))
+        if radius <= np.finfo(float).eps:
+            raise ValueError("Homography fiducials are degenerate")
+        scale = np.sqrt(2) / radius
+        transform = np.array([[scale, 0, -scale * center[0]], [0, scale, -scale * center[1]], [0, 0, 1]])
+        transforms.append(transform)
+        normalized.append(project_points(transform, points))
+    src, dst = normalized
+    x, y = src.T
+    u, v = dst.T
+    zero, one = np.zeros(len(x)), np.ones(len(x))
+    design = np.vstack(
+        [
+            np.column_stack([-x, -y, -one, zero, zero, zero, u * x, u * y, u]),
+            np.column_stack([zero, zero, zero, -x, -y, -one, v * x, v * y, v]),
+        ]
+    )
+    if np.linalg.matrix_rank(design) < 8:
+        raise ValueError("Homography fiducials are degenerate/collinear")
+    _, _, vectors = np.linalg.svd(design, full_matrices=True)
+    matrix = np.linalg.solve(transforms[1], vectors[-1].reshape(3, 3) @ transforms[0])
+    matrix /= matrix[2, 2] if abs(matrix[2, 2]) > 1e-12 else np.linalg.norm(matrix)
+    return Calibration("validation", matrix).matrix.copy()
+
+
+def _fit_model(source: np.ndarray, target: np.ndarray, model: str) -> np.ndarray:
+    """Fit one model to an already selected set of correspondences."""
+    if model == "homography":
+        return _homography(source, target)
+    matrix = np.eye(3)
+    if model == "translation":
+        matrix[:2, 2] = np.mean(target - source, axis=0)
+    else:
+        design = np.column_stack([source, np.ones(len(source))])
+        coefficients, _, rank, _ = np.linalg.lstsq(design, target, rcond=None)
+        if rank < 3:
+            raise ValueError("Affine fiducials are degenerate/collinear")
+        matrix[:2] = coefficients.T
+    return Calibration("validation", matrix).matrix.copy()
+
+
+def fit_transform(
+    source: ArrayLike,
+    target: ArrayLike,
+    *,
+    model: str = "affine",
+    ransac_threshold: float = 1.0,
+    max_trials: int = 1000,
+) -> tuple:
+    """Fit paired 2D points with deterministic RANSAC.
+
+    Args:
+        source: Source fiducial coordinates, shape (n, 2).
+        target: Corresponding reference coordinates in matching order.
+        model: Translation, affine or homography model.
+        ransac_threshold: Maximum accepted residual in reference pixels.
+        max_trials: Maximum number of deterministic RANSAC samples.
+
+    Returns:
+        Fitted homogeneous matrix, pair residuals and inlier mask.
+    """
+    source, target = np.asarray(source, dtype=float), np.asarray(target, dtype=float)
+    if source.ndim != 2 or source.shape[1:] != (2,) or target.shape != source.shape:
+        raise ValueError("Expected matching (n, 2) point arrays")
+    if not np.isfinite(source).all() or not np.isfinite(target).all():
+        raise ValueError("Fiducials must be finite")
+    minimum = {"translation": 1, "affine": 3, "homography": 4}.get(model)
+    if minimum is None or len(source) < minimum:
+        raise ValueError("Choose translation (1+), affine (3+), or homography (4+) fiducial pairs")
+    if (
+        not np.isfinite(ransac_threshold)
+        or ransac_threshold <= 0
+        or not isinstance(max_trials, int)
+        or max_trials < 1
+    ):
+        raise ValueError("RANSAC threshold and trials must be positive")
+    rng = np.random.default_rng(0)
+    best, best_score = None, (-1, -np.inf)
+    for _ in range(max_trials if len(source) > minimum else 1):
+        sample = rng.choice(len(source), minimum, replace=False)
+        try:
+            candidate = _fit_model(source[sample], target[sample], model)
+        except (ValueError, np.linalg.LinAlgError):
+            continue
+        residuals = np.linalg.norm(project_points(candidate, source) - target, axis=1)
+        selected = np.isfinite(residuals) & (residuals <= ransac_threshold)
+        score = (int(selected.sum()), -float(np.sum(residuals[selected] ** 2)))
+        if score > best_score:
+            best, best_score = selected, score
+        if selected.all():
+            break
+    if best is None or best.sum() < minimum:
+        raise ValueError(f"No nondegenerate {model} consensus")
+    inliers = best
+    for _ in range(5):
+        matrix = _fit_model(source[inliers], target[inliers], model)
+        residuals = np.linalg.norm(project_points(matrix, source) - target, axis=1)
+        selected = np.isfinite(residuals) & (residuals <= ransac_threshold)
+        if np.array_equal(selected, inliers) or selected.sum() < minimum:
+            break
+        inliers = selected
+    matrix = _fit_model(source[inliers], target[inliers], model)
+    residuals = np.linalg.norm(project_points(matrix, source) - target, axis=1)
+    return matrix, residuals, inliers
 
 
 @logged
@@ -31,7 +143,7 @@ def _job(payload: tuple, reporter: WorkerProgress) -> tuple:
     Returns:
         Computed tuple value.
     """
-    source, target, source_ids, target_ids, model, match_radius, matched = payload
+    source, target, source_ids, target_ids, model, match_radius, matched, threshold, trials = payload
     reporter.report(0, 1, "Matching channel fiducials")
     if not matched:
         from scipy.spatial import cKDTree
@@ -42,32 +154,20 @@ def _job(payload: tuple, reporter: WorkerProgress) -> tuple:
         source, source_ids = source[keep], source_ids[keep]
         target, target_ids = target[nearest[keep]], target_ids[nearest[keep]]
     reporter.report(0.5, 1, "Estimating channel transform")
-    if model == "translation":
-        if not len(source):
-            raise ValueError("Translation needs at least one fiducial pair")
-        matrix = np.eye(3)
-        matrix[:2, 2] = np.mean(target - source, axis=0)
-    else:
-        if len(source) < 3:
-            raise ValueError("Affine alignment needs at least three non-collinear fiducial pairs")
-        design = np.column_stack([source, np.ones(len(source))])
-        coefficients, _, rank, _ = np.linalg.lstsq(design, target, rcond=None)
-        if rank < 3:
-            raise ValueError("Affine fiducials are degenerate/collinear")
-        matrix = np.vstack([coefficients.T, [0.0, 0.0, 1.0]])
-    Calibration("validation", matrix)
-    residuals = np.linalg.norm(source @ matrix[:2, :2].T + matrix[:2, 2] - target, axis=1)
+    matrix, residuals, inliers = fit_transform(
+        source, target, model=model, ransac_threshold=threshold, max_trials=trials
+    )
     reporter.report(1, 1, "Channel alignment complete")
-    return matrix, residuals, source_ids, target_ids
+    return matrix, residuals, source_ids, target_ids, inliers
 
 
 def _rows(
-    experiment: Experiment, acquisition_id: str, channel: str, ids: ArrayLike | None
+    dataset: Dataset, acquisition_id: str, channel: str, ids: ArrayLike | None
 ) -> dict[str, np.ndarray]:
     """Rows.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         acquisition_id: Source acquisition identifier.
         channel: Logical source channel name.
         ids: Stable entity IDs; None selects the available partition.
@@ -75,7 +175,7 @@ def _rows(
     Returns:
         Detached named result columns.
     """
-    rows = experiment.localizations.query(acquisition_id=acquisition_id, channel=channel, ids=ids)
+    rows = dataset.localizations.query(acquisition_id=acquisition_id, channel=channel, ids=ids, space="raw")
     if len(rows["id"]) == 0:
         raise ValueError("No fiducial localizations in selected channel")
     if ids is not None:
@@ -90,7 +190,7 @@ def _rows(
 
 @logged
 def _run(
-    experiment: Experiment,
+    dataset: Dataset,
     acquisition_id: str,
     source_channel: str,
     target_channel: str,
@@ -99,6 +199,8 @@ def _run(
     target_ids: ArrayLike | None,
     model: str,
     match_radius: float,
+    ransac_threshold: float,
+    max_trials: int,
     name: str,
     apply: bool,
     num_cpus: int | None,
@@ -109,7 +211,7 @@ def _run(
     """Run.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         acquisition_id: Source acquisition identifier.
         source_channel: Source channel used by this operation.
         target_channel: Logical target channel in the same acquisition.
@@ -127,37 +229,53 @@ def _run(
     Returns:
         Result retaining the input format or backend-specific representation.
     """
-    if source_channel == target_channel or model not in ("translation", "affine"):
-        raise ValueError("Choose distinct channels and translation or affine alignment")
+    if source_channel == target_channel or model not in ("translation", "affine", "homography"):
+        raise ValueError("Choose distinct channels and translation, affine or homography alignment")
     matched = source_ids is not None and target_ids is not None
     if (source_ids is None) != (target_ids is None):
         raise ValueError("Supply both source_ids and target_ids, or neither")
     if not matched and (match_radius is None or not np.isfinite(match_radius) or match_radius <= 0):
         raise ValueError("Automatic matching requires an explicit positive match_radius")
-    acquisition = experiment.acquisitions[acquisition_id]
+    acquisition = dataset.acquisitions[acquisition_id]
     if source_channel not in acquisition.channels or target_channel not in acquisition.channels:
         raise ValueError("Unknown alignment channel")
-    expected = snapshot(experiment, acquisition_id)
-    source, source_ids = _rows(experiment, acquisition_id, source_channel, source_ids)
-    target, target_ids = _rows(experiment, acquisition_id, target_channel, target_ids)
+    source_emission = acquisition.channel_specs[source_channel].emission
+    target_emission = acquisition.channel_specs[target_channel].emission
+    if source_emission is not None and source_emission == target_emission:
+        raise ValueError("Choose distinct physical emission paths")
+    if acquisition.mode in ("fret", "alex") and source_emission == "D" and target_emission == "A":
+        raise ValueError("Donor emission is the optical reference; align acceptor into donor")
+    expected = snapshot(dataset, acquisition_id)
+    source, source_ids = _rows(dataset, acquisition_id, source_channel, source_ids)
+    target, target_ids = _rows(dataset, acquisition_id, target_channel, target_ids)
     if matched and len(source) != len(target):
         raise ValueError("Matched fiducial lists must have equal length")
-    payload = source, target, source_ids, target_ids, model, match_radius, matched
+    payload = (
+        source,
+        target,
+        source_ids,
+        target_ids,
+        model,
+        match_radius,
+        matched,
+        ransac_threshold,
+        max_trials,
+    )
     with executor(cpu, num_cpus) as runner:
-        matrix, residuals, source_ids, target_ids = runner.map(
+        matrix, residuals, source_ids, target_ids, inliers = runner.map(
             _job, [payload], progress=progress, cancel_event=cancel_event
         )[0]
-    check_snapshot(experiment, acquisition_id, expected)
-    reference_matrix = experiment.transforms._registration(acquisition_id, target_channel) @ matrix
+    check_snapshot(dataset, acquisition_id, expected)
+    reference_matrix = dataset.transforms._registration(acquisition_id, target_channel) @ matrix
     calibration_name = None
     if apply:
         calibration_name = name or f"{acquisition_id}:{source_channel}->{target_channel}"
-        existing = experiment.calibrations.get(calibration_name)
+        existing = dataset.calibrations.get(calibration_name)
         if existing is not None:
             raise ValueError(
                 "Calibration name already exists; choose a new name to preserve other selections"
             )
-        experiment.transforms.add_calibration(
+        dataset.transforms.add_calibration(
             Calibration(
                 calibration_name,
                 reference_matrix,
@@ -168,11 +286,19 @@ def _run(
                     "source_ids": source_ids.tolist(),
                     "target_ids": target_ids.tolist(),
                     "residuals": residuals.tolist(),
+                    "inliers": inliers.tolist(),
+                    "source_emission": source_emission,
+                    "source_shape": list(acquisition.channels[source_channel].shape[1:]),
+                    "source_roi": list(acquisition.channels[source_channel].roi),
+                    "target_emission": target_emission,
+                    "target_shape": list(acquisition.channels[target_channel].shape[1:]),
+                    "target_roi": list(acquisition.channels[target_channel].roi),
+                    "pixel_size_nm": acquisition.pixel_size,
                 },
             )
         )
-        experiment.transforms.select(acquisition_id, source_channel, calibration_name)
-        experiment.processing.settings.setdefault("alignment", {}).setdefault(acquisition_id, {})[
+        dataset.transforms.select(acquisition_id, source_channel, calibration_name)
+        dataset.processing.settings.setdefault("alignment", {}).setdefault(acquisition_id, {})[
             str(source_channel)
         ] = {
             "model": model,
@@ -191,12 +317,13 @@ def _run(
         source_ids,
         target_ids,
         calibration_name,
+        inliers,
     )
 
 
 @logged
 def estimate_alignment(
-    experiment: Experiment,
+    dataset: Dataset,
     acquisition_id: str,
     source_channel: str,
     target_channel: str,
@@ -205,6 +332,8 @@ def estimate_alignment(
     target_ids: ArrayLike | None = None,
     model: str = "affine",
     match_radius: float | None = None,
+    ransac_threshold: float = 1.0,
+    max_trials: int = 1000,
     num_cpus: int | None = None,
     cpu: CpuExecutor | None = None,
     progress: ProgressCallback | None = None,
@@ -213,13 +342,13 @@ def estimate_alignment(
     """Fit channel correspondences without changing the calibration selection.
 
     Args:
-        experiment: Experiment supplying raw effective localization coordinates.
+        dataset: Dataset supplying raw effective localization coordinates.
         acquisition_id: Acquisition containing both logical channels.
         source_channel: Channel to transform.
         target_channel: Channel defining the matched target coordinates.
         source_ids: Optional ordered source fiducial localization IDs.
         target_ids: Corresponding target IDs in matching order.
-        model: translation or affine.
+        model: Translation, affine, or homography fit.
         match_radius: Maximum mutual-nearest distance when IDs are not paired.
         num_cpus: Positive worker count or None for the CPU default.
         cpu: Optional reusable CpuExecutor.
@@ -230,7 +359,7 @@ def estimate_alignment(
         Source-to-target matrix, composed reference matrix and pair residuals.
     """
     return _run(
-        experiment,
+        dataset,
         acquisition_id,
         source_channel,
         target_channel,
@@ -238,6 +367,8 @@ def estimate_alignment(
         target_ids=target_ids,
         model=model,
         match_radius=match_radius,
+        ransac_threshold=ransac_threshold,
+        max_trials=max_trials,
         name=None,
         apply=False,
         num_cpus=num_cpus,
@@ -249,7 +380,7 @@ def estimate_alignment(
 
 @logged
 def align_channels(
-    experiment: Experiment,
+    dataset: Dataset,
     acquisition_id: str,
     source_channel: str,
     target_channel: str,
@@ -258,6 +389,8 @@ def align_channels(
     target_ids: ArrayLike | None = None,
     model: str = "affine",
     match_radius: float | None = None,
+    ransac_threshold: float = 1.0,
+    max_trials: int = 1000,
     name: str | None = None,
     num_cpus: int | None = None,
     cpu: CpuExecutor | None = None,
@@ -267,13 +400,13 @@ def align_channels(
     """Estimate and select a named source-channel registration calibration.
 
     Args:
-        experiment: Experiment to receive a non-destructive calibration.
+        dataset: Dataset to receive a non-destructive calibration.
         acquisition_id: Acquisition identifier.
         source_channel: Channel to align.
         target_channel: Channel defining correspondence coordinates.
         source_ids: Optional ordered source fiducial IDs.
         target_ids: Corresponding target fiducial IDs.
-        model: translation or affine.
+        model: Translation, affine, or homography fit.
         match_radius: Required maximum matching distance for unpaired tables.
         name: New calibration name; existing names are not overwritten.
         num_cpus: Positive CPU count or None for the default.
@@ -285,7 +418,7 @@ def align_channels(
         AlignmentResult including the selected calibration name.
     """
     return _run(
-        experiment,
+        dataset,
         acquisition_id,
         source_channel,
         target_channel,
@@ -293,6 +426,8 @@ def align_channels(
         target_ids=target_ids,
         model=model,
         match_radius=match_radius,
+        ransac_threshold=ransac_threshold,
+        max_trials=max_trials,
         name=name,
         apply=True,
         num_cpus=num_cpus,

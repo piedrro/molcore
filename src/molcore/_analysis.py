@@ -14,13 +14,13 @@ from .types import CoordinateSpace, StaleResultError
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
-    from .types import CancelEvent, Experiment, ProgressCallback
+    from .types import CancelEvent, Dataset, ProgressCallback
     from .types.acquisition import ChannelView
 
 
 @logged
 def partition(
-    experiment: Experiment,
+    dataset: Dataset,
     acquisition_id: str,
     channel: str,
     space: CoordinateSpace | str,
@@ -29,7 +29,7 @@ def partition(
     """Partition.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         acquisition_id: Source acquisition identifier.
         channel: Logical source channel name.
         space: Coordinate space: raw channel pixels, registered reference or drift-corrected reference.
@@ -38,17 +38,15 @@ def partition(
     Returns:
         Computed tuple[ChannelView, dict[str, NumPy array]] value.
     """
-    view = experiment.acquisitions[acquisition_id].channels[channel]
-    rows = experiment.localizations.query(
-        acquisition_id=acquisition_id, channel=channel, space=space, ids=ids
-    )
+    view = dataset.acquisitions[acquisition_id].channels[channel]
+    rows = dataset.localizations.query(acquisition_id=acquisition_id, channel=channel, space=space, ids=ids)
     order = np.argsort(rows["id"], kind="stable")
     return view, {key: values[order] for key, values in rows.items()}
 
 
 @logged
 def finish(
-    experiment: Experiment,
+    dataset: Dataset,
     expected: tuple | None,
     progress: ProgressCallback | None,
     cancel_event: CancelEvent | None,
@@ -56,19 +54,19 @@ def finish(
     """Finish.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         expected: Source revision token used to reject stale results.
         progress: Optional callback receiving structured progress updates.
         cancel_event: Optional event whose is_set() requests cooperative cancellation.
     """
     report(progress, cancel_event, 1, 1, "Analysis complete")
-    if state_token(experiment) != expected:
+    if state_token(dataset) != expected:
         raise StaleResultError("Analysis inputs changed during computation")
 
 
 @logged
 def start(
-    experiment: Experiment,
+    dataset: Dataset,
     space: CoordinateSpace | str,
     progress: ProgressCallback | None,
     cancel_event: CancelEvent | None,
@@ -76,7 +74,7 @@ def start(
     """Start.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         space: Coordinate space: raw channel pixels, registered reference or drift-corrected reference.
         progress: Optional callback receiving structured progress updates.
         cancel_event: Optional event whose is_set() requests cooperative cancellation.
@@ -85,4 +83,4 @@ def start(
         Computed tuple[tuple, CoordinateSpace] value.
     """
     report(progress, cancel_event, 0, 1, "Computing analysis")
-    return state_token(experiment), CoordinateSpace(space)
+    return state_token(dataset), CoordinateSpace(space)

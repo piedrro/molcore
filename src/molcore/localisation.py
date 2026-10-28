@@ -9,7 +9,7 @@ import numpy as np
 
 from ._logging import logged
 from ._processing import backend_version, check_snapshot, executor, record, snapshot
-from .types.experiment import Experiment
+from .types.dataset import Dataset
 from .types.processing import CameraSettings, DetectionResult, LocalisationResult, LocalisationSettings
 
 if TYPE_CHECKING:
@@ -136,7 +136,7 @@ def _combine(chunks: tuple[int, ...] | str, fitting: bool) -> dict[str, np.ndarr
 
 @logged
 def _run(
-    experiment: Experiment,
+    dataset: Dataset,
     acquisition_id: str,
     channel: str,
     *,
@@ -154,7 +154,7 @@ def _run(
     """Run.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         acquisition_id: Source acquisition identifier.
         channel: Logical source channel name.
         settings: Validated settings controlling this operation.
@@ -174,12 +174,12 @@ def _run(
     installed = backend_version()
     if frame_range is not None and apply:
         raise ValueError("Subset processing is a preview; pass apply=False")
-    acquisition = experiment.acquisitions[acquisition_id]
+    acquisition = dataset.acquisitions[acquisition_id]
     view = acquisition.channels[channel]
     token = hash((id(acquisition.source), id(view)))
     if detections is not None and detections.source_token != token:
         raise ValueError("Detection image source/channel changed; detect again")
-    expected = snapshot(experiment, acquisition_id)
+    expected = snapshot(dataset, acquisition_id)
     indices = np.arange(len(view))
     if frame_range is not None:
         first, last = frame_range
@@ -224,7 +224,7 @@ def _run(
     total = (len(indices) + settings.chunk_size - 1) // settings.chunk_size
     with executor(cpu, num_cpus) as runner:
         chunks = runner.map(_job, jobs(), total=total, progress=progress, cancel_event=cancel_event)
-    check_snapshot(experiment, acquisition_id, expected)
+    check_snapshot(dataset, acquisition_id, expected)
     result = _combine([columns for columns, _ in chunks], fitting)
     failed_fits = sum(count for _, count in chunks)
     if not fitting:
@@ -233,9 +233,9 @@ def _run(
     if apply and failed_fits and len(result["frame"]) == 0:
         raise ValueError("No localisation fits converged; active results were preserved")
     if apply:
-        ids = experiment.localizations.replace(acquisition_id, channel, **result)
+        ids = dataset.localizations.replace(acquisition_id, channel, **result)
         record(
-            experiment,
+            dataset,
             "localisation",
             acquisition_id,
             str(channel),
@@ -252,7 +252,7 @@ def _run(
 
 @logged
 def detect(
-    experiment: Experiment,
+    dataset: Dataset,
     acquisition_id: str,
     channel: str,
     *,
@@ -266,7 +266,7 @@ def detect(
     """Detect candidates in MolCore channel frames using Picasso net gradient.
 
     Args:
-        experiment: MolCore Experiment supplying acquisition/channel pixels.
+        dataset: MolCore Dataset supplying acquisition/channel pixels.
         acquisition_id: Acquisition identifier.
         channel: Logical channel name.
         settings: Detection parameters, defaulting to LocalisationSettings().
@@ -280,7 +280,7 @@ def detect(
         Detached candidates; active localization data is unchanged.
     """
     return _run(
-        experiment,
+        dataset,
         acquisition_id,
         channel,
         settings=settings or LocalisationSettings(),
@@ -298,7 +298,7 @@ def detect(
 
 @logged
 def fit(
-    experiment: Experiment,
+    dataset: Dataset,
     detections: DetectionResult,
     *,
     camera: CameraSettings,
@@ -312,7 +312,7 @@ def fit(
     """Fit typed detections and optionally replace their active model partition.
 
     Args:
-        experiment: MolCore Experiment supplying the detection image source.
+        dataset: MolCore Dataset supplying the detection image source.
         detections: Result returned by detect().
         camera: Explicit scalar camera calibration.
         settings: Fitting parameters; defaults to the detection settings.
@@ -326,7 +326,7 @@ def fit(
         Detached fitted columns and IDs allocated when apply is true.
     """
     return _run(
-        experiment,
+        dataset,
         detections.acquisition_id,
         detections.channel,
         settings=settings or detections.settings,
@@ -344,7 +344,7 @@ def fit(
 
 @logged
 def localise(
-    experiment: Experiment,
+    dataset: Dataset,
     acquisition_id: str,
     channel: str,
     *,
@@ -360,7 +360,7 @@ def localise(
     """Detect and fit a MolCore channel through bounded CPU image chunks.
 
     Args:
-        experiment: Experiment whose active results may be updated.
+        dataset: Dataset whose active results may be updated.
         acquisition_id: Acquisition identifier.
         channel: Logical channel name.
         camera: Explicit camera offset, sensitivity and gain.
@@ -380,7 +380,7 @@ def localise(
         CancelledError: Processing was cancelled; active results remain intact.
     """
     return _run(
-        experiment,
+        dataset,
         acquisition_id,
         channel,
         settings=settings or LocalisationSettings(),

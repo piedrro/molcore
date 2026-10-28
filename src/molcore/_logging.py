@@ -75,8 +75,8 @@ def logged[**P, R](function: Callable[P, R]) -> Callable[P, R]:
             "measure_localizations",
             "stationary_traces",
             "track_traces",
-            "save_experiment",
-            "open_experiment",
+            "save_dataset",
+            "open_dataset",
             "read_image",
             "migrate_moltrack",
         }

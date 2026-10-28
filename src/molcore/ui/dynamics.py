@@ -21,7 +21,7 @@ from ._common import SettingsForm, combo
 if TYPE_CHECKING:
     from qtpy.QtWidgets import QWidget
 
-    from ..types import Experiment, PhotometryResult, ProgressCallback, TrackingResult
+    from ..types import Dataset, PhotometryResult, ProgressCallback, TrackingResult
     from .session import UiSession
 
 
@@ -32,19 +32,21 @@ class TrackingWidget(IdTool):
         """Initialise the object and validate its configuration.
 
         Args:
-            session: Shared host-owned experiment, selection and background-job coordinator.
+            session: Shared host-owned dataset, selection and background-job coordinator.
             parent: Optional Qt parent controlling widget lifetime.
         """
         super().__init__(session, parent)
         self.ids.hide()
         self.fields.labelForField(self.ids).hide()
         self.settings_form = SettingsForm(TrackingSettings)
-        # Coordinate space comes from the shared session, not a second selector.
-        self.settings_form.controls["space"].setEnabled(False)
+        # Corrections are automatic; coordinate space is not a UI setting.
+        space_control = self.settings_form.controls["space"]
+        space_control.hide()
+        self.settings_form.layout().labelForField(space_control).hide()
         self.form.addWidget(self.settings_form)
         self.settings_form.changed.connect(self.invalidate)
         self.segmentation = self.field("Segmentation constraint", combo(["None"]))
-        session.experiment_changed.connect(self.refresh)
+        session.dataset_changed.connect(self.refresh)
         session.results_changed.connect(self.refresh)
         session.selection_changed.connect(self.refresh)
         self.button("Preview tracks", self.compute)
@@ -59,7 +61,7 @@ class TrackingWidget(IdTool):
         Args:
             *_: Additional positional values supplied by the caller.
         """
-        refresh_combo(self.segmentation, ["None", *self.session.experiment.segmentations])
+        refresh_combo(self.segmentation, ["None", *self.session.dataset.segmentations])
         self.settings_form.controls["space"].setCurrentText(str(self.session.space))
 
     @logged
@@ -70,7 +72,7 @@ class TrackingWidget(IdTool):
         a, c, cpus = session.acquisition_id, session.channel, session.num_cpus
         segmentation = None if self.segmentation.currentText() == "None" else self.segmentation.currentText()
 
-        def compute(model: Experiment, progress: ProgressCallback | None, cancel: Any) -> TrackingResult:
+        def compute(model: Dataset, progress: ProgressCallback | None, cancel: Any) -> TrackingResult:
             """Compute a detached result using the current controls.
 
             Args:
@@ -100,7 +102,7 @@ class TrackingWidget(IdTool):
             Args:
                 result: Detached computation result to inspect or apply.
             """
-            result = replace(result, expected=state_token(session.experiment))
+            result = replace(result, expected=state_token(session.dataset))
             self.ready(result, f"{len(result.memberships)} tracks; active memberships unchanged")
             ids = np.concatenate(result.memberships) if result.memberships else np.array([], dtype=np.uint64)
             groups = (
@@ -108,7 +110,7 @@ class TrackingWidget(IdTool):
                 if len(ids)
                 else ids
             )
-            rows = session.experiment.localizations.query(ids=ids, space=settings.space)
+            rows = session.dataset.localizations.query(ids=ids, space=settings.space)
             membership = {int(v): i for i, members in enumerate(result.memberships) for v in members}
             rows["preview_track"] = np.array([membership[int(v)] for v in rows["id"]], dtype=np.int64)
             self.show_columns(rows)
@@ -124,7 +126,7 @@ class TrackingWidget(IdTool):
     def apply_preview(self) -> None:
         """Apply the current preview after checking its source revision."""
         self.require_preview()
-        tracking.apply_tracking(self.session.experiment, self.preview, expected=self.preview_token)
+        tracking.apply_tracking(self.session.dataset, self.preview, expected=self.preview_token)
         self.session.changed()
         self.status.setText("Tracks applied")
 
@@ -136,7 +138,7 @@ class PhotometryWidget(IdTool):
         """Initialise the object and validate its configuration.
 
         Args:
-            session: Shared host-owned experiment, selection and background-job coordinator.
+            session: Shared host-owned dataset, selection and background-job coordinator.
             parent: Optional Qt parent controlling widget lifetime.
         """
         super().__init__(session, parent)
@@ -155,13 +157,13 @@ class PhotometryWidget(IdTool):
         """Preview masks."""
         settings = self.settings_form.value()
         session = self.session
-        view = session.experiment.acquisitions[session.acquisition_id].channels[session.channel]
+        view = session.dataset.acquisitions[session.acquisition_id].channels[session.channel]
         image = view[view.channel_index(session.camera_frame)]
         ids = self.selected_ids(tracks=self.mode.currentText() == "track")
         rows = (
-            session.experiment.tracks.query(track_id=ids)
+            session.dataset.tracks.query(track_id=ids, space="raw")
             if self.mode.currentText() == "track"
-            else session.experiment.localizations.query(ids=ids)
+            else session.dataset.localizations.query(ids=ids, space="raw")
         )
         current = np.flatnonzero(
             (rows["frame"] == session.camera_frame) & (rows["channel"] == session.channel)
@@ -181,10 +183,11 @@ class PhotometryWidget(IdTool):
             distance <= radius + settings.buffer + settings.background_width
         )
         if settings.exclude_neighbours:
-            neighbours = session.experiment.localizations.query(
+            neighbours = session.dataset.localizations.query(
                 acquisition_id=session.acquisition_id,
                 channel=session.channel,
                 frame_range=(session.camera_frame, session.camera_frame + 1),
+                space="raw",
             )
             for nx, ny in zip(neighbours["x"], neighbours["y"], strict=True):
                 nx, ny = np.floor(nx + 0.5), np.floor(ny + 0.5)
@@ -197,10 +200,19 @@ class PhotometryWidget(IdTool):
         import pyqtgraph as pg
 
         self.plot.clear()
-        self.plot.addItem(pg.ImageItem(np.asarray(image), axisOrder="row-major"))
+        display = session.dataset.transforms.image(
+            session.acquisition_id, session.channel, session.camera_frame, space=session.space
+        )
+        self.plot.addItem(pg.ImageItem(display, axisOrder="row-major"))
+        matrix = session.dataset.transforms.matrix(
+            session.acquisition_id, session.channel, session.camera_frame, space=session.space
+        )
         for mask, color in ((signal, "r"), (ring, "b")):
             py, px = np.nonzero(mask)
-            self.plot.plot(px, py, pen=None, symbol="s", symbolBrush=None, symbolPen=color, symbolSize=8)
+            points = matrix @ np.stack([px, py, np.ones(len(px))])
+            self.plot.plot(
+                points[0], points[1], pen=None, symbol="s", symbolBrush=None, symbolPen=color, symbolSize=8
+            )
         self.plot.setAspectLocked(True)
         self.status.setText("Red: aperture; blue: local background after neighbour exclusion")
 
@@ -221,7 +233,7 @@ class PhotometryWidget(IdTool):
         }[mode]
 
         def compute(
-            model: Experiment, progress: ProgressCallback | None, cancel: Any
+            model: Dataset, progress: ProgressCallback | None, cancel: Any
         ) -> PhotometryResult | PhotonSequenceResult:
             """Compute a detached result using the current controls.
 
@@ -250,7 +262,7 @@ class PhotometryWidget(IdTool):
             Args:
                 result: Detached computation result to inspect or apply.
             """
-            result = replace(result, expected=state_token(session.experiment))
+            result = replace(result, expected=state_token(session.dataset))
             description = (
                 f"{len(result.sequences)} photon sequences"
                 if isinstance(result, PhotonSequenceResult)
@@ -265,7 +277,7 @@ class PhotometryWidget(IdTool):
     def apply_preview(self) -> None:
         """Apply the current preview after checking its source revision."""
         self.require_preview()
-        photometry.apply_photometry(self.session.experiment, self.preview, expected=self.preview_token)
+        photometry.apply_photometry(self.session.dataset, self.preview, expected=self.preview_token)
         self.session.changed()
         self.status.setText("Measurement run applied")
 
@@ -284,7 +296,7 @@ class TrajectoryStatisticsWidget(IdTool):
         """Initialise the object and validate its configuration.
 
         Args:
-            session: Shared host-owned experiment, selection and background-job coordinator.
+            session: Shared host-owned dataset, selection and background-job coordinator.
             parent: Optional Qt parent controlling widget lifetime.
         """
         super().__init__(session, parent)
@@ -322,7 +334,7 @@ class TrajectoryStatisticsWidget(IdTool):
         )
 
         def compute(
-            model: Experiment, progress: ProgressCallback | None, cancel: Any
+            model: Dataset, progress: ProgressCallback | None, cancel: Any
         ) -> TrajectoryAnalysisResult:
             """Compute a detached result using the current controls.
 

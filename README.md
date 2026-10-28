@@ -25,6 +25,13 @@ of napari and GUI code.
 
 ## Basic workflow
 
+For multiple oligo probing rounds on one surface, use
+[`Experiment` and `Dataset`](docs/datasets.md). Optical alignment shares one
+calibration across FRET Acceptor or ALEX DA/AA channels; experiment-level
+alignment corrects surface movement between rounds. Both use lazy views and
+retain original images until an explicit transformed-image export.
+Run `python examples/sequencing.py` for a two-round ALEX example.
+
 Independent frame-resolved photon/intensity sequences and all combinations of
 localisation, track and photon-sequence crop storage are described in
 [photon sequences](docs/photon-sequences.md).
@@ -36,24 +43,24 @@ with `pip install "molcore[ui]"`; the host supplies its Qt binding. See
 
 ```python
 import numpy as np
-from molcore import Acquisition, ChannelName, Experiment, TiffSource
+from molcore import Acquisition, ChannelName, Dataset, TiffSource
 from molcore.interop import napari_points
 
-experiment = Experiment()
-experiment.add_acquisition(Acquisition(
+dataset = Dataset()
+dataset.add_acquisition(Acquisition(
     TiffSource("movie.tif"), id="recording", pixel_size=100,
 ))
-ids = experiment.localizations.add(
+ids = dataset.localizations.add(
     acquisition_id="recording", channel=ChannelName.IMAGE,
     frame=[0, 1], x=[12., 13.], y=[20., 20.], photons=[100., 120.],
 )
-track_id = experiment.tracks.add(ids, metadata={"algorithm": "external tracker"})
-subset = experiment.localizations.query(frame_range=(0, 2))
+track_id = dataset.tracks.add(ids, metadata={"algorithm": "external tracker"})
+subset = dataset.localizations.query(frame_range=(0, 2))
 points = napari_points(subset)  # (time, y, x); no napari import
-crop = experiment.crops.localization(ids[0], width=7)
-experiment.save("experiment.h5", image_policy="full")
+crop = dataset.crops.localization(ids[0], width=7)
+dataset.save("dataset.h5", image_policy="full")
 
-with Experiment.open("experiment.h5") as restored:
+with Dataset.open("dataset.h5") as restored:
     image = restored.acquisitions["recording"].channels["image"][0]
 ```
 
@@ -81,15 +88,21 @@ Google-style docstrings.
   IDs. Zero in an optional anchor column means no anchor. IDs are never reused.
 - Queries return detached NumPy columns. Extra measurement columns are accepted.
   Missing numeric measurements become NaN when new rows omit them.
-- `query(original=True)` returns imported coordinates. Normal queries use manual
-  overrides; `space="registered"` and `space="corrected"` apply lazy corrections.
+- Localization and track queries default to `space="corrected"`: manual edits,
+  selected channel registration/alignment and drift correction apply automatically
+  without modifying stored coordinates. Use `space="raw"` for effective channel
+  coordinates or `query(original=True, space="raw")` for imported coordinates.
+- Display images through `dataset.transforms.image(...)` or the lazy
+  `dataset.transforms.view(...)`; both default to the same corrected space.
+  Direct acquisition/channel sources retain raw pixels for scientific processing.
+  The shared UI applies corrections automatically without coordinate controls.
 - Registration maps raw channel pixels into reference pixels. Corrected views
   then subtract `(dx, dy)` drift in reference pixels at actual camera frames.
-  Drift is never extrapolated. Image warping requires the `resample` extra.
+  Missing registration or drift acts as identity. Supplied drift is never extrapolated.
 
 ## Sequences, edits and masks
 
-Use `experiment.add_sequence(["first", "second"], id="continuous")` to establish
+Use `dataset.add_sequence(["first", "second"], id="continuous")` to establish
 recording order. This creates lazy concatenated channel views and a
 `sequence_frame` query column, while keeping original camera frames and timestamps.
 It does not invent elapsed time across recording gaps. Sequence channels must
@@ -117,7 +130,7 @@ requested frames. TIFFs must be frame-addressable or memory-mappable.
 support `materialize()` and `as_dask()`. File descriptors reopen for
 each read, including in spawned processes.
 
-`Experiment.save` accepts `layout="hdf5"` or `layout="directory"`, and:
+`Dataset.save` accepts `layout="hdf5"` or `layout="directory"`, and:
 
 | `image_policy` | Embedded microscopy pixels |
 | --- | --- |
@@ -137,7 +150,7 @@ explicit list of camera frames at a fixed position. Crops retain origins, validi
 masks, logical channels and original camera frames.
 
 An HDF5 snapshot embeds its selected content. A directory contains
-`experiment.h5` and may reference external originals by relative path. Moving
+`dataset.h5` and may reference external originals by relative path. Moving
 the dataset together with those originals preserves access. Missing originals
 leave result tables and segmentation usable and raise `ImageUnavailableError`
 when pixels are requested. Crops cannot reconstruct full movies or unsaved crop
@@ -145,8 +158,9 @@ widths. Segmentation source images are saved independently of movie policy.
 
 Saves are single-writer snapshots replaced atomically after successful writing.
 The versioned format uses JSON metadata and typed HDF5 datasets, never pickle.
-Molcore writes format version 3 and still reads format-version-1 and -2 files.
-Processing settings and package-version manifests round-trip with the experiment.
+MolCore writes format version 4. Standalone datasets can still read format versions 1–3;
+experiment snapshots store multiple datasets and their alignment records together.
+Processing settings and package-version manifests round-trip with the dataset.
 
 ## CPU processing
 
@@ -172,10 +186,10 @@ from molcore.cpu import CpuExecutor
 from molcore.localisation import localise
 from molcore.types import CameraSettings, LocalisationSettings
 
-def run_processing(experiment):
+def run_processing(dataset):
     with CpuExecutor(num_cpus=4) as cpu:
         return localise(
-            experiment, "recording", "image",
+            dataset, "recording", "image",
             camera=CameraSettings(baseline=100, sensitivity=1, gain=1),
             settings=LocalisationSettings(min_net_gradient=1000, fit_method="mle"),
             cpu=cpu,
@@ -199,7 +213,7 @@ segment_frames=...)`. Both require at least four populated temporal segments.
 Coordinates are estimated in registered reference pixels. Camera-frame drift is
 interpolated only within observed reference-channel coverage; original pixels
 and localization coordinates remain unchanged. RCC uses a one-pixel Gaussian
-rendering kernel. `undrift_many(experiment, {acquisition_id: channel, ...},
+rendering kernel. `undrift_many(dataset, {acquisition_id: channel, ...},
 num_cpus=4)` processes independent acquisitions concurrently. Each estimator's
 temporal passes remain sequential inside its worker.
 
@@ -214,7 +228,7 @@ All processors accept `num_cpus`, a reusable `cpu` executor, `progress`, and
 `cancel_event`. Workers return detached results; the caller validates model
 revisions before committing. Failed, cancelled, and stale runs preserve active
 results. Processing parameters, camera settings and backend versions persist in
-the experiment. Core model imports remain independent of Picasso, Qt and napari.
+the dataset. Core model imports remain independent of Picasso, Qt and napari.
 The processing backend currently targets the verified Picasso 0.11 API series.
 
 ## Cellpose 4 segmentation
@@ -229,9 +243,9 @@ after every job and stale-input check succeeds.
 from molcore.cellpose import segment
 from molcore.types import CellposeSettings
 
-def segment_cells(experiment):
+def segment_cells(dataset):
     return segment(
-        experiment, "recording", "image", segmentation_id="cells",
+        dataset, "recording", "image", segmentation_id="cells",
         settings=CellposeSettings(pretrained_model="cpsam_v2", min_size=15),
         num_cpus=1,
         progress=lambda update: print(update.percent, update.description),
@@ -243,7 +257,7 @@ The default frame is the first actual camera frame in the logical channel, so
 alternating excitation channels retain their original frame identity. Pass
 `space="registered"` or `"corrected"` to segment those coordinate views, and
 `apply=False` for a detached preview. Source images remain saved even when raw
-movie pixels are excluded from an experiment snapshot.
+movie pixels are excluded from an dataset snapshot.
 
 Cellpose uses one CPU worker by default to avoid replicating a large neural
 network across all available CPUs. A reusable `CpuExecutor` amortizes model

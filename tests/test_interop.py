@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from molcore import Acquisition, ArraySource, Experiment
+from molcore import Acquisition, ArraySource, Dataset
 
 
 class InteropTests(unittest.TestCase):
@@ -31,7 +31,7 @@ class InteropTests(unittest.TestCase):
     def test_napari_arrays_use_yx_and_explicit_sequence_timeline(self):
         from molcore.interop import napari_points, napari_tracks
 
-        exp = Experiment()
+        exp = Dataset()
         for name in ("a", "b"):
             exp.add_acquisition(Acquisition(ArraySource(np.zeros((3, 9, 9))), id=name))
         seq = exp.add_sequence(["a", "b"], id="s", allow_cross_boundary_tracks=True, reference="camera")

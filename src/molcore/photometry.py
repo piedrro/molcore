@@ -14,11 +14,12 @@ from ._logging import logged
 from ._processing import executor
 from .cpu import CpuExecutor
 from .staging import state_token, transact
+from .transforms import project_points
 from .types import (
     ApertureShape,
     BackgroundMethod,
     CancelEvent,
-    Experiment,
+    Dataset,
     PhotometryResult,
     PhotometrySettings,
     PhotonSequenceResult,
@@ -185,7 +186,7 @@ def _columns(rows: list[dict]) -> dict[str, np.ndarray]:
 
 
 def _extract(
-    experiment: Experiment,
+    dataset: Dataset,
     selected: ArrayLike,
     *,
     mode: TraceMode,
@@ -201,7 +202,7 @@ def _extract(
     """Extract.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         selected: Selected used by this operation.
         mode: Requested processing or acquisition mode.
         channels: Channels used by this operation.
@@ -234,27 +235,27 @@ def _extract(
         raise ValueError("Select distinct target channels")
     if not isinstance(settings, PhotometrySettings):
         raise TypeError("settings must be PhotometrySettings")
-    expected = state_token(experiment)
+    expected = state_token(dataset)
     if mode == TraceMode.TRACK:
-        rows = experiment.tracks.query(track_id=selected)
+        rows = dataset.tracks.query(track_id=selected, space="raw")
     else:
-        rows = experiment.localizations.query(ids=selected)
+        rows = dataset.localizations.query(ids=selected, space="raw")
         if len(rows["id"]) != len(selected):
             raise ValueError("Unknown localization ID")
     requests = defaultdict(list)
-    transforms = experiment.transforms
+    transforms = dataset.transforms
     for index in range(len(rows["id"])):
         a, source, anchor_frame = (
             str(rows["acquisition_id"][index]),
             str(rows["channel"][index]),
             int(rows["frame"][index]),
         )
-        point = np.array([rows["x"][index], rows["y"][index], 1.0])
-        reference = transforms._registration(a, source) @ point
+        point = np.array([rows["x"][index], rows["y"][index]])
+        reference = project_points(transforms._registration(a, source), point)
         if mode == TraceMode.STATIONARY and settings.follow_drift:
             reference[:2] -= transforms._displacement(a, np.array([anchor_frame]))[0]
         for channel in channels if channels is not None else [source]:
-            view = experiment.acquisitions[a].channels[channel]
+            view = dataset.acquisitions[a].channels[channel]
             frames = view.source_frames if mode == TraceMode.STATIONARY else np.array([anchor_frame])
             frames = frames[np.isin(frames, view.source_frames)]
             if frame_range is not None:
@@ -264,7 +265,9 @@ def _extract(
                 mapped = reference.copy()
                 if mode == TraceMode.STATIONARY and settings.follow_drift:
                     mapped[:2] += transforms._displacement(a, np.array([frame]))[0]
-                target = inverse @ mapped
+                target = project_points(inverse, mapped)
+                if not np.isfinite(target).all():
+                    raise ValueError("Photometry position lies on a projective pole")
                 info = view.frame_info(view.channel_index(int(frame)))
                 tid = int(rows["track_id"][index]) if mode == TraceMode.TRACK else 0
                 lid = int(rows["id"][index])
@@ -293,10 +296,12 @@ def _extract(
         for (a, channel, frame), group in requests.items():
             if cancel_event is not None and cancel_event.is_set():
                 raise CancelledError("Photometry cancelled")
-            view = experiment.acquisitions[a].channels[channel]
+            view = dataset.acquisitions[a].channels[channel]
             neighbours = [(row["x"], row["y"]) for row in group]
             if settings.exclude_neighbours:
-                other = experiment.localizations.query(acquisition_id=a, frame_range=(frame, frame + 1))
+                other = dataset.localizations.query(
+                    acquisition_id=a, frame_range=(frame, frame + 1), space="raw"
+                )
                 if len(other["id"]):
                     x, y = transforms.into_channel(other, channel)
                     neighbours.extend(zip(x, y, strict=True))
@@ -320,21 +325,21 @@ def _extract(
             depends_on_localizations=settings.exclude_neighbours,
         )
         result = PhotonSequenceResult(sequences, settings, mode, run_id, expected)
-    if state_token(experiment) != expected:
+    if state_token(dataset) != expected:
         from .types import StaleResultError
 
         raise StaleResultError("Photometry inputs changed during computation")
-    return apply_photometry(experiment, result) if apply else result
+    return apply_photometry(dataset, result) if apply else result
 
 
 @logged
 def apply_photometry(
-    experiment: Experiment, result: PhotometryResult | PhotonSequenceResult, *, expected: tuple | None = None
+    dataset: Dataset, result: PhotometryResult | PhotonSequenceResult, *, expected: tuple | None = None
 ) -> PhotometryResult | PhotonSequenceResult:
     """Apply localisation measurements or primary photon sequences atomically.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         result: Detached computation result to inspect or apply.
         expected: Source revision token used to reject stale results.
 
@@ -363,9 +368,9 @@ def apply_photometry(
     if isinstance(result, PhotonSequenceResult):
         from .photon_sequences import apply_photon_sequences
 
-        return apply_photon_sequences(experiment, result, expected=expected)
+        return apply_photon_sequences(dataset, result, expected=expected)
 
-    def commit(model: Experiment) -> PhotometryResult:
+    def commit(model: Dataset) -> PhotometryResult:
         """Commit.
 
         Args:
@@ -388,12 +393,12 @@ def apply_photometry(
         }
         return replace(result, observation_ids=ids)
 
-    return transact(experiment, commit, expected=result.expected if expected is None else expected)
+    return transact(dataset, commit, expected=result.expected if expected is None else expected)
 
 
 @logged
 def measure_localizations(
-    experiment: Experiment,
+    dataset: Dataset,
     localization_ids: ArrayLike,
     *,
     channels: list[str] | None = None,
@@ -411,7 +416,7 @@ def measure_localizations(
     measure the same camera frame are omitted. Raw source pixels are required.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         localization_ids: Localization ids used by this operation.
         channels: Channels used by this operation.
         settings: Validated settings controlling this operation.
@@ -428,7 +433,7 @@ def measure_localizations(
     return cast(
         PhotometryResult,
         _extract(
-            experiment,
+            dataset,
             localization_ids,
             mode=TraceMode.LOCALIZATIONS,
             channels=channels,
@@ -445,7 +450,7 @@ def measure_localizations(
 
 @logged
 def stationary_traces(
-    experiment: Experiment,
+    dataset: Dataset,
     localization_ids: ArrayLike,
     *,
     channels: list[str] | None = None,
@@ -466,7 +471,7 @@ def stationary_traces(
     per-frame localisations, spatial tracks or observation records.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         localization_ids: Localization ids used by this operation.
         channels: Channels used by this operation.
         settings: Validated settings controlling this operation.
@@ -483,7 +488,7 @@ def stationary_traces(
     return cast(
         PhotonSequenceResult,
         _extract(
-            experiment,
+            dataset,
             localization_ids,
             mode=TraceMode.STATIONARY,
             channels=channels,
@@ -500,7 +505,7 @@ def stationary_traces(
 
 @logged
 def track_traces(
-    experiment: Experiment,
+    dataset: Dataset,
     track_ids: ArrayLike,
     *,
     channels: list[str] | None = None,
@@ -520,7 +525,7 @@ def track_traces(
     existing localisation memberships unchanged.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         track_ids: Track ids used by this operation.
         channels: Channels used by this operation.
         settings: Validated settings controlling this operation.
@@ -537,7 +542,7 @@ def track_traces(
     return cast(
         PhotonSequenceResult,
         _extract(
-            experiment,
+            dataset,
             track_ids,
             mode=TraceMode.TRACK,
             channels=channels,

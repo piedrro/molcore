@@ -6,7 +6,7 @@ from concurrent.futures import CancelledError
 
 import numpy as np
 
-from molcore import Acquisition, ArraySource, ChannelSpec, Experiment
+from molcore import Acquisition, ArraySource, ChannelSpec, Dataset
 from molcore.contrast import autocontrast, autocontrast_channels
 from molcore.types import ContrastMethod, ContrastScope, ContrastSettings
 
@@ -72,7 +72,7 @@ class ContrastTests(unittest.TestCase):
 
     def test_channels_alex_frames_and_shared_limits(self):
         movie = np.stack([np.full((3, 3), v) for v in (0.0, 100.0, 10.0, 110.0)])
-        exp = Experiment()
+        exp = Dataset()
         exp.add_acquisition(
             Acquisition(
                 ArraySource(movie),
@@ -103,7 +103,7 @@ class ContrastTests(unittest.TestCase):
                 return super()._frame(index)
 
         source = CountingSource(np.ones((20, 3, 3)))
-        exp = Experiment()
+        exp = Dataset()
         exp.add_acquisition(Acquisition(source, id="a"))
         autocontrast_channels(exp, "a", settings=ContrastSettings(max_frames=3))
         self.assertEqual(source.reads, [0, 9, 19])
@@ -116,7 +116,7 @@ class ContrastTests(unittest.TestCase):
 
 class ContrastEdgeTests(unittest.TestCase):
     def test_shared_percentiles_pool_pixels(self):
-        exp = Experiment()
+        exp = Dataset()
         exp.add_acquisition(
             Acquisition(
                 ArraySource(np.array([[[0.0, 0.0, 100.0, 100.0]]])),
@@ -135,7 +135,7 @@ class ContrastEdgeTests(unittest.TestCase):
         self.assertEqual(state_token(exp), before)
 
     def test_range_and_time_dependent_mask(self):
-        exp = Experiment()
+        exp = Dataset()
         exp.add_acquisition(Acquisition(ArraySource(np.arange(12).reshape(3, 2, 2)), id="a"))
         mask = np.zeros((3, 2, 2), dtype=bool)
         mask[1:, 0, 0] = True
@@ -175,7 +175,7 @@ class ContrastEdgeTests(unittest.TestCase):
     def test_stale_channel_input_rejected(self):
         from molcore import StaleResultError
 
-        exp = Experiment()
+        exp = Dataset()
         exp.add_acquisition(Acquisition(ArraySource(np.ones((3, 2, 2))), id="a"))
 
         def progress(_):

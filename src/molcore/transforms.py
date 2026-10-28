@@ -18,23 +18,62 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike
 
-    from .types import Experiment
+    from .types import Dataset
+
+
+def project_points(matrix: ArrayLike, points: ArrayLike) -> np.ndarray:
+    """Apply a homogeneous transform, returning NaN at projective poles.
+
+    Args:
+        matrix: Homogeneous 3x3 coordinate mapping.
+        points: Input coordinates with shape (..., 2).
+
+    Returns:
+        Projected coordinates with the same shape as points.
+    """
+    matrix, points = np.asarray(matrix, dtype=float), np.asarray(points, dtype=float)
+    if matrix.shape != (3, 3) or points.shape[-1:] != (2,):
+        raise ValueError("Expected a 3x3 matrix and (..., 2) points")
+    homogeneous = np.concatenate([points, np.ones((*points.shape[:-1], 1))], axis=-1)
+    mapped = homogeneous @ matrix.T
+    scale = np.sum(np.abs(homogeneous * matrix[2]), axis=-1)
+    valid = np.isfinite(mapped).all(axis=-1) & (np.abs(mapped[..., 2]) > 1e-12 * scale)
+    result = np.full(points.shape, np.nan)
+    np.divide(mapped[..., :2], mapped[..., 2, None], out=result, where=valid[..., None])
+    return result
+
+
+def project_jacobian(matrix: ArrayLike, points: ArrayLike) -> np.ndarray:
+    """Evaluate local derivatives for uncertainty propagation.
+
+    Args:
+        matrix: Homogeneous 3x3 coordinate mapping.
+        points: Raw coordinates with shape (..., 2).
+
+    Returns:
+        Local Jacobian matrices with shape (..., 2, 2).
+    """
+    matrix, points = np.asarray(matrix, dtype=float), np.asarray(points, dtype=float)
+    mapped = project_points(matrix, points)
+    denominator = points @ matrix[2, :2] + matrix[2, 2]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return (matrix[:2, :2] - mapped[..., :, None] * matrix[2, :2]) / denominator[..., None, None]
 
 
 class TransformManager:
     """Compose per-channel affine registrations and per-camera-frame drift.
 
     Args:
-        experiment: Owner used to validate references and invalidate measurements.
+        dataset: Owner used to validate references and invalidate measurements.
     """
 
-    def __init__(self, experiment: Experiment) -> None:
+    def __init__(self, dataset: Dataset) -> None:
         """Initialise the object and validate its configuration.
 
         Args:
-            experiment: Scientific model supplying acquisitions and result tables.
+            dataset: Scientific model supplying acquisitions and result tables.
         """
-        self.experiment = experiment
+        self.dataset = dataset
         self._calibrations, self._selected, self._drift = {}, {}, {}
         self.revision = 0
 
@@ -55,8 +94,8 @@ class TransformManager:
             acquisition_id: Source acquisition identifier.
         """
         self.revision += 1
-        self.experiment.photon_sequences._invalidate(acquisition_id=acquisition_id)
-        self.experiment.observations._invalidate_partition(acquisition_id)
+        self.dataset.photon_sequences._invalidate(acquisition_id=acquisition_id)
+        self.dataset.observations._invalidate_partition(acquisition_id)
 
     @model_locked
     @logged
@@ -69,9 +108,26 @@ class TransformManager:
         self._calibrations[calibration.name] = Calibration(
             calibration.name, calibration.matrix, deepcopy(calibration.metadata)
         )
+        self._refresh_selected_groups(calibration.name)
         for (acquisition, _), name in self._selected.items():
             if name == calibration.name:
                 self._changed(acquisition)
+
+    def _refresh_selected_groups(self, calibration_name: str) -> None:
+        """Keep portable calibration provenance in sync with active path selections."""
+        groups = {}
+        for (acquisition_id, channel), selected_name in self._selected.items():
+            if selected_name != calibration_name:
+                continue
+            spec = self.dataset.acquisitions[acquisition_id].channel_specs[channel]
+            key = (acquisition_id, spec.emission, channel if spec.emission is None else "")
+            groups.setdefault(key, []).append(channel)
+        self._calibrations[calibration_name].metadata["selected_groups"] = [
+            {"acquisition_id": acquisition_id, "emission": emission, "channels": sorted(channels)}
+            for (acquisition_id, emission, _), channels in sorted(
+                groups.items(), key=lambda item: (item[0][0], item[0][1] or "", item[0][2])
+            )
+        ]
 
     @model_locked
     @logged
@@ -83,11 +139,62 @@ class TransformManager:
             channel: Logical channel name.
             calibration_name: Existing named calibration.
         """
-        if channel not in self.experiment.acquisitions[acquisition_id].channels:
+        if channel not in self.dataset.acquisitions[acquisition_id].channels:
             raise ValueError("Unknown channel")
         if calibration_name not in self._calibrations:
             raise ValueError("Unknown calibration")
-        self._selected[acquisition_id, channel] = calibration_name
+        acquisition = self.dataset.acquisitions[acquisition_id]
+        emission = acquisition.channel_specs[channel].emission
+        channels = (
+            [channel]
+            if emission is None
+            else [name for name, spec in acquisition.channel_specs.items() if spec.emission == emission]
+        )
+        calibration = self._calibrations[calibration_name]
+        metadata = calibration.metadata
+        source_emission = metadata.get("source_emission")
+        if source_emission is not None and source_emission != emission:
+            raise ValueError("Calibration emission path does not match selected channel")
+        if (
+            "source_emission" in metadata
+            and source_emission is None
+            and metadata.get("source_channel", channel) != channel
+        ):
+            raise ValueError("Custom channel calibration belongs to a different channel")
+        geometry = metadata.get("source_shape")
+        if geometry is not None and any(
+            tuple(geometry) != acquisition.channels[c].shape[1:] for c in channels
+        ):
+            raise ValueError("Calibration source geometry does not match selected emission path")
+        source_roi = metadata.get("source_roi")
+        if source_roi is not None and any(tuple(source_roi) != acquisition.channels[c].roi for c in channels):
+            raise ValueError("Calibration source geometry does not match selected emission path")
+        if "pixel_size_nm" in metadata and metadata["pixel_size_nm"] != acquisition.pixel_size:
+            raise ValueError("Calibration pixel scale does not match acquisition")
+        target_emission = metadata.get("target_emission")
+        target_channels = (
+            [name for name, spec in acquisition.channel_specs.items() if spec.emission == target_emission]
+            if target_emission is not None
+            else [metadata["target_channel"]]
+            if "target_channel" in metadata
+            else []
+        )
+        if target_emission is not None and not target_channels:
+            raise ValueError("Calibration reference geometry is absent from acquisition")
+        for target_name in target_channels:
+            if target_name not in acquisition.channels:
+                raise ValueError("Calibration reference channel is absent from acquisition")
+            target_view = acquisition.channels[target_name]
+            if ("target_shape" in metadata and tuple(metadata["target_shape"]) != target_view.shape[1:]) or (
+                "target_roi" in metadata and tuple(metadata["target_roi"]) != target_view.roi
+            ):
+                raise ValueError("Calibration reference geometry does not match acquisition")
+        for name in channels:
+            previous = self._selected.get((acquisition_id, name))
+            self._selected[acquisition_id, name] = calibration_name
+            if previous is not None and previous != calibration_name:
+                self._refresh_selected_groups(previous)
+        self._refresh_selected_groups(calibration_name)
         self._changed(acquisition_id)
 
     @model_locked
@@ -105,7 +212,7 @@ class TransformManager:
         Raises:
             ValueError: Frames are duplicate, out of range, or displacements invalid.
         """
-        n_frames = self.experiment.acquisitions[acquisition_id].source.shape[0]
+        n_frames = self.dataset.acquisitions[acquisition_id].source.shape[0]
         displacement = np.array(displacement, dtype=float, copy=True)
         frames = np.arange(len(displacement)) if frames is None else np.asarray(frames)
         if (
@@ -176,10 +283,12 @@ class TransformManager:
             Detached 3x3 affine matrix; corrected subtracts reference-space drift.
         """
         space = CoordinateSpace(space)
-        self.experiment.acquisitions[acquisition_id].channels[channel].channel_index(camera_frame)
+        self.dataset.acquisitions[acquisition_id].channels[channel].channel_index(camera_frame)
         matrix = np.eye(3) if space == "raw" else self._registration(acquisition_id, channel)
         if space == "corrected":
-            matrix[:2, 2] -= self._displacement(acquisition_id, np.array([camera_frame]))[0]
+            translation = np.eye(3)
+            translation[:2, 2] = -self._displacement(acquisition_id, np.array([camera_frame]))[0]
+            matrix = translation @ matrix
         return matrix
 
     @logged
@@ -202,7 +311,7 @@ class TransformManager:
         for a, c in set(zip(rows["acquisition_id"], rows["channel"], strict=True)):
             selected = (rows["acquisition_id"] == a) & (rows["channel"] == c)
             matrix = self._registration(a, c)
-            result[selected] = result[selected] @ matrix[:2, :2].T + matrix[:2, 2]
+            result[selected] = project_points(matrix, result[selected])
             if space == "corrected":
                 result[selected] -= self._displacement(a, rows["frame"][selected])
         return result[:, 0], result[:, 1]
@@ -248,10 +357,12 @@ class TransformManager:
             target = c if target_channel is None else target_channel
             source_matrix = self.matrix(a, c, frame, space=source_space)
             destination = self.matrix(a, target, frame, space=target_space)
-            raw = np.linalg.solve(source_matrix, [*points[i], 1.0])
+            conversion = np.linalg.inv(source_matrix)
             if target != c:
-                raw = np.linalg.solve(self._registration(a, target), self._registration(a, c) @ raw)
-            output[i] = (destination @ raw)[:2]
+                conversion = np.linalg.solve(
+                    self._registration(a, target), self._registration(a, c) @ conversion
+                )
+            output[i] = project_points(destination @ conversion, points[i])
         return output[:, 0], output[:, 1]
 
     @logged
@@ -270,7 +381,7 @@ class TransformManager:
         for acquisition_id in np.unique(rows["acquisition_id"]):
             selected = rows["acquisition_id"] == acquisition_id
             matrix = np.linalg.inv(self._registration(acquisition_id, channel))
-            result[selected] = result[selected] @ matrix[:2, :2].T + matrix[:2, 2]
+            result[selected] = project_points(matrix, result[selected])
         return result[:, 0], result[:, 1]
 
     @logged
@@ -295,7 +406,7 @@ class TransformManager:
         Returns:
             Resampled 2D image, retaining the channel's output geometry.
         """
-        view = self.experiment.acquisitions[acquisition_id].channels[channel]
+        view = self.dataset.acquisitions[acquisition_id].channels[channel]
         image = view[view.channel_index(camera_frame)]
         matrix = self.matrix(acquisition_id, channel, camera_frame, space=space)
         if np.array_equal(matrix, np.eye(3)):
@@ -306,10 +417,11 @@ class TransformManager:
             raise ImportError("SciPy is missing; reinstall MolCore with its runtime dependencies") from exc
         y, x = np.indices(image.shape, dtype=float)
         inverse = np.linalg.inv(matrix)
-        raw = inverse @ np.stack([x.ravel(), y.ravel(), np.ones(x.size)])
+        raw = project_points(inverse, np.column_stack([x.ravel(), y.ravel()]))
+        raw[~np.isfinite(raw)] = -1
         return map_coordinates(
             image if labels else image.astype(float),
-            [raw[1], raw[0]],
+            [raw[:, 1], raw[:, 0]],
             order=0 if labels else 1,
             mode="constant",
             cval=0,
@@ -348,7 +460,7 @@ class TransformedView(Source):
         """
         self.manager, self.acquisition_id, self.channel = manager, acquisition_id, channel
         self.space = CoordinateSpace(space)
-        self.source = manager.experiment.acquisitions[acquisition_id].channels[channel]
+        self.source = manager.dataset.acquisitions[acquisition_id].channels[channel]
         self.shape, self.dtype = self.source.shape, np.dtype(float)
 
     def _frame(self, index: int) -> np.ndarray:

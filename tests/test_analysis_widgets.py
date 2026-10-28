@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 from qtpy.QtWidgets import QApplication
 
-from molcore import Acquisition, ArraySource, Experiment
+from molcore import Acquisition, ArraySource, Dataset
 from molcore.ui import (
     ClusteringWidget,
     ColocalisationWidget,
@@ -31,7 +31,7 @@ class AnalysisWidgetTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
-        model = Experiment()
+        model = Dataset()
         model.add_acquisition(
             Acquisition(
                 ArraySource(np.ones((3, 11, 11))), id="a", timestamps=[0.0, 0.1, 0.3], pixel_size=100.0
@@ -84,7 +84,7 @@ class AnalysisWidgetTests(unittest.TestCase):
         widget.selection_requested.connect(selected.append)
         widget.select_preview()
         self.assertEqual(len(selected), 1)
-        self.assertEqual(len(self.session.experiment.localizations), 3)
+        self.assertEqual(len(self.session.dataset.localizations), 3)
         widget.minimum.setValue(11)
         self.assertIsNone(widget.preview)
         widget.close()
@@ -96,7 +96,7 @@ class AnalysisWidgetTests(unittest.TestCase):
         self.pump()
         self.assertIsNotNone(widget.preview, widget.status.text())
         self.assertEqual(len(widget.preview.centroids["cluster"]), 1)
-        self.assertEqual(len(self.session.experiment.localizations), 3)
+        self.assertEqual(len(self.session.dataset.localizations), 3)
         widget.close()
 
     def test_tracking_preview_requires_explicit_apply(self):
@@ -111,9 +111,9 @@ class AnalysisWidgetTests(unittest.TestCase):
         with patch("molcore.tracking.track", side_effect=fake):
             widget.compute()
             self.pump()
-        self.assertEqual(len(self.session.experiment.tracks.query()["id"]), 0)
+        self.assertEqual(len(self.session.dataset.tracks.query()["id"]), 0)
         widget.apply_preview()
-        self.assertEqual(len(self.session.experiment.tracks.query()["id"]), 3)
+        self.assertEqual(len(self.session.dataset.tracks.query()["id"]), 3)
         self.assertIsNone(widget.preview)
         widget.close()
 
@@ -125,8 +125,93 @@ class AnalysisWidgetTests(unittest.TestCase):
         self.assertIs(form.value().shape, ApertureShape.SQUARE)
         form.close()
 
+    def test_display_defaults_apply_corrections_without_coordinate_controls(self):
+        from qtpy.QtWidgets import QComboBox, QLabel
+
+        from molcore import Calibration
+        from molcore.ui._common import SelectionPanel
+
+        model = self.session.dataset
+        model.transforms.add_calibration(Calibration("shift", [[1, 0, 2], [0, 1, 1], [0, 0, 1]]))
+        model.transforms.select("a", "image", "shift")
+        model.transforms.set_drift("a", [[1, 0], [1, 0], [1, 0]])
+        widget = LocalisationRenderWidget(self.session)
+        widget.compute()
+        self.pump()
+        self.assertIsNotNone(widget.preview, widget.status.text())
+        np.testing.assert_allclose(widget.preview.columns["x"], [5.0, 5.1, 5.2])
+        np.testing.assert_allclose(widget.preview.columns["y"], [5.0, 5.0, 5.0])
+        widget.close()
+        for panel in (SelectionPanel(self.session), TrackingWidget(self.session)):
+            panel.show()
+            self.app.processEvents()
+            for control in panel.findChildren(QComboBox):
+                if "raw" in [control.itemText(i) for i in range(control.count())]:
+                    self.assertFalse(control.isVisible())
+            self.assertFalse(
+                any(
+                    label.isVisible() and label.text() == "Coordinates"
+                    for label in panel.findChildren(QLabel)
+                )
+            )
+            panel.close()
+
+    def test_result_exports_keep_raw_coordinates_for_reimport(self):
+        import tempfile
+        from pathlib import Path
+
+        from molcore import Calibration
+        from molcore.files import import_table, read_table
+        from molcore.staging import clone_dataset
+        from molcore.ui import FileToolsWidget
+
+        model = self.session.dataset
+        model.tracks.add(self.ids)
+        model.transforms.add_calibration(Calibration("shift", [[1, 0, 2], [0, 1, 1], [0, 0, 1]]))
+        model.transforms.select("a", "image", "shift")
+        model.transforms.set_drift("a", [[1, 0], [1, 0], [1, 0]])
+        widget = FileToolsWidget(self.session)
+        with tempfile.TemporaryDirectory() as directory:
+            for tracks in (False, True):
+                widget.export_tracks.setChecked(tracks)
+                path = Path(directory) / f"rows-{tracks}.csv"
+                with patch("qtpy.QtWidgets.QFileDialog.getSaveFileName", return_value=(str(path), "")):
+                    widget.export_results()
+                    self.pump()
+                rows = read_table(path)
+                np.testing.assert_allclose(rows["x"], [4.0, 4.1, 4.2])
+                np.testing.assert_allclose(rows["y"], [4.0, 4.0, 4.0])
+                restored = clone_dataset(model)
+                restored.localizations.delete(self.ids)
+                import_table(restored, "a", "image", rows, tracks=tracks)
+                np.testing.assert_allclose(restored.localizations.query()["x"], [5.0, 5.1, 5.2])
+        widget.close()
+
+    def test_photometry_preview_corrects_image_and_aperture_together(self):
+        import pyqtgraph as pg
+
+        from molcore import Calibration
+
+        model = Dataset()
+        movie = np.zeros((1, 11, 11))
+        movie[0, 4, 4] = 50
+        model.add_acquisition(Acquisition(ArraySource(movie), id="a"))
+        model.localizations.add(acquisition_id="a", channel="image", frame=0, x=4, y=4)
+        model.transforms.add_calibration(Calibration("shift", [[1, 0, 2], [0, 1, 1], [0, 0, 1]]))
+        model.transforms.select("a", "image", "shift")
+        model.transforms.set_drift("a", [[1, 0]])
+        self.session.set_dataset(model)
+        widget = PhotometryWidget(self.session)
+        widget.preview_masks()
+        image = next(item for item in widget.plot.items() if isinstance(item, pg.ImageItem)).image
+        self.assertEqual(image[5, 5], 50)
+        aperture = widget.plot.listDataItems()[0]
+        self.assertEqual(np.mean(aperture.xData), 5)
+        self.assertEqual(np.mean(aperture.yData), 5)
+        widget.close()
+
     def test_trace_normalisation_is_display_only_and_keeps_actual_time(self):
-        model = self.session.experiment
+        model = self.session.dataset
         model.observations.add(
             molecule_id=["seed"] * 3,
             acquisition_id="a",
@@ -154,7 +239,7 @@ class AnalysisWidgetTests(unittest.TestCase):
         widget.close()
 
     def test_trajectory_views_use_real_timing(self):
-        self.session.experiment.tracks.add(self.ids)
+        self.session.dataset.tracks.add(self.ids)
         widget = TrajectoryStatisticsWidget(self.session)
         widget.compute()
         self.pump()
@@ -194,7 +279,7 @@ class AnalysisWidgetTests(unittest.TestCase):
     def test_empty_model_and_cancelled_export_dialog(self):
         empty = UiSession()
         widget = MolCoreToolsWidget(empty)
-        self.assertEqual(widget.tabs.count(), 13)
+        self.assertIn("Dataset alignment", widget.widgets)
         widget.close()
         empty.shutdown()
         tool = ResultsFilterWidget(self.session)
@@ -208,7 +293,7 @@ class AnalysisWidgetTests(unittest.TestCase):
     def test_trace_host_selection_uses_anchor_channel(self):
         from molcore import ChannelSpec
 
-        model = Experiment()
+        model = Dataset()
         model.add_acquisition(
             Acquisition(
                 ArraySource(np.ones((1, 5, 5))),
@@ -261,9 +346,9 @@ class AnalysisWidgetTests(unittest.TestCase):
             self.pump()
             self.assertFalse(function.call_args.kwargs["apply"])
         self.assertIsNotNone(widget.preview, widget.status.text())
-        self.assertEqual(len(self.session.experiment.observations), 0)
+        self.assertEqual(len(self.session.dataset.observations), 0)
         widget.apply_preview()
-        self.assertEqual(len(self.session.experiment.observations), 3)
+        self.assertEqual(len(self.session.dataset.observations), 3)
         self.assertIsNone(widget.preview)
         widget.close()
 
@@ -283,10 +368,11 @@ class AnalysisWidgetTests(unittest.TestCase):
             path = Path(directory) / "density.tif"
             with patch("qtpy.QtWidgets.QFileDialog.getSaveFileName", return_value=(str(path), "")):
                 widget.export_image()
-            self.assertEqual(tifffile.imread(path).shape, (22, 22))
+            self.assertEqual(tifffile.imread(path).shape, (4, 6))
             metadata = json.loads(path.with_suffix(".json").read_text())
             self.assertEqual(metadata["pixel_spacing"], 0.5)
-            self.assertEqual(metadata["space"], "raw")
+            self.assertEqual(metadata["space"], "corrected")
+            self.assertEqual(metadata["origin"], [3.0, 3.0])
         widget.close()
 
     def test_cancellation_discards_filter_result(self):
@@ -309,13 +395,13 @@ class AnalysisWidgetTests(unittest.TestCase):
             self.session.cancel()
             self.pump()
         self.assertIsNone(widget.preview)
-        self.assertEqual(len(self.session.experiment.localizations), 3)
+        self.assertEqual(len(self.session.dataset.localizations), 3)
         widget.close()
 
     def test_trace_viewer_reads_independent_photon_sequences(self):
         from molcore import PhotonSequence
 
-        self.session.experiment.photon_sequences.add(
+        self.session.dataset.photon_sequences.add(
             PhotonSequence(
                 acquisition_id="a",
                 channel="image",
@@ -332,7 +418,7 @@ class AnalysisWidgetTests(unittest.TestCase):
         np.testing.assert_array_equal(widget._columns["frame"], [0, 2])
         np.testing.assert_array_equal(widget._columns["display_value"], [12.0, 18.0])
         self.assertEqual(widget._columns["unit"][0], "photons")
-        self.assertEqual(len(self.session.experiment.observations), 0)
+        self.assertEqual(len(self.session.dataset.observations), 0)
         widget.close()
 
     def test_native_trace_apply_and_background_display_use_photon_model(self):
@@ -340,7 +426,7 @@ class AnalysisWidgetTests(unittest.TestCase):
 
         from molcore.photometry import stationary_traces
 
-        preview = stationary_traces(self.session.experiment, self.ids[:1], cpu=InlineCpu(), apply=False)
+        preview = stationary_traces(self.session.dataset, self.ids[:1], cpu=InlineCpu(), apply=False)
         widget = PhotometryWidget(self.session)
         widget.mode.setCurrentText("stationary")
         with patch("molcore.photometry.stationary_traces", return_value=preview):
@@ -348,8 +434,8 @@ class AnalysisWidgetTests(unittest.TestCase):
             self.pump()
         self.assertIsNotNone(widget.preview, widget.status.text())
         widget.apply_preview()
-        self.assertEqual(len(self.session.experiment.observations), 0)
-        self.assertEqual(len(self.session.experiment.photon_sequences), 1)
+        self.assertEqual(len(self.session.dataset.observations), 0)
+        self.assertEqual(len(self.session.dataset.photon_sequences), 1)
         viewer = TraceViewerWidget(self.session)
         self.assertEqual(viewer.source.currentText(), "Photon sequences")
         viewer.compute()

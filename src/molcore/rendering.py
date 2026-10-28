@@ -8,12 +8,13 @@ import numpy as np
 
 from ._analysis import finish, partition, start
 from ._logging import logged
+from .transforms import project_jacobian, project_points
 from .types.analysis import RenderResult, RenderSettings
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
-    from .types import CancelEvent, CoordinateSpace, Experiment, ProgressCallback
+    from .types import CancelEvent, CoordinateSpace, Dataset, ProgressCallback
 
 
 _DEFAULT_SETTINGS = RenderSettings()
@@ -21,12 +22,12 @@ _DEFAULT_SETTINGS = RenderSettings()
 
 @logged
 def render_localizations(
-    experiment: Experiment,
+    dataset: Dataset,
     acquisition_id: str,
     channel: str,
     *,
     settings: RenderSettings = _DEFAULT_SETTINGS,
-    space: CoordinateSpace | str = "raw",
+    space: CoordinateSpace | str = "corrected",
     ids: ArrayLike | None = None,
     viewport: tuple[tuple[float, float], tuple[float, float]] | None = None,
     progress: ProgressCallback | None = None,
@@ -39,11 +40,11 @@ def render_localizations(
     space; affine registration propagates independent raw x/y uncertainties.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         acquisition_id: Source acquisition identifier.
         channel: Logical source channel name.
         settings: Validated settings controlling this operation.
-        space: Coordinate space: raw channel pixels, registered reference or drift-corrected reference.
+        space: Coordinate space; defaults to the registered, drift-corrected reference.
         ids: Stable entity IDs; None selects the available partition.
         viewport: Viewport used by this operation.
         progress: Optional callback receiving structured progress updates.
@@ -55,8 +56,8 @@ def render_localizations(
     import pandas as pd
     from picasso.render import render
 
-    expected, space = start(experiment, space, progress, cancel_event)
-    view, rows = partition(experiment, acquisition_id, channel, space, ids)
+    expected, space = start(dataset, space, progress, cancel_event)
+    view, rows = partition(dataset, acquisition_id, channel, space, ids)
     valid = np.isfinite(rows["x"]) & np.isfinite(rows["y"])
     rows = {k: v[valid] for k, v in rows.items()}
     if viewport is None:
@@ -81,11 +82,15 @@ def render_localizations(
         if space != "raw":
             raw_x, raw_y = rows["lpx"].copy(), rows["lpy"].copy()
             for frame in np.unique(rows["frame"]):
-                matrix = experiment.transforms.matrix(acquisition_id, channel, int(frame), space=space)[
-                    :2, :2
-                ]
+                matrix = dataset.transforms.matrix(acquisition_id, channel, int(frame), space=space)
                 mask = rows["frame"] == frame
-                variances = np.column_stack((raw_x[mask] ** 2, raw_y[mask] ** 2)) @ (matrix**2).T
+                points = project_points(
+                    np.linalg.inv(matrix), np.column_stack([rows["x"][mask], rows["y"][mask]])
+                )
+                jacobian = project_jacobian(matrix, points)
+                variances = np.einsum(
+                    "nij,nj->ni", jacobian**2, np.column_stack((raw_x[mask] ** 2, raw_y[mask] ** 2))
+                )
                 rows["lpx"][mask], rows["lpy"][mask] = np.sqrt(variances).T
     if len(rows["id"]):
         count, image = render(
@@ -98,7 +103,7 @@ def render_localizations(
         )
     else:
         count, image = 0, np.zeros(tuple(shape), dtype=np.float32)
-    finish(experiment, expected, progress, cancel_event)
+    finish(dataset, expected, progress, cancel_event)
     return RenderResult(
         acquisition_id,
         channel,

@@ -12,18 +12,17 @@ from molcore import (
     Acquisition,
     ArraySource,
     ChannelSpec,
-    CoordinateSpace,
-    Experiment,
+    Dataset,
     PhotonSequence,
     PhotonUnit,
 )
 
 
-def demo_experiment() -> Experiment:
+def demo_dataset() -> Dataset:
     """Create moving emitters with stable IDs, a spatial track and a photon sequence.
 
     Returns:
-        Two-channel experiment ready for all eight analysis tools.
+        Two-channel dataset ready for all eight analysis tools.
     """
     rng = np.random.default_rng(7)
     frames = 12
@@ -33,7 +32,7 @@ def demo_experiment() -> Experiment:
         spot = 100 * np.exp(-((xx - (10 + 0.15 * frame)) ** 2 + (yy - 14) ** 2) / 2)
         movie[frame, :, :31] += spot
         movie[frame, :, 31:] += 0.8 * spot
-    model = Experiment()
+    model = Dataset()
     model.add_acquisition(
         Acquisition(
             ArraySource(movie),
@@ -112,8 +111,8 @@ def main() -> int:
     from molcore.ui import MolCoreToolsWidget, UiSession
 
     app = QApplication.instance() or QApplication(sys.argv[:1])
-    session = UiSession(demo_experiment())
-    session.select("demo", "donor", space=CoordinateSpace.REGISTERED)
+    session = UiSession(demo_dataset())
+    session.select("demo", "donor")
     panel = MolCoreToolsWidget(session)
     panel.resize(980, 1000)
     panel.setWindowTitle("Molcore shared tools")

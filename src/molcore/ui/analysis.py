@@ -18,7 +18,7 @@ from ._common import SettingsForm, combo
 if TYPE_CHECKING:
     from qtpy.QtWidgets import QWidget
 
-    from ..types import Experiment, ProgressCallback
+    from ..types import Dataset, ProgressCallback
     from ..types.analysis import ClusteringResult, ColocalisationResult, FilterResult, RenderResult
     from .session import UiSession
 
@@ -30,7 +30,7 @@ class ResultsFilterWidget(AnalysisTool):
         """Initialise the object and validate its configuration.
 
         Args:
-            session: Shared host-owned experiment, selection and background-job coordinator.
+            session: Shared host-owned dataset, selection and background-job coordinator.
             parent: Optional Qt parent controlling widget lifetime.
         """
         super().__init__(session, parent)
@@ -47,7 +47,7 @@ class ResultsFilterWidget(AnalysisTool):
         self.target.currentIndexChanged.connect(self.refresh)
         session.selection_changed.connect(self.refresh)
         session.results_changed.connect(self.refresh)
-        session.experiment_changed.connect(self.refresh)
+        session.dataset_changed.connect(self.refresh)
         self.button("Preview filter", self.compute)
         self.button("Request host selection", self.select_preview)
         self.button("Export selected rows…", self.export_csv)
@@ -77,7 +77,7 @@ class ResultsFilterWidget(AnalysisTool):
             self.aggregation.currentText(),
         )
 
-        def compute(model: Experiment, progress: ProgressCallback | None, cancel: Any) -> FilterResult:
+        def compute(model: Dataset, progress: ProgressCallback | None, cancel: Any) -> FilterResult:
             """Compute a detached result using the current controls.
 
             Args:
@@ -120,7 +120,7 @@ class ClusteringWidget(AnalysisTool):
         """Initialise the object and validate its configuration.
 
         Args:
-            session: Shared host-owned experiment, selection and background-job coordinator.
+            session: Shared host-owned dataset, selection and background-job coordinator.
             parent: Optional Qt parent controlling widget lifetime.
         """
         super().__init__(session, parent)
@@ -137,7 +137,7 @@ class ClusteringWidget(AnalysisTool):
         session, settings = self.session, self.settings_form.value()
         a, c, space = session.acquisition_id, session.channel, session.space
 
-        def compute(model: Experiment, progress: ProgressCallback | None, cancel: Any) -> ClusteringResult:
+        def compute(model: Dataset, progress: ProgressCallback | None, cancel: Any) -> ClusteringResult:
             """Compute a detached result using the current controls.
 
             Args:
@@ -194,7 +194,7 @@ class ColocalisationWidget(AnalysisTool):
         """Initialise the object and validate its configuration.
 
         Args:
-            session: Shared host-owned experiment, selection and background-job coordinator.
+            session: Shared host-owned dataset, selection and background-job coordinator.
             parent: Optional Qt parent controlling widget lifetime.
         """
         super().__init__(session, parent)
@@ -203,7 +203,7 @@ class ColocalisationWidget(AnalysisTool):
         self.form.addWidget(self.settings_form)
         self.settings_form.changed.connect(self.invalidate)
         session.selection_changed.connect(self.refresh)
-        session.experiment_changed.connect(self.refresh)
+        session.dataset_changed.connect(self.refresh)
         self.button("Preview colocalisation", self.compute)
         self.button("Export matched pairs…", self.export_csv)
         self.refresh()
@@ -217,7 +217,7 @@ class ColocalisationWidget(AnalysisTool):
         """
         session = self.session
         channels = (
-            session.experiment.acquisitions[session.acquisition_id].channels if session.acquisition_id else {}
+            session.dataset.acquisitions[session.acquisition_id].channels if session.acquisition_id else {}
         )
         refresh_combo(self.target, [c for c in channels if c != session.channel])
 
@@ -234,9 +234,7 @@ class ColocalisationWidget(AnalysisTool):
         if not target:
             raise ValueError("A second channel is required")
 
-        def compute(
-            model: Experiment, progress: ProgressCallback | None, cancel: Any
-        ) -> ColocalisationResult:
+        def compute(model: Dataset, progress: ProgressCallback | None, cancel: Any) -> ColocalisationResult:
             """Compute a detached result using the current controls.
 
             Args:
@@ -278,7 +276,7 @@ class LocalisationRenderWidget(AnalysisTool):
         """Initialise the object and validate its configuration.
 
         Args:
-            session: Shared host-owned experiment, selection and background-job coordinator.
+            session: Shared host-owned dataset, selection and background-job coordinator.
             parent: Optional Qt parent controlling widget lifetime.
         """
         super().__init__(session, parent)
@@ -311,7 +309,7 @@ class LocalisationRenderWidget(AnalysisTool):
         session, settings = self.session, self.settings_form.value()
         a, c, space = session.acquisition_id, session.channel, session.space
 
-        def compute(model: Experiment, progress: ProgressCallback | None, cancel: Any) -> RenderResult:
+        def compute(model: Dataset, progress: ProgressCallback | None, cancel: Any) -> RenderResult:
             """Compute a detached result using the current controls.
 
             Args:

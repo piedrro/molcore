@@ -3,7 +3,7 @@ import unittest
 
 import numpy as np
 
-from molcore import Acquisition, AcquisitionSequence, ArraySource, ChannelSpec, Experiment
+from molcore import Acquisition, AcquisitionSequence, ArraySource, ChannelSpec, Dataset
 
 
 class ChannelTests(unittest.TestCase):
@@ -64,7 +64,7 @@ class ChannelTests(unittest.TestCase):
 
 class TableTests(unittest.TestCase):
     def setUp(self):
-        self.exp = Experiment()
+        self.exp = Dataset()
         self.exp.add_acquisition(Acquisition(ArraySource(np.zeros((5, 9, 9))), id="a"))
         self.ids = self.exp.localizations.add(
             acquisition_id=["a"] * 3,

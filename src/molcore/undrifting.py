@@ -9,7 +9,7 @@ import numpy as np
 
 from ._logging import logged
 from ._processing import backend_version, check_snapshot, executor, record, snapshot
-from .types.experiment import Experiment
+from .types.dataset import Dataset
 from .types.processing import DriftResult, DriftSettings
 
 if TYPE_CHECKING:
@@ -127,7 +127,7 @@ def _job(payload: tuple, reporter: WorkerProgress) -> Any:
 
         # Picasso's RCC renderer requires precision columns even though it
         # clamps its Gaussian rendering kernel to one reference pixel.
-        # These are rendering widths, never added to the experiment's table.
+        # These are rendering widths, never added to the dataset's table.
         locs["lpx"] = np.ones(len(locs))
         locs["lpy"] = np.ones(len(locs))
 
@@ -174,11 +174,11 @@ def _job(payload: tuple, reporter: WorkerProgress) -> Any:
     return values
 
 
-def _prepare(experiment: Experiment, acquisition_id: str, channel: str, settings: DriftSettings) -> tuple:
+def _prepare(dataset: Dataset, acquisition_id: str, channel: str, settings: DriftSettings) -> tuple:
     """Prepare.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         acquisition_id: Source acquisition identifier.
         channel: Logical source channel name.
         settings: Validated settings controlling this operation.
@@ -186,10 +186,10 @@ def _prepare(experiment: Experiment, acquisition_id: str, channel: str, settings
     Returns:
         Computed tuple value.
     """
-    expected = snapshot(experiment, acquisition_id)
-    acquisition = experiment.acquisitions[acquisition_id]
+    expected = snapshot(dataset, acquisition_id)
+    acquisition = dataset.acquisitions[acquisition_id]
     view = acquisition.channels[channel]
-    rows = experiment.localizations.query(acquisition_id=acquisition_id, channel=channel, space="registered")
+    rows = dataset.localizations.query(acquisition_id=acquisition_id, channel=channel, space="registered")
     if len(rows["frame"]) == 0:
         raise ValueError("Drift estimation requires localizations in the selected channel")
     logical_frames = np.searchsorted(view.source_frames, rows["frame"])
@@ -229,7 +229,7 @@ def _prepare(experiment: Experiment, acquisition_id: str, channel: str, settings
 
 
 def _many(
-    experiment: Experiment,
+    dataset: Dataset,
     selections: Mapping[str, str],
     *,
     settings: DriftSettings,
@@ -242,7 +242,7 @@ def _many(
     """Many.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         selections: Mapping from acquisition identifiers to logical channel names.
         settings: Validated settings controlling this operation.
         apply: Whether to commit successful results to the model.
@@ -256,7 +256,7 @@ def _many(
     """
     installed = backend_version()
     prepared = {
-        acquisition_id: _prepare(experiment, acquisition_id, channel, settings)
+        acquisition_id: _prepare(dataset, acquisition_id, channel, settings)
         for acquisition_id, channel in selections.items()
     }
     with executor(cpu, num_cpus) as runner:
@@ -264,7 +264,7 @@ def _many(
             _job, [value[1] for value in prepared.values()], progress=progress, cancel_event=cancel_event
         )
     for acquisition_id, (expected, _, _) in prepared.items():
-        check_snapshot(experiment, acquisition_id, expected)
+        check_snapshot(dataset, acquisition_id, expected)
     results = {}
     for (acquisition_id, (_, _, sampled_frames)), displacement in zip(prepared.items(), values, strict=True):
         frames = np.arange(int(sampled_frames[0]), int(sampled_frames[-1]) + 1, dtype=np.int64)
@@ -276,9 +276,9 @@ def _many(
         )
     if apply:
         for acquisition_id, result in results.items():
-            experiment.transforms.set_drift(acquisition_id, result.displacement, frames=result.frames)
+            dataset.transforms.set_drift(acquisition_id, result.displacement, frames=result.frames)
             record(
-                experiment,
+                dataset,
                 "undrifting",
                 acquisition_id,
                 result.channel,
@@ -293,11 +293,11 @@ def _many(
 
 
 @logged
-def _run(experiment: Experiment, acquisition_id: str, channel: str, **kwargs: Any) -> Any:
+def _run(dataset: Dataset, acquisition_id: str, channel: str, **kwargs: Any) -> Any:
     """Run.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         acquisition_id: Source acquisition identifier.
         channel: Logical source channel name.
         **kwargs: Additional named options for this operation.
@@ -305,12 +305,12 @@ def _run(experiment: Experiment, acquisition_id: str, channel: str, **kwargs: An
     Returns:
         Result retaining the input format or backend-specific representation.
     """
-    return _many(experiment, {acquisition_id: channel}, **kwargs)[acquisition_id]
+    return _many(dataset, {acquisition_id: channel}, **kwargs)[acquisition_id]
 
 
 @logged
 def estimate_drift(
-    experiment: Experiment,
+    dataset: Dataset,
     acquisition_id: str,
     channel: str,
     *,
@@ -323,7 +323,7 @@ def estimate_drift(
     """Estimate drift from a MolCore localization partition without applying it.
 
     Args:
-        experiment: Experiment supplying registered localization positions.
+        dataset: Dataset supplying registered localization positions.
         acquisition_id: Acquisition identifier.
         channel: Logical reference channel.
         settings: RCC/AIM settings; defaults to RCC with 1000-frame segments.
@@ -336,7 +336,7 @@ def estimate_drift(
         Reference-pixel displacements at actual camera frames within measured coverage.
     """
     return _run(
-        experiment,
+        dataset,
         acquisition_id,
         channel,
         settings=settings or DriftSettings(),
@@ -350,7 +350,7 @@ def estimate_drift(
 
 @logged
 def undrift(
-    experiment: Experiment,
+    dataset: Dataset,
     acquisition_id: str,
     channel: str,
     *,
@@ -363,7 +363,7 @@ def undrift(
     """Estimate and select drift without modifying original images or coordinates.
 
     Args:
-        experiment: Experiment whose TransformManager receives the estimated drift.
+        dataset: Dataset whose TransformManager receives the estimated drift.
         acquisition_id: Acquisition identifier.
         channel: Logical reference channel supplying localization measurements.
         settings: RCC/AIM settings in logical-channel frames and reference pixels.
@@ -380,7 +380,7 @@ def undrift(
         ValueError: Too few populated segments or invalid estimated displacement.
     """
     return _run(
-        experiment,
+        dataset,
         acquisition_id,
         channel,
         settings=settings or DriftSettings(),
@@ -394,7 +394,7 @@ def undrift(
 
 @logged
 def undrift_many(
-    experiment: Experiment,
+    dataset: Dataset,
     selections: dict[str, str],
     *,
     settings: DriftSettings | None = None,
@@ -407,7 +407,7 @@ def undrift_many(
     """Estimate independent acquisition drifts concurrently through shared CPU tools.
 
     Args:
-        experiment: Experiment supplying all localization partitions.
+        dataset: Dataset supplying all localization partitions.
         selections: Mapping of acquisition IDs to their reference channel names.
         settings: Shared RCC/AIM estimator parameters.
         apply: Apply results only after every job and stale-input check succeeds.
@@ -421,7 +421,7 @@ def undrift_many(
         dependency remains sequential within its worker.
     """
     return _many(
-        experiment,
+        dataset,
         selections,
         settings=settings or DriftSettings(),
         apply=apply,

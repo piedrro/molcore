@@ -86,9 +86,9 @@ class BlockOptional(importlib.abc.MetaPathFinder):
         if fullname.split('.')[0] in {'napari','qtpy','picasso','trackpy','cellpose','torch','scipy','dask','astropy'}:
             raise AssertionError('Unexpected optional import: ' + fullname)
 sys.meta_path.insert(0, BlockOptional())
-from molcore import Experiment
+from molcore import Dataset
 import molcore.cellpose
-Experiment()
+Dataset()
 """
         result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)

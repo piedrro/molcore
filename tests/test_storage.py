@@ -13,7 +13,7 @@ from molcore import (
     AcquisitionMode,
     ArraySource,
     Calibration,
-    Experiment,
+    Dataset,
     ImageUnavailableError,
     Segmentation,
     TiffSource,
@@ -21,7 +21,7 @@ from molcore import (
 
 
 def fixture(source=None):
-    exp = Experiment(metadata={"title": "molecules α"})
+    exp = Dataset(metadata={"title": "molecules α"})
     exp.add_acquisition(
         Acquisition(
             source or ArraySource(np.arange(3 * 5 * 5).reshape(3, 5, 5)),
@@ -61,13 +61,13 @@ class StorageTests(unittest.TestCase):
     def test_same_path_crop_save_rebinds_in_memory_descriptors(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "crops.h5"
-            exp = Experiment()
+            exp = Dataset()
             movie = np.zeros((3, 5, 5), dtype=np.uint16)
             movie[:, :, :] = np.array([10, 20, 30])[:, None, None]
             exp.add_acquisition(Acquisition(ArraySource(movie), id="a"))
             ids = exp.localizations.add(acquisition_id="a", channel="image", frame=[0, 1, 2], x=2, y=2)
             exp.save(path, image_policy="localization_crops", crop_width=3)
-            with Experiment.open(path) as restored:
+            with Dataset.open(path) as restored:
                 restored.localizations.delete([ids[0]])
                 restored.save(path, image_policy="localization_crops", crop_width=3)
                 for index in (1, 2):
@@ -83,7 +83,7 @@ class StorageTests(unittest.TestCase):
                     exp, ids = fixture()
                     exp.localizations.move(ids[0], x=2, y=1)
                     exp.save(path, layout=layout, image_policy=policy, crop_width=3)
-                    with Experiment.open(path) as restored:
+                    with Dataset.open(path) as restored:
                         self.assertEqual(restored.metadata["title"], "molecules α")
                         self.assertEqual(restored.acquisitions["a"].mode, AcquisitionMode.SINGLE)
                         self.assertEqual(restored.localizations.query()["x"].tolist(), [2, 2])
@@ -114,10 +114,10 @@ class StorageTests(unittest.TestCase):
             exp.save(root / "analysis", layout="directory")
             relocated = Path(tmp) / "relocated"
             shutil.copytree(root, relocated)
-            with Experiment.open(relocated / "analysis") as restored:
+            with Dataset.open(relocated / "analysis") as restored:
                 self.assertEqual(int(restored.acquisitions["a"].source[1, 0, 0]), 1)
             (relocated / "movie.tif").unlink()
-            with Experiment.open(relocated / "analysis") as restored:
+            with Dataset.open(relocated / "analysis") as restored:
                 self.assertEqual(len(restored.localizations), 2)
                 with self.assertRaises(ImageUnavailableError):
                     restored.acquisitions["a"].source[0]
@@ -136,4 +136,4 @@ class StorageTests(unittest.TestCase):
             with h5py.File(path, "a") as file:
                 file.attrs["format_version"] = 999
             with self.assertRaises(ValueError):
-                Experiment.open(path)
+                Dataset.open(path)

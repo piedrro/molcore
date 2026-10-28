@@ -6,12 +6,12 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from ._logging import logged
-from .types import CoordinateSpace, DiffusionFit, Experiment, SpatialUnit, TrajectoryStatistics
+from .types import CoordinateSpace, Dataset, DiffusionFit, SpatialUnit, TrajectoryStatistics
 
 
 @logged
 def trajectory_statistics(
-    experiment: Experiment,
+    dataset: Dataset,
     track_id: int,
     *,
     space: CoordinateSpace = CoordinateSpace.CORRECTED,
@@ -34,7 +34,7 @@ def trajectory_statistics(
     for nanometres. Coordinates and masks are read without changing the model.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         track_id: Track id used by this operation.
         space: Coordinate space: raw channel pixels, registered reference or drift-corrected reference.
         unit: Unit used by this operation.
@@ -65,7 +65,7 @@ def trajectory_statistics(
         or fit_lag_range[1] <= fit_lag_range[0]
     ):
         raise ValueError("Fit lag range must be finite and increasing")
-    rows = experiment.tracks.query(track_id=track_id, space=space)
+    rows = dataset.tracks.query(track_id=track_id, space=space)
     steps = []
     aggregates = {}
     duration = path_length = 0.0
@@ -73,7 +73,7 @@ def trajectory_statistics(
         subset = {k: v[rows["acquisition_id"] == acquisition_id] for k, v in rows.items()}
         order = np.argsort(subset["frame"], kind="stable")
         frames = subset["frame"][order]
-        acquisition = experiment.acquisitions[acquisition_id]
+        acquisition = dataset.acquisitions[acquisition_id]
         if acquisition.timestamps is not None:
             times = np.asarray(acquisition.timestamps, dtype=float)[frames]
         elif frame_interval is not None:

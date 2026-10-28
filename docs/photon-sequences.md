@@ -10,7 +10,7 @@ their intensity samples and measurements; an optional track link records where a
 trace was measured, without turning photon samples into track members.
 
 `stationary_traces()` and `track_traces()` now return `PhotonSequenceResult`.
-Their default applying runs write directly to `experiment.photon_sequences`.
+Their default applying runs write directly to `dataset.photon_sequences`.
 `apply=False` returns detached sequence records; use `apply_photon_sequences()`
 to commit them explicitly. Localisation-only photometry continues to use
 `PhotometryResult` and the observation table.
@@ -18,8 +18,8 @@ to commit them explicitly. Localisation-only photometry continues to use
 ```python
 from molcore.photometry import stationary_traces
 
-result = stationary_traces(experiment, seed_localization_ids)
-sequence = experiment.photon_sequences[result.sequence_ids[0]]
+result = stationary_traces(dataset, seed_localization_ids)
+sequence = dataset.photon_sequences[result.sequence_ids[0]]
 signal = sequence.measurements["signal_sum"]
 background = sequence.measurements["local_background_mean"]
 ```
@@ -51,7 +51,7 @@ sequence = PhotonSequence(
     method="psf_fit",
     metadata={"camera_calibration": "calibration-2026"},
 )
-experiment.photon_sequences.add(sequence)
+dataset.photon_sequences.add(sequence)
 ```
 
 `frames` must increase strictly and belong to the selected channel. The model
@@ -63,7 +63,7 @@ elapsed time is invented.
 `unit` distinguishes `PHOTONS` from `IMAGE_INTENSITY`. Setting a unit records the
 meaning of supplied values; it does not calibrate camera pixels or run PSF fitting.
 Numeric arrays are copied into immutable storage. Store access returns detached
-metadata, so editing a retrieved object does not edit the experiment.
+metadata, so editing a retrieved object does not edit the dataset.
 
 Optional `localization_id` and `track_id` link a sequence to its source anchor.
 Anchor edits mark linked sequences stale. Set `depends_on_transforms=True` for
@@ -84,15 +84,15 @@ additional localisations:
 ```python
 from molcore.photon_sequences import from_observations
 
-for sequence in from_observations(experiment, run_id="measurement-run"):
-    experiment.photon_sequences.add(sequence)
+for sequence in from_observations(dataset, run_id="measurement-run"):
+    dataset.photon_sequences.add(sequence)
 ```
 
 The conversion copies actual source positions, frames and anchors. Its default
 unit is image intensity because aperture photometry does not automatically produce
 calibrated photon counts. Choose another numeric column and explicit unit when
 converting calibrated or fitted-photon measurements. Conversion does not mutate the
-experiment until the returned records are added.
+dataset until the returned records are added.
 
 ## Crop policies
 
@@ -101,8 +101,8 @@ for each sample. Fixed positions support stationary molecules; varying positions
 support moving emitters. Cropping never requires synthetic localisations.
 
 ```python
-crops = list(experiment.crops.photon_sequence("molecule-1-donor", width=7))
-experiment.save("analysis.h5", image_policy="all_crops", crop_width=7)
+crops = list(dataset.crops.photon_sequence("molecule-1-donor", width=7))
+dataset.save("analysis.h5", image_policy="all_crops", crop_width=7)
 ```
 
 | `image_policy` | Saved microscopy pixels |

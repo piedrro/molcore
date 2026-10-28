@@ -25,19 +25,19 @@ track IDs. Empty memberships clear the partition. Intersections with spanning
 tracks, duplicate ownership, duplicate camera frames and invalid masks are rejected
 before any active data changes.
 
-`state_token`, `clone_experiment` and `transact` in `molcore.staging` support detached
+`state_token`, `clone_dataset` and `transact` in `molcore.staging` support detached
 work and atomic commits. Tokens now also cover timestamps, channel specifications,
 excitation settings and sequence options. Borrowed image pixel arrays must not be
 mutated during processing; tokens do not hash full movies.
 
-`processing.apply_batch(experiment, operations, expected=token)` runs typed
+`processing.apply_batch(dataset, operations, expected=token)` runs typed
 model-update callables against one detached model and adopts all changes only on
 success. Operations must restrict side effects to that model; external I/O and
 borrowed image arrays cannot be rolled back. Use model edit methods in operations.
 Batch operations may apply detached results sharing the original batch token while
 their scientific inputs remain unchanged. Independent observation/provenance updates
 can accumulate; edits to localizations, memberships, transforms, acquisition bindings,
-masks or experiment metadata invalidate subsequent previews based on the earlier state.
+masks or dataset metadata invalidate subsequent previews based on the earlier state.
 Apply independent photometry results before replacing tracks; dependent processing
 must be recomputed from the updated model.
 Transactions recheck freshness immediately before adoption. Public model mutators
@@ -49,14 +49,14 @@ Their source tokens are checked by default. An explicit `expected` token support
 callers managing a larger transaction: that caller assumes responsibility for
 validating the original processing state before applying to its staged model.
 
-`Experiment.remove_acquisition(id, cascade=False)` rejects scientific dependents.
+`Dataset.remove_acquisition(id, cascade=False)` rejects scientific dependents.
 With `cascade=True`, it removes the acquisition's localizations, observations,
 crops, masks, selected transforms, drift and processing records. Affected sequences
 and whole spanning tracks are removed; surviving acquisitions' localizations remain.
 Stale observations referencing deleted anchors are physically removed. Reusable
 named calibrations remain. Shared or borrowed sources are never forcibly closed:
 built-in readers open files per read, and removal releases the source reference.
-Normal `Experiment.close()` still closes sources of remaining acquisitions.
+Normal `Dataset.close()` still closes sources of remaining acquisitions.
 
 ## Photometry and traces
 
@@ -105,7 +105,7 @@ localization/track anchors. No cross-recording elapsed time is invented. Molecul
 keys are `localization:<id>` or `track:<id>`.
 
 Applying localisation measurements appends observations and returns observation IDs.
-Applying traces writes directly to `experiment.photon_sequences` and returns sequence
+Applying traces writes directly to `dataset.photon_sequences` and returns sequence
 IDs; it creates no observation records or additional spatial localisations.
 Each sequence owns its samples, raw crop centres, per-sample localisation references,
 signal/background measurements and explicit units. `PhotonSequenceResult.columns` is
@@ -203,7 +203,7 @@ settings = ContrastSettings(
 )
 limits = autocontrast(image, settings=settings).limits
 results = autocontrast_channels(
-    experiment, "recording", settings=settings,
+    dataset, "recording", settings=settings,
     scope=ContrastScope.PER_CHANNEL,
 )
 # A consuming application can set layer.contrast_limits = results[channel].limits

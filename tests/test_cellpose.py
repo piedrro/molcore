@@ -14,7 +14,7 @@ from molcore import (
     Acquisition,
     ArraySource,
     ChannelSpec,
-    Experiment,
+    Dataset,
     Segmentation,
     StaleResultError,
     cellpose,
@@ -94,7 +94,7 @@ class CellposeTests(unittest.TestCase):
         cellpose._MODEL_CACHE.clear()
         ControlledModel.calls, ControlledModel.evaluations = [], []
         ControlledModel.bad_mask, ControlledModel.fail_on_image = False, None
-        self.exp = Experiment()
+        self.exp = Dataset()
         self.image = np.arange(2 * 5 * 5, dtype=np.uint16).reshape(2, 5, 5)
         self.exp.add_acquisition(Acquisition(ArraySource(self.image), id="a"))
         self.old = Segmentation("cells", "a", np.ones((5, 5), dtype=np.uint16))
@@ -143,7 +143,7 @@ class CellposeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "segmentation.h5"
             self.exp.save(path)
-            with Experiment.open(path) as restored:
+            with Dataset.open(path) as restored:
                 np.testing.assert_array_equal(restored.segmentations["cells"].source_image, self.image[1])
                 self.assertEqual(
                     restored.segmentations["cells"].metadata["settings"]["pretrained_model"], "cpsam_v2"

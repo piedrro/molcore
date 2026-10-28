@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
-from molcore import Acquisition, ArraySource, ChannelSpec, Experiment
+from molcore import Acquisition, ArraySource, ChannelSpec, Dataset
 from molcore.files import export_tiff, import_table, read_calibration, read_table, write_table
 from molcore.legacy import read_moltrack
 
@@ -20,7 +20,7 @@ class FileTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.model = Experiment()
+        self.model = Dataset()
         self.model.add_acquisition(Acquisition(
             ArraySource(np.arange(5 * 6 * 8).reshape(5, 6, 8).astype('uint16')), id='a',
             channel_specs={'DD': ChannelSpec(excitation='D'), 'AA': ChannelSpec(excitation='A')},
@@ -76,10 +76,12 @@ class FileTests(unittest.TestCase):
             self.model.save(path, image_policy='full', progress=progress, cancel_event=cancel)
         self.assertEqual(path.read_bytes(), previous)
 
-    def test_reject_projective_and_unsafe_pickle(self):
+    def test_read_projective_reject_singular_and_unsafe_pickle(self):
         path = self.root / 'matrix.txt'
         path.write_text('[[1,0,0],[0,1,0],[0.1,0,1]]')
-        with self.assertRaisesRegex(ValueError, 'affine|projective'):
+        np.testing.assert_array_equal(read_calibration(path), [[1, 0, 0], [0, 1, 0], [.1, 0, 1]])
+        path.write_text('[[1,0,0],[0,1,0],[0,0,0]]')
+        with self.assertRaisesRegex(ValueError, 'invertible|projective'):
             read_calibration(path)
         path = self.root / 'bad.moltrack'
         path.write_bytes(pickle.dumps(Path('unsafe')))

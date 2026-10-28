@@ -42,7 +42,7 @@ class CoordinateSpace(StrEnum):
 
 
 class ImagePolicy(StrEnum):
-    """Microscopy pixel content included in an experiment snapshot."""
+    """Microscopy pixel content included in an dataset snapshot."""
 
     NONE = "none"
     LOCALIZATION_CROPS = "localization_crops"
@@ -78,12 +78,16 @@ class ChannelSpec:
     excitation: str | None = None
     frame_start: int = 0
     frame_step: int = 1
+    emission: str | None = None
 
     def __post_init__(self) -> None:
         """Validate the immutable record after construction."""
         if self.frame_start < 0 or self.frame_step < 1:
             raise ValueError("Channel start/step must be nonnegative/positive")
+        if self.emission is not None and (not isinstance(self.emission, str) or not self.emission):
+            raise ValueError("Emission must be a nonempty physical path label or None")
         if self.roi is not None:
+            object.__setattr__(self, "roi", tuple(self.roi))
             y0, y1, x0, x1 = self.roi
             if min(y0, x0) < 0 or y1 <= y0 or x1 <= x0:
                 raise ValueError("ROI must have positive extent")
@@ -143,11 +147,11 @@ class ImageSource(Protocol):
 
 @dataclass(frozen=True)
 class Calibration:
-    """Named invertible raw-channel to reference-channel affine calibration.
+    """Named invertible raw-channel to reference-channel projective calibration.
 
     Attributes:
         name: Calibration identifier used for selection.
-        matrix: Homogeneous 3x3 affine matrix operating on (x, y, 1).
+        matrix: Homogeneous 3x3 matrix operating on (x, y, 1).
         metadata: Dates, source paths, microscope identifiers and correction factors.
     """
 
@@ -162,10 +166,9 @@ class Calibration:
         if (
             self.matrix.shape != (3, 3)
             or not np.isfinite(self.matrix).all()
-            or not np.allclose(self.matrix[2], [0, 0, 1])
-            or abs(np.linalg.det(self.matrix)) < 1e-15
+            or np.linalg.matrix_rank(self.matrix) < 3
         ):
-            raise ValueError("Registration must be an invertible 3x3 affine matrix")
+            raise ValueError("Registration must be an invertible 3x3 projective matrix")
         # Immutable backing bytes also prevent callers re-enabling writeability.
         object.__setattr__(self, "matrix", np.frombuffer(matrix.tobytes(), dtype=matrix.dtype).reshape(3, 3))
 

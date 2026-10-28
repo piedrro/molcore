@@ -12,7 +12,7 @@ import numpy as np
 from ._logging import logged
 from .files import image_acquisition, import_table, read_image, report
 from .interop import from_records
-from .types import Experiment, Segmentation
+from .types import Dataset, Segmentation
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -85,8 +85,8 @@ def migrate_moltrack(
     timeline: str = "channel",
     progress: ProgressCallback | None = None,
     cancel_event: CancelEvent | None = None,
-) -> tuple[Experiment, list[str]]:
-    """Build a detached Experiment using explicit original-camera bindings.
+) -> tuple[Dataset, list[str]]:
+    """Build a detached Dataset using explicit original-camera bindings.
 
     Args:
         project: Dictionary returned by read_moltrack.
@@ -99,9 +99,9 @@ def migrate_moltrack(
         cancel_event: Optional cancellation event.
 
     Returns:
-        Tuple of converted Experiment and human-readable migration report lines.
+        Tuple of converted Dataset and human-readable migration report lines.
     """
-    result, messages = Experiment(metadata={"import_format": "moltrack"}), []
+    result, messages = Dataset(metadata={"import_format": "moltrack"}), []
     datasets = project.get("dataset_dict", {})
     bindings = dict(acquisitions or {})
     for name, data in datasets.items():

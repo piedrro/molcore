@@ -6,7 +6,7 @@ from concurrent.futures import CancelledError
 
 import numpy as np
 
-from molcore import Acquisition, ArraySource, Calibration, ChannelSpec, Experiment, StaleResultError
+from molcore import Acquisition, ArraySource, Calibration, ChannelSpec, Dataset, StaleResultError
 from molcore.cpu import CpuExecutor
 from molcore.photometry import measure_localizations, stationary_traces, track_traces
 from molcore.tracking import track
@@ -42,7 +42,7 @@ class InlineCpu:
 def fixture():
     movie = np.full((5, 15, 15), 10.0, dtype=float)
     movie[:, 6:9, 6:9] = 20.0
-    exp = Experiment()
+    exp = Dataset()
     exp.add_acquisition(Acquisition(ArraySource(movie), id="a", pixel_size=100.0))
     ids = exp.localizations.add(
         acquisition_id="a", channel="image", frame=[0, 2, 4], x=[7.0, 7.0, 7.0], y=[7.0, 7.0, 7.0]
@@ -98,7 +98,7 @@ class PhotometryTests(unittest.TestCase):
         self.assertEqual(len(exp.observations), 0)
 
     def test_stationary_alternating_channels_registration(self):
-        exp = Experiment()
+        exp = Dataset()
         specs = {"d": ChannelSpec(excitation="d"), "a": ChannelSpec(excitation="a")}
         exp.add_acquisition(
             Acquisition(
@@ -205,7 +205,7 @@ class NumericalEdgeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "no_pixels.h5"
             exp.save(path)
-            with Experiment.open(path) as restored:
+            with Dataset.open(path) as restored:
                 with self.assertRaises(ImageUnavailableError):
                     measure_localizations(restored, ids, cpu=InlineCpu())
 
@@ -265,7 +265,7 @@ class NumericalEdgeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "photometry.h5"
             exp.save(path)
-            with Experiment.open(path) as restored:
+            with Dataset.open(path) as restored:
                 columns = restored.observations.query()
                 np.testing.assert_equal(columns["localization_id"], ids)
                 self.assertTrue(all(columns["run_id"] == result.run_id))

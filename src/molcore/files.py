@@ -7,7 +7,7 @@ import json
 import os
 import tempfile
 from concurrent.futures import CancelledError
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike
 
-    from .types import CancelEvent, CoordinateSpace, Experiment, ImageSource, ProgressCallback
+    from .types import CancelEvent, CoordinateSpace, Dataset, ImageSource, ProgressCallback
 
 
 @logged
@@ -57,11 +57,12 @@ def report(
 
 @contextmanager
 @logged
-def atomic_files(paths: Sequence[str | Path]) -> Iterator[Any]:
+def atomic_files(paths: Sequence[str | Path], *, publish_guard: Any = None) -> Iterator[Any]:
     """Stage related output files beside their destinations and roll back failures.
 
     Args:
         paths: Explicit destination file paths, all distinct.
+        publish_guard: Optional context factory guarding final replacement of all output files.
 
     Yields:
         Temporary sibling Paths corresponding to each destination.
@@ -77,16 +78,17 @@ def atomic_files(paths: Sequence[str | Path]) -> Iterator[Any]:
             os.close(fd)
             temps.append(Path(temp))
         yield temps
-        for path, temp in zip(paths, temps, strict=True):
-            if path.exists():
-                fd, backup = tempfile.mkstemp(prefix=".molcore-backup-", dir=path.parent)
-                os.close(fd)
-                backup = Path(backup)
-                backup.unlink()
-                os.replace(path, backup)
-                backups[path] = backup
-            os.replace(temp, path)
-            published.append(path)
+        with publish_guard() if publish_guard is not None else nullcontext():
+            for path, temp in zip(paths, temps, strict=True):
+                if path.exists():
+                    fd, backup = tempfile.mkstemp(prefix=".molcore-backup-", dir=path.parent)
+                    os.close(fd)
+                    backup = Path(backup)
+                    backup.unlink()
+                    os.replace(path, backup)
+                    backups[path] = backup
+                os.replace(temp, path)
+                published.append(path)
     except BaseException:
         for path in reversed(published):
             path.unlink(missing_ok=True)
@@ -199,11 +201,12 @@ def image_acquisition(
                 rois.reverse()
             if mode == "fret":
                 channel_specs = {
-                    name: ChannelSpec(roi) for name, roi in zip(("donor", "acceptor"), rois, strict=True)
+                    name: ChannelSpec(roi, emission=em)
+                    for name, roi, em in zip(("donor", "acceptor"), rois, ("D", "A"), strict=True)
                 }
             else:
                 channel_specs = {
-                    ex + em: ChannelSpec(rois[i], excitation=ex)
+                    ex + em: ChannelSpec(rois[i], excitation=ex, emission=em)
                     for ex in ("D", "A")
                     for i, em in enumerate(("D", "A"))
                 }
@@ -221,7 +224,7 @@ def image_acquisition(
 
 @logged
 def export_tiff(
-    experiment: Experiment,
+    dataset: Dataset,
     acquisition_id: str,
     channel: str,
     path: str | Path,
@@ -230,11 +233,12 @@ def export_tiff(
     original: bool = False,
     progress: ProgressCallback | None = None,
     cancel_event: CancelEvent | None = None,
+    publish_guard: Any = None,
 ) -> None:
     """Stream original frames or one logical channel to TIFF plus provenance YAML.
 
     Args:
-        experiment: Model supplying pixels.
+        dataset: Model supplying pixels.
         acquisition_id: Source acquisition.
         channel: Logical channel for channel export.
         path: Destination TIFF.
@@ -242,11 +246,10 @@ def export_tiff(
         original: Export the original camera stream instead of a logical channel.
         progress: Optional I/O progress callback.
         cancel_event: Optional cancellation event.
+        publish_guard: Optional context factory validating live inputs before publishing output.
     """
-    acquisition = experiment.acquisitions[acquisition_id]
-    source = (
-        acquisition.source if original else experiment.transforms.view(acquisition_id, channel, space=space)
-    )
+    acquisition = dataset.acquisitions[acquisition_id]
+    source = acquisition.source if original else dataset.transforms.view(acquisition_id, channel, space=space)
     frames = np.arange(len(source)) if original else acquisition.channels[channel].source_frames
     if not len(source):
         raise ValueError("Cannot export an empty image stack")
@@ -260,7 +263,10 @@ def export_tiff(
     if acquisition.timestamps is not None:
         metadata["timestamps"] = acquisition.timestamps[frames].tolist()
     path = Path(path)
-    with atomic_files([path, path.with_suffix(path.suffix + ".yaml")]) as (temp, info):
+    with atomic_files([path, path.with_suffix(path.suffix + ".yaml")], publish_guard=publish_guard) as (
+        temp,
+        info,
+    ):
         with tifffile.TiffWriter(
             temp, bigtiff=np.prod(source.shape) * source.dtype.itemsize >= 2**32
         ) as writer:
@@ -361,7 +367,7 @@ def write_table(
 
 @logged
 def import_table(
-    experiment: Experiment,
+    dataset: Dataset,
     acquisition_id: str,
     channel: str,
     columns: Mapping[str, ArrayLike],
@@ -375,7 +381,7 @@ def import_table(
     """Map imported rows to original frames and apply them transactionally.
 
     Args:
-        experiment: Target model.
+        dataset: Target model.
         acquisition_id: Explicit target acquisition.
         channel: Explicit target channel.
         columns: frame/x/y plus scalar measurements and optional particle IDs.
@@ -395,7 +401,7 @@ def import_table(
     if not np.isfinite(frames).all() or np.any(frames < 0) or np.any(frames != np.floor(frames)):
         raise ValueError("Frames must be nonnegative integers after base conversion")
     frames = frames.astype(np.int64)
-    acquisition = experiment.acquisitions[acquisition_id]
+    acquisition = dataset.acquisitions[acquisition_id]
     view = acquisition.channels[channel]
     if timeline == "channel":
         if np.any(frames >= len(view)):
@@ -416,7 +422,7 @@ def import_table(
     if tracks and group is None:
         raise ValueError("Track import requires a particle or track_id column")
 
-    def commit(model: Experiment) -> Any:
+    def commit(model: Dataset) -> Any:
         """Commit.
 
         Args:
@@ -430,7 +436,7 @@ def import_table(
                 raise ValueError("Reusing tracks requires explicit localization_id anchors")
             ids = np.asarray(columns["localization_id"])
             for index, identifier in enumerate(ids):
-                row = model.localizations.query(ids=[identifier])
+                row = model.localizations.query(ids=[identifier], space="raw")
                 if len(row["id"]) != 1 or any(
                     row[k][0] != value
                     for k, value in (
@@ -470,18 +476,18 @@ def import_table(
                 model.tracks.add(ids[group == identifier], metadata={"source_track_id": str(identifier)})
         return ids
 
-    return transact(experiment, commit)
+    return transact(dataset, commit)
 
 
 @logged
 def read_calibration(path: str | Path) -> np.ndarray:
-    """Read an affine JSON/TXT/NPY matrix, rejecting projective transformations.
+    """Read an invertible affine or projective JSON/TXT/NPY calibration.
 
     Args:
         path: Matrix file; NumPy object loading is disabled.
 
     Returns:
-        Validated homogeneous 3x3 affine matrix.
+        Validated homogeneous 3x3 matrix.
     """
     path = Path(path)
     value = (
@@ -494,18 +500,16 @@ def read_calibration(path: str | Path) -> np.ndarray:
     matrix = np.asarray(value, dtype=float)
     if matrix.shape == (2, 3):
         matrix = np.vstack([matrix, [0, 0, 1]])
-    if matrix.shape != (3, 3) or not np.allclose(matrix[2], [0, 0, 1]):
-        raise ValueError("Only affine matrices are supported; projective transforms cannot be imported")
     return Calibration("import", matrix).matrix.copy()
 
 
 @logged
 def write_calibration(path: str | Path, matrix: ArrayLike) -> None:
-    """Write an affine calibration as JSON or a non-object NumPy array.
+    """Write an affine or projective calibration as JSON or NumPy array.
 
     Args:
         path: Destination JSON/TXT/NPY file.
-        matrix: Validated homogeneous affine matrix.
+        matrix: Validated homogeneous 3x3 matrix.
     """
     matrix = Calibration("export", matrix).matrix
     with atomic_files([path]) as (temp,):

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from ._logging import logged
-from .types.experiment import Experiment
+from .types.dataset import Dataset
 from .types.photons import PhotonSequence, PhotonUnit
 
 if TYPE_CHECKING:
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 @logged
 def from_observations(
-    experiment: Experiment,
+    dataset: Dataset,
     *,
     run_id: str,
     molecule_id: str | None = None,
@@ -29,7 +29,7 @@ def from_observations(
     """Convert an active run without applying records or claiming photon calibration.
 
     Args:
-        experiment: Owner supplying active observation measurements.
+        dataset: Owner supplying active observation measurements.
         run_id: Explicit measurement run, preventing accidental mixing of runs.
         molecule_id: Optional molecule selector within that run.
         value_column: Numeric measurement column to copy into sequence values.
@@ -39,14 +39,14 @@ def from_observations(
     Returns:
         Detached per-acquisition/channel/molecule sequences ready for explicit add().
     """
-    rows = experiment.observations.query(molecule_id=molecule_id)
+    rows = dataset.observations.query(molecule_id=molecule_id)
     if "run_id" not in rows or not np.any(rows["run_id"] == run_id):
         raise ValueError("Unknown active observation run")
     if value_column not in rows or rows[value_column].dtype.kind not in "iuf":
         raise ValueError("Select an available numeric measurement column")
     mask = rows["run_id"] == run_id
     selected = {k: v[mask] for k, v in rows.items()}
-    settings = experiment.processing.settings.get("photometry", {}).get(run_id, {}).get("settings", {})
+    settings = dataset.processing.settings.get("photometry", {}).get(run_id, {}).get("settings", {})
     return from_columns(
         selected,
         run_id=run_id,
@@ -249,12 +249,12 @@ def to_columns(sequences: Sequence[PhotonSequence]) -> dict[str, np.ndarray]:
 
 @logged
 def apply_photon_sequences(
-    experiment: Experiment, result: PhotonSequenceResult, *, expected: tuple | None = None
+    dataset: Dataset, result: PhotonSequenceResult, *, expected: tuple | None = None
 ) -> PhotonSequenceResult:
     """Atomically add a trace run directly to the primary photon-sequence collection.
 
     Args:
-        experiment: Live scientific model receiving trace records.
+        dataset: Live scientific model receiving trace records.
         result: Detached stationary or moving trace output.
         expected: Optional caller-managed source-state token.
 
@@ -263,7 +263,7 @@ def apply_photon_sequences(
     """
     from .staging import transact
 
-    def commit(model: Experiment) -> PhotonSequenceResult:
+    def commit(model: Dataset) -> PhotonSequenceResult:
         """Commit every sequence or none, retaining named run provenance.
 
         Args:
@@ -289,4 +289,4 @@ def apply_photon_sequences(
         )
         return replace(result, sequence_ids=ids)
 
-    return transact(experiment, commit, expected=result.expected if expected is None else expected)
+    return transact(dataset, commit, expected=result.expected if expected is None else expected)

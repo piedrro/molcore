@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from molcore import Acquisition, ArraySource, ChannelSpec, Experiment
+from molcore import Acquisition, ArraySource, ChannelSpec, Dataset
 from molcore.clustering import cluster_localizations
 from molcore.colocalisation import colocalise
 from molcore.filtering import filter_results
@@ -14,7 +14,7 @@ from molcore.types.analysis import ClusteringSettings, ColocalisationSettings, F
 
 class AnalysisTests(unittest.TestCase):
     def setUp(self):
-        self.model = Experiment()
+        self.model = Dataset()
         self.model.add_acquisition(
             Acquisition(
                 ArraySource(np.zeros((3, 12, 12))),
@@ -49,7 +49,7 @@ class AnalysisTests(unittest.TestCase):
         np.testing.assert_array_equal(result.selected_ids, [track])
 
     def test_whole_track_reduction_includes_other_acquisitions(self):
-        model = Experiment()
+        model = Dataset()
         ids = []
         for acquisition, photons in (("first", 1.0), ("second", 9.0)):
             model.add_acquisition(Acquisition(ArraySource(np.zeros((1, 4, 4))), id=acquisition))
@@ -78,7 +78,7 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(result.unmatched_source, 2)
 
     def test_matching_ties_use_stable_ids(self):
-        model = Experiment()
+        model = Dataset()
         model.add_acquisition(
             Acquisition(
                 ArraySource(np.zeros((1, 4, 4))),
@@ -102,7 +102,9 @@ class AnalysisTests(unittest.TestCase):
         np.testing.assert_allclose(result.centroids["x"], [2.05])
 
     def test_render_geometry_without_calibration(self):
-        result = render_localizations(self.model, "a", "a", settings=RenderSettings(oversampling=2.0))
+        result = render_localizations(
+            self.model, "a", "a", settings=RenderSettings(oversampling=2.0), space="raw"
+        )
         self.assertEqual(result.image.shape, (24, 24))
         self.assertEqual(result.pixel_spacing, 0.5)
         self.assertEqual(result.origin, (0.0, 0.0))
@@ -133,7 +135,7 @@ class AnalysisTests(unittest.TestCase):
             filter_results(self.model, "a", "a", cancel_event=cancel)
 
     def test_raw_channels_with_different_rois_require_registration(self):
-        model = Experiment()
+        model = Dataset()
         model.add_acquisition(
             Acquisition(
                 ArraySource(np.zeros((1, 12, 12))),

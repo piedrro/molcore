@@ -13,7 +13,7 @@ from .types.analysis import ClusteringResult, ClusteringSettings
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
-    from .types import CancelEvent, CoordinateSpace, Experiment, ProgressCallback
+    from .types import CancelEvent, CoordinateSpace, Dataset, ProgressCallback
 
 
 _DEFAULT_SETTINGS = ClusteringSettings()
@@ -21,7 +21,7 @@ _DEFAULT_SETTINGS = ClusteringSettings()
 
 @logged
 def cluster_localizations(
-    experiment: Experiment,
+    dataset: Dataset,
     acquisition_id: str,
     channel: str,
     *,
@@ -34,7 +34,7 @@ def cluster_localizations(
     """Cluster a stable-ID-ordered partition; non-finite positions remain noise.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         acquisition_id: Source acquisition identifier.
         channel: Logical source channel name.
         settings: Validated settings controlling this operation.
@@ -48,8 +48,8 @@ def cluster_localizations(
     """
     from sklearn.cluster import DBSCAN
 
-    expected, space = start(experiment, space, progress, cancel_event)
-    _, rows = partition(experiment, acquisition_id, channel, space, ids)
+    expected, space = start(dataset, space, progress, cancel_event)
+    _, rows = partition(dataset, acquisition_id, channel, space, ids)
     xy = np.column_stack((rows["x"], rows["y"]))
     valid = np.isfinite(xy).all(axis=1)
     labels = np.full(len(xy), -1, dtype=np.int64)
@@ -65,5 +65,5 @@ def cluster_localizations(
         "y": np.array([xy[labels == c, 1].mean() for c in clusters]),
     }
     rows["cluster"] = labels
-    finish(experiment, expected, progress, cancel_event)
+    finish(dataset, expected, progress, cancel_event)
     return ClusteringResult(acquisition_id, channel, space, settings, rows, expected, centroids)

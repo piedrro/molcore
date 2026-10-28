@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from molcore import Acquisition, ArraySource, Experiment
+from molcore import Acquisition, ArraySource, Dataset
 from molcore.filtering import filter_results
 
 
@@ -50,7 +50,7 @@ class LibraryContractTests(unittest.TestCase):
         self.assertEqual(missing, [])
 
     def test_operation_logs_and_exception_tracebacks_without_array_dump(self):
-        model = Experiment()
+        model = Dataset()
         model.add_acquisition(Acquisition(ArraySource(np.zeros((1, 3, 3))), id="a"))
         with self.assertLogs("molcore", logging.DEBUG) as captured:
             filter_results(model, "a", "image")

@@ -11,19 +11,19 @@ from molcore import (
     ArraySource,
     ChannelName,
     ChannelSpec,
-    Experiment,
+    Dataset,
 )
 from molcore.interop import napari_points, napari_tracks
 
 
-def moltrack_example() -> Experiment:
+def moltrack_example() -> Dataset:
     """Build the shared model from single-channel images and localization results.
 
     Returns:
-        Experiment with measured-frame track membership and no GUI dependencies.
+        Dataset with measured-frame track membership and no GUI dependencies.
     """
-    experiment = Experiment()
-    experiment.add_acquisition(
+    dataset = Dataset()
+    dataset.add_acquisition(
         Acquisition(
             ArraySource(np.zeros((3, 16, 16), dtype=np.uint16)),
             id="tracking",
@@ -31,7 +31,7 @@ def moltrack_example() -> Experiment:
             pixel_size=100,
         )
     )
-    ids = experiment.localizations.add(
+    ids = dataset.localizations.add(
         acquisition_id="tracking",
         channel=ChannelName.IMAGE,
         frame=[0, 1, 2],
@@ -39,20 +39,20 @@ def moltrack_example() -> Experiment:
         y=[7.0, 7.0, 8.0],
         photons=[100.0, 95.0, 110.0],
     )
-    experiment.tracks.add(ids, metadata={"algorithm": "external tracker"})
-    assert napari_points(experiment.localizations.query()).shape == (3, 3)
-    assert napari_tracks(experiment.tracks.query()).shape == (3, 4)
-    return experiment
+    dataset.tracks.add(ids, metadata={"algorithm": "external tracker"})
+    assert napari_points(dataset.localizations.query()).shape == (3, 3)
+    assert napari_tracks(dataset.tracks.query()).shape == (3, 4)
+    return dataset
 
 
-def molseeq_example() -> Experiment:
+def molseeq_example() -> Dataset:
     """Build four ALEX channel views while retaining the original camera stream.
 
     Returns:
-        Experiment with unequal donor/acceptor channel lengths and intensities.
+        Dataset with unequal donor/acceptor channel lengths and intensities.
     """
-    experiment = Experiment()
-    experiment.add_acquisition(
+    dataset = Dataset()
+    dataset.add_acquisition(
         Acquisition(
             ArraySource(np.zeros((5, 16, 32), dtype=np.uint16)),
             id="alex",
@@ -66,21 +66,21 @@ def molseeq_example() -> Experiment:
             },
         )
     )
-    experiment.observations.add(
+    dataset.observations.add(
         molecule_id="stationary-1",
         acquisition_id="alex",
         channel=[ChannelName.DD, ChannelName.DA, ChannelName.AA],
         frame=[0, 0, 1],
         intensity=[100.0, 50.0, 80.0],
     )
-    assert experiment.acquisitions["alex"].channels[ChannelName.DD].shape[0] == 3
-    return experiment
+    assert dataset.acquisitions["alex"].channels[ChannelName.DD].shape[0] == 3
+    return dataset
 
 
 if __name__ == "__main__":
     with TemporaryDirectory() as directory:
-        for name, experiment in (("tracking", moltrack_example()), ("alex", molseeq_example())):
+        for name, dataset in (("tracking", moltrack_example()), ("alex", molseeq_example())):
             path = Path(directory) / f"{name}.h5"
-            experiment.save(path, image_policy="full")
-            with Experiment.open(path) as restored:
+            dataset.save(path, image_policy="full")
+            with Dataset.open(path) as restored:
                 print(name, list(restored.acquisitions))

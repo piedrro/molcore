@@ -67,7 +67,7 @@ class AnalysisTool(ToolWidget):
         """Initialise the object and validate its configuration.
 
         Args:
-            session: Shared host-owned experiment, selection and background-job coordinator.
+            session: Shared host-owned dataset, selection and background-job coordinator.
             parent: Optional Qt parent controlling widget lifetime.
         """
         self._generation = 0
@@ -136,7 +136,7 @@ class AnalysisTool(ToolWidget):
             if is_dataclass(result) and hasattr(result, "expected"):
                 from ..staging import state_token
 
-                result = replace(result, expected=state_token(self.session.experiment))
+                result = replace(result, expected=state_token(self.session.dataset))
             complete(result)
             self.result_ready.emit(self.preview if self.preview is not None else result)
 
@@ -178,8 +178,12 @@ class AnalysisTool(ToolWidget):
             ids: Stable IDs of the source entities to select.
             entity: Either localizations or tracks.
         """
-        model = self.session.experiment
-        rows = model.tracks.query(track_id=ids) if entity == "tracks" else model.localizations.query(ids=ids)
+        model = self.session.dataset
+        rows = (
+            model.tracks.query(track_id=ids, space="raw")
+            if entity == "tracks"
+            else model.localizations.query(ids=ids, space="raw")
+        )
         for acquisition, channel in sorted(set(zip(rows["acquisition_id"], rows["channel"], strict=True))):
             mask = (rows["acquisition_id"] == acquisition) & (rows["channel"] == channel)
             self.selection_requested.emit(
@@ -247,7 +251,7 @@ def partition_rows(session: UiSession, *, tracks: bool = False) -> dict[str, np.
     """Partition rows.
 
     Args:
-        session: Shared host-owned experiment, selection and background-job coordinator.
+        session: Shared host-owned dataset, selection and background-job coordinator.
         tracks: Track IDs to invalidate, or whether this operation selects whole tracks.
 
     Returns:
@@ -255,7 +259,7 @@ def partition_rows(session: UiSession, *, tracks: bool = False) -> dict[str, np.
     """
     if session.acquisition_id is None:
         return {}
-    table = session.experiment.tracks if tracks else session.experiment.localizations
+    table = session.dataset.tracks if tracks else session.dataset.localizations
     return table.query(acquisition_id=session.acquisition_id, channel=session.channel, space=session.space)
 
 
@@ -264,7 +268,7 @@ class IdTool(AnalysisTool):
         """Initialise the object and validate its configuration.
 
         Args:
-            session: Shared host-owned experiment, selection and background-job coordinator.
+            session: Shared host-owned dataset, selection and background-job coordinator.
             parent: Optional Qt parent controlling widget lifetime.
         """
         super().__init__(session, parent)

@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 from qtpy.QtWidgets import QApplication
 
-from molcore import Acquisition, ArraySource, Experiment
+from molcore import Acquisition, ArraySource, Dataset
 from molcore.types import DetectionResult, LocalisationSettings
 from molcore.ui import (ChannelAlignmentWidget, FileToolsWidget, LocalisationWidget,
                        MolCoreToolsWidget, SegmentationWidget, UiSession, UndriftingWidget)
@@ -22,7 +22,7 @@ class WidgetTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
-        model = Experiment()
+        model = Dataset()
         model.add_acquisition(Acquisition(ArraySource(np.zeros((3, 9, 9))), id='a'))
         self.session = UiSession(model)
         self.addCleanup(self.session.shutdown)
@@ -56,18 +56,18 @@ class WidgetTests(unittest.TestCase):
             widget.detect_full()
             self.pump()
         self.assertIsNotNone(widget.detections)
-        self.assertEqual(len(self.session.experiment.localizations), 0)
+        self.assertEqual(len(self.session.dataset.localizations), 0)
         widget.threshold.setValue(widget.threshold.value() + 1)
         self.assertIsNone(widget.detections)
         widget.close()
 
     def test_file_dialog_cancel_does_not_start_job(self):
         widget = FileToolsWidget(self.session)
-        model = self.session.experiment
+        model = self.session.dataset
         with patch('qtpy.QtWidgets.QFileDialog.getOpenFileName', return_value=('', '')):
-            widget.open_experiment()
+            widget.open_dataset()
         self.assertFalse(self.session.busy)
-        self.assertIs(model, self.session.experiment)
+        self.assertIs(model, self.session.dataset)
         widget.close()
 
 

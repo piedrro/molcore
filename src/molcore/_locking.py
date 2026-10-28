@@ -7,7 +7,7 @@ from functools import wraps
 
 
 def model_locked[**P, R](function: Callable[P, R]) -> Callable[P, R]:
-    """Hold the owner experiment's reentrant lock for a public model operation.
+    """Hold the owner dataset's reentrant lock for a public model operation.
 
     Args:
         function: Function used by this operation.
@@ -27,7 +27,7 @@ def model_locked[**P, R](function: Callable[P, R]) -> Callable[P, R]:
         Returns:
             Computed R value.
         """
-        owner = getattr(args[0], "experiment", args[0])
+        owner = getattr(args[0], "dataset", args[0])
         with owner._lock:
             return function(*args, **kwargs)
 

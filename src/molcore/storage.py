@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from contextlib import nullcontext
 from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -19,10 +20,10 @@ from .types.images import CachedSource, FitsSource, HDF5Source, MissingSource, T
 from .types.photons import PhotonSequence
 
 if TYPE_CHECKING:
-    from .types import Experiment, ImageSource
+    from .types import Dataset, Experiment, ImageSource
     from .types.scientific import CancelEvent, ProgressCallback
 
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 
 
 def _json(value: Any) -> str:
@@ -150,12 +151,12 @@ def _load_external(
     return source
 
 
-def _write_crops(file: Any, experiment: Experiment, policy: str, width: int) -> list[int]:
+def _write_crops(file: Any, dataset: Dataset, policy: str, width: int) -> list[int]:
     """Write crops.
 
     Args:
         file: File used by this operation.
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         policy: Policy used by this operation.
         width: Odd crop width in camera pixels.
 
@@ -169,14 +170,14 @@ def _write_crops(file: Any, experiment: Experiment, policy: str, width: int) -> 
         ImagePolicy.LOCALIZATION_AND_PHOTON_CROPS,
         ImagePolicy.ALL_CROPS,
     ):
-        ids.update(int(i) for i in experiment.localizations._data.get("id", []))
+        ids.update(int(i) for i in dataset.localizations._data.get("id", []))
     if policy in (
         ImagePolicy.TRACK_CROPS,
         ImagePolicy.BOTH,
         ImagePolicy.TRACK_AND_PHOTON_CROPS,
         ImagePolicy.ALL_CROPS,
     ):
-        for members in experiment.tracks._members.values():
+        for members in dataset.tracks._members.values():
             ids.update(int(i) for i in members)
     if not ids:
         return []
@@ -184,7 +185,7 @@ def _write_crops(file: Any, experiment: Experiment, policy: str, width: int) -> 
     group = file.create_group("crops")
     group.attrs["width"] = width
     # Different acquisitions may have different camera dtypes.
-    dtype = np.result_type(*(a.source.dtype for a in experiment.acquisitions.values()))
+    dtype = np.result_type(*(a.source.dtype for a in dataset.acquisitions.values()))
     pixels = group.create_dataset(
         "pixels", (len(ids), width, width), dtype=dtype, chunks=(1, width, width), compression="gzip"
     )
@@ -193,7 +194,7 @@ def _write_crops(file: Any, experiment: Experiment, policy: str, width: int) -> 
     )
     frames, origins, acquisitions, channels = [], [], [], []
     for index, localization_id in enumerate(ids):
-        crop = experiment.crops.localization(localization_id, width=width)
+        crop = dataset.crops.localization(localization_id, width=width)
         pixels[index], valid[index] = crop.pixels, crop.valid
         frames.append(crop.camera_frame)
         origins.append(crop.origin)
@@ -209,16 +210,16 @@ def _write_crops(file: Any, experiment: Experiment, policy: str, width: int) -> 
     return ids
 
 
-def _write_photon_sequences(file: h5py.File, experiment: Experiment) -> None:
+def _write_photon_sequences(file: h5py.File, dataset: Dataset) -> None:
     """Serialize independent sequence samples independently of image policies.
 
     Args:
         file: Staged destination HDF5 file.
-        experiment: Owner providing photon-sequence records and validity.
+        dataset: Owner providing photon-sequence records and validity.
     """
     root = file.create_group("photon_sequences")
-    root.attrs["revision"] = experiment.photon_sequences.revision
-    for index, sequence in enumerate(experiment.photon_sequences.query(include_stale=True)):
+    root.attrs["revision"] = dataset.photon_sequences.revision
+    for index, sequence in enumerate(dataset.photon_sequences.query(include_stale=True)):
         group = root.create_group(str(index))
         group.attrs["info"] = _json(
             dict(
@@ -234,7 +235,7 @@ def _write_photon_sequences(file: h5py.File, experiment: Experiment) -> None:
                 localization_id=sequence.localization_id,
                 track_id=sequence.track_id,
                 metadata=sequence.metadata,
-                stale=experiment.photon_sequences.is_stale(sequence.id),
+                stale=dataset.photon_sequences.is_stale(sequence.id),
             )
         )
         for name in ("frames", "photons", "timestamps", "valid", "positions", "localization_ids"):
@@ -245,13 +246,13 @@ def _write_photon_sequences(file: h5py.File, experiment: Experiment) -> None:
 
 
 def _write_photon_crops(
-    file: h5py.File, experiment: Experiment, policy: ImagePolicy, width: int, cancel_event: CancelEvent | None
+    file: h5py.File, dataset: Dataset, policy: ImagePolicy, width: int, cancel_event: CancelEvent | None
 ) -> list[tuple[str, int]]:
     """Stream selected photon-sequence crops while retaining sample provenance.
 
     Args:
         file: Staged HDF5 output.
-        experiment: Model supplying sequence positions and source pixels.
+        dataset: Model supplying sequence positions and source pixels.
         policy: Selected microscopy-pixel inclusion policy.
         width: Odd crop width in channel pixels.
         cancel_event: Optional cooperative cancellation event.
@@ -268,7 +269,7 @@ def _write_photon_crops(
         ImagePolicy.ALL_CROPS,
     ):
         return []
-    sequences = experiment.photon_sequences.query(include_stale=True)
+    sequences = dataset.photon_sequences.query(include_stale=True)
     for sequence in sequences:
         if sequence.positions is None:
             raise ValueError(f"Photon sequence {sequence.id!r} has no crop positions")
@@ -277,7 +278,7 @@ def _write_photon_crops(
         return []
     group = file.create_group("photon_crops")
     group.attrs["width"] = width
-    dtype = np.result_type(*(experiment.acquisitions[s.acquisition_id].source.dtype for s in sequences))
+    dtype = np.result_type(*(dataset.acquisitions[s.acquisition_id].source.dtype for s in sequences))
     pixels = group.create_dataset(
         "pixels", (count, width, width), dtype=dtype, chunks=(1, width, width), compression="gzip"
     )
@@ -287,7 +288,7 @@ def _write_photon_crops(
     keys, frames, origins, acquisitions, channels, anchors = [], [], [], [], [], []
     for sequence in sequences:
         for index, crop in enumerate(
-            experiment.crops.photon_sequence(sequence.id, width=width, include_stale=True)
+            dataset.crops.photon_sequence(sequence.id, width=width, include_stale=True)
         ):
             report(None, cancel_event)
             if crop is None:
@@ -316,9 +317,112 @@ def _write_photon_crops(
     return keys
 
 
+def _write_dataset_group(
+    file: Any,
+    dataset: Dataset,
+    destination: Path,
+    *,
+    layout: str,
+    policy: ImagePolicy,
+    crop_width: int,
+    progress: Any,
+    cancel_event: Any,
+) -> tuple:
+    """Write one dataset at an arbitrary HDF5 group without copying movie stacks."""
+    from .files import report
+
+    file.attrs["format"] = "molcore"
+    file.attrs["format_version"] = FORMAT_VERSION
+    file.attrs["metadata"] = _json(dataset.metadata)
+    file.attrs["image_policy"] = policy.value
+    file.attrs["processing"] = _json(asdict(dataset.processing))
+    acquisitions = file.create_group("acquisitions", track_order=True)
+    for index, acquisition in enumerate(dataset.acquisitions.values()):
+        report(None, cancel_event)
+        group = acquisitions.create_group(str(index))
+        info = {
+            "id": acquisition.id,
+            "shape": acquisition.source.shape,
+            "dtype": acquisition.source.dtype.str,
+            "mode": acquisition.mode,
+            "pixel_size": acquisition.pixel_size,
+            "metadata": acquisition.metadata,
+            "excitation_sequence": acquisition.excitation_sequence,
+            "phase": acquisition.phase,
+            "channel_specs": {k: asdict(v) for k, v in acquisition.channel_specs.items()},
+        }
+        if acquisition.timestamps is not None:
+            group.create_dataset("timestamps", data=acquisition.timestamps)
+        if policy == ImagePolicy.FULL:
+            n, y, x = acquisition.source.shape
+            images = group.create_dataset(
+                "images",
+                shape=(n, y, x),
+                dtype=acquisition.source.dtype,
+                maxshape=(None, y, x),
+                chunks=(1, min(y, 256), min(x, 256)),
+                compression="gzip",
+            )
+            for frame in range(n):
+                report(progress, cancel_event, frame, max(1, n), f"Saving images: {acquisition.id}")
+                images[frame] = acquisition.source[frame]
+        elif layout == "directory":
+            info["external"] = _external(acquisition.source, destination.parent, destination)
+        group.attrs["info"] = _json(info)
+    file.attrs["sequences"] = _json(
+        [
+            {
+                "id": s.id,
+                "acquisition_ids": [a.id for a in s.acquisitions],
+                "allow_cross_boundary_tracks": s.allow_cross_boundary_tracks,
+                "reference": s.reference,
+            }
+            for s in dataset.sequences.values()
+        ]
+    )
+    for name in ("localizations", "observations"):
+        table = getattr(dataset, name)
+        group = file.create_group(name)
+        group.attrs["next_id"], group.attrs["revision"] = table._next_id, table.revision
+        _write_columns(group, table._data)
+    tracks = file.create_group("tracks")
+    tracks.attrs["metadata"] = _json(dataset.tracks.metadata)
+    tracks.attrs["next_id"] = dataset.tracks._next_id
+    tracks.attrs["revision"] = dataset.tracks.revision
+    memberships = [(t, int(i)) for t, ids in dataset.tracks._members.items() for i in ids]
+    tracks.create_dataset("memberships", data=np.asarray(memberships, dtype=np.uint64).reshape(-1, 2))
+    transforms = file.create_group("transforms")
+    transforms.attrs["revision"] = dataset.transforms.revision
+    transforms.attrs["calibrations"] = _json([asdict(c) for c in dataset.calibrations.values()])
+    transforms.attrs["selected"] = _json(
+        [[a, c, name] for (a, c), name in dataset.transforms._selected.items()]
+    )
+    drift = transforms.create_group("drift")
+    for index, (acquisition_id, (frames, displacement)) in enumerate(dataset.transforms._drift.items()):
+        group = drift.create_group(str(index))
+        group.attrs["acquisition_id"] = acquisition_id
+        group.create_dataset("frames", data=frames)
+        group.create_dataset("displacement", data=displacement)
+    segmentations = file.create_group("segmentations")
+    for index, segmentation in enumerate(dataset.segmentations.values()):
+        report(None, cancel_event)
+        group = segmentations.create_group(str(index))
+        info = {k: v for k, v in vars(segmentation).items() if k not in ("labels", "source_image")}
+        group.attrs["info"] = _json(info)
+        group.create_dataset("labels", data=segmentation.labels, compression="gzip")
+        if segmentation.source_image is not None:
+            group.create_dataset("source", data=segmentation.source_image, compression="gzip")
+    saved_crop_ids = _write_crops(file, dataset, policy, crop_width)
+    _write_photon_sequences(file, dataset)
+    saved_photon_keys = _write_photon_crops(file, dataset, policy, crop_width, cancel_event)
+    file.attrs["kind"] = "dataset"
+    file.attrs["id"], file.attrs["name"] = dataset.id, dataset.name
+    return saved_crop_ids, saved_photon_keys
+
+
 @logged
-def save_experiment(
-    experiment: Experiment,
+def save_dataset(
+    dataset: Dataset,
     path: str | Path,
     *,
     layout: str | None = "hdf5",
@@ -326,11 +430,12 @@ def save_experiment(
     crop_width: int = 7,
     progress: ProgressCallback | None = None,
     cancel_event: CancelEvent | None = None,
+    publish_guard: Any = None,
 ) -> None:
-    """Write an experiment snapshot without modifying the previous snapshot on failure.
+    """Write an dataset snapshot without modifying the previous snapshot on failure.
 
     Args:
-        experiment: Experiment to serialize.
+        dataset: Dataset to serialize.
         path: Destination file or directory.
         layout: hdf5 embeds selected content; directory may reference external images.
         image_policy: Raw-image inclusion policy.
@@ -344,168 +449,109 @@ def save_experiment(
     """
     from .files import report
 
-    report(progress, cancel_event, 0, 1, "Saving experiment")
+    report(progress, cancel_event, 0, 1, "Saving dataset")
     if layout not in ("hdf5", "directory"):
         raise ValueError("Layout must be hdf5 or directory")
     policy = ImagePolicy(image_policy)
     validate_width(crop_width)
     path = Path(path).resolve()
-    destination = path / "experiment.h5" if layout == "directory" else path
+    destination = path / "dataset.h5" if layout == "directory" else path
     destination.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=".molcore-", suffix=".tmp", dir=destination.parent)
     os.close(fd)
     try:
         with h5py.File(temp_name, "w") as file:
-            file.attrs["format"] = "molcore"
-            file.attrs["format_version"] = FORMAT_VERSION
-            file.attrs["metadata"] = _json(experiment.metadata)
-            file.attrs["image_policy"] = policy.value
-            file.attrs["processing"] = _json(asdict(experiment.processing))
-            acquisitions = file.create_group("acquisitions")
-            for index, acquisition in enumerate(experiment.acquisitions.values()):
-                report(None, cancel_event)
-                group = acquisitions.create_group(str(index))
-                info = {
-                    "id": acquisition.id,
-                    "shape": acquisition.source.shape,
-                    "dtype": acquisition.source.dtype.str,
-                    "mode": acquisition.mode,
-                    "pixel_size": acquisition.pixel_size,
-                    "metadata": acquisition.metadata,
-                    "excitation_sequence": acquisition.excitation_sequence,
-                    "phase": acquisition.phase,
-                    "channel_specs": {k: asdict(v) for k, v in acquisition.channel_specs.items()},
-                }
-                if acquisition.timestamps is not None:
-                    group.create_dataset("timestamps", data=acquisition.timestamps)
-                if policy == ImagePolicy.FULL:
-                    n, y, x = acquisition.source.shape
-                    dataset = group.create_dataset(
-                        "images",
-                        shape=(n, y, x),
-                        dtype=acquisition.source.dtype,
-                        maxshape=(None, y, x),
-                        chunks=(1, min(y, 256), min(x, 256)),
-                        compression="gzip",
-                    )
-                    for frame in range(n):
-                        report(progress, cancel_event, frame, max(1, n), f"Saving images: {acquisition.id}")
-                        dataset[frame] = acquisition.source[frame]
-                elif layout == "directory":
-                    info["external"] = _external(acquisition.source, destination.parent, destination)
-                group.attrs["info"] = _json(info)
-            file.attrs["sequences"] = _json(
-                [
-                    {
-                        "id": s.id,
-                        "acquisition_ids": [a.id for a in s.acquisitions],
-                        "allow_cross_boundary_tracks": s.allow_cross_boundary_tracks,
-                        "reference": s.reference,
-                    }
-                    for s in experiment.sequences.values()
-                ]
+            saved_crop_ids, saved_photon_keys = _write_dataset_group(
+                file,
+                dataset,
+                destination,
+                layout=layout,
+                policy=policy,
+                crop_width=crop_width,
+                progress=progress,
+                cancel_event=cancel_event,
             )
-            for name in ("localizations", "observations"):
-                table = getattr(experiment, name)
-                group = file.create_group(name)
-                group.attrs["next_id"], group.attrs["revision"] = table._next_id, table.revision
-                _write_columns(group, table._data)
-            tracks = file.create_group("tracks")
-            tracks.attrs["metadata"] = _json(experiment.tracks.metadata)
-            tracks.attrs["next_id"] = experiment.tracks._next_id
-            tracks.attrs["revision"] = experiment.tracks.revision
-            memberships = [(t, int(i)) for t, ids in experiment.tracks._members.items() for i in ids]
-            tracks.create_dataset("memberships", data=np.asarray(memberships, dtype=np.uint64).reshape(-1, 2))
-            transforms = file.create_group("transforms")
-            transforms.attrs["revision"] = experiment.transforms.revision
-            transforms.attrs["calibrations"] = _json([asdict(c) for c in experiment.calibrations.values()])
-            transforms.attrs["selected"] = _json(
-                [[a, c, name] for (a, c), name in experiment.transforms._selected.items()]
-            )
-            drift = transforms.create_group("drift")
-            for index, (acquisition_id, (frames, displacement)) in enumerate(
-                experiment.transforms._drift.items()
-            ):
-                group = drift.create_group(str(index))
-                group.attrs["acquisition_id"] = acquisition_id
-                group.create_dataset("frames", data=frames)
-                group.create_dataset("displacement", data=displacement)
-            segmentations = file.create_group("segmentations")
-            for index, segmentation in enumerate(experiment.segmentations.values()):
-                report(None, cancel_event)
-                group = segmentations.create_group(str(index))
-                info = {k: v for k, v in vars(segmentation).items() if k not in ("labels", "source_image")}
-                group.attrs["info"] = _json(info)
-                group.create_dataset("labels", data=segmentation.labels, compression="gzip")
-                if segmentation.source_image is not None:
-                    group.create_dataset("source", data=segmentation.source_image, compression="gzip")
-            saved_crop_ids = _write_crops(file, experiment, policy, crop_width)
-            _write_photon_sequences(file, experiment)
-            saved_photon_keys = _write_photon_crops(file, experiment, policy, crop_width, cancel_event)
             file.flush()
-        report(progress, cancel_event, 1, 1, "Committing experiment snapshot")
-        os.replace(temp_name, destination)
-        # A replaced snapshot has new crop row indices and possibly no images.
-        experiment.crops._saved = {
-            key: value
-            for key, value in experiment.crops._saved.items()
-            if Path(value[0]).resolve() != destination
-        }
-        for index, localization_id in enumerate(saved_crop_ids):
-            experiment.crops._saved[localization_id, crop_width] = (str(destination), index)
-        experiment.crops._photon_saved = {
-            key: value
-            for key, value in experiment.crops._photon_saved.items()
-            if Path(value[0]).resolve() != destination
-        }
-        for index, (sequence_id, sample_index) in enumerate(saved_photon_keys):
-            experiment.crops._photon_saved[sequence_id, sample_index, crop_width] = (str(destination), index)
-        for index, acquisition in enumerate(experiment.acquisitions.values()):
-            source = acquisition.source
-            while isinstance(source, CachedSource):
-                source = source.source
-            if isinstance(source, HDF5Source) and Path(source.path).resolve() == destination:
-                acquisition.source = (
-                    HDF5Source(destination, f"/acquisitions/{index}/images")
-                    if policy == ImagePolicy.FULL
-                    else MissingSource(source.shape, source.dtype)
-                )
+        report(progress, cancel_event, 1, 1, "Committing dataset snapshot")
+        with publish_guard() if publish_guard is not None else nullcontext():
+            os.replace(temp_name, destination)
+            # A replaced snapshot has new crop row indices and possibly no images.
+            dataset.crops._saved = {
+                key: value
+                for key, value in dataset.crops._saved.items()
+                if Path(value[0]).resolve() != destination
+            }
+            for index, localization_id in enumerate(saved_crop_ids):
+                dataset.crops._saved[localization_id, crop_width] = (str(destination), index)
+            dataset.crops._photon_saved = {
+                key: value
+                for key, value in dataset.crops._photon_saved.items()
+                if Path(value[0]).resolve() != destination
+            }
+            for index, (sequence_id, sample_index) in enumerate(saved_photon_keys):
+                dataset.crops._photon_saved[sequence_id, sample_index, crop_width] = (str(destination), index)
+            for index, acquisition in enumerate(dataset.acquisitions.values()):
+                source = acquisition.source
+                while isinstance(source, CachedSource):
+                    source = source.source
+                if isinstance(source, HDF5Source) and Path(source.path).resolve() == destination:
+                    acquisition.source = (
+                        HDF5Source(destination, f"/acquisitions/{index}/images")
+                        if policy == ImagePolicy.FULL
+                        else MissingSource(source.shape, source.dtype)
+                    )
     finally:
         if Path(temp_name).exists():
             Path(temp_name).unlink()
 
 
 @logged
-def open_experiment(path: str | Path) -> Experiment:
+def open_dataset(
+    path: str | Path,
+    *,
+    group: str = "/",
+    progress: ProgressCallback | None = None,
+    cancel_event: CancelEvent | None = None,
+) -> Dataset:
     """Open a supported snapshot, eagerly restoring tables and lazily reading pixels.
 
     Args:
         path: HDF5 snapshot file or dataset directory.
 
     Returns:
-        Restored Experiment with process-safe image and crop descriptors.
+        Restored Dataset with process-safe image and crop descriptors.
 
     Raises:
         ValueError: The format or version is unsupported.
     """
+    from .files import report
     from .types.acquisition import Acquisition
-    from .types.experiment import Experiment
+    from .types.dataset import Dataset
+
+    report(progress, cancel_event, 0, 1, "Opening dataset")
 
     path = Path(path).resolve()
     if path.is_dir():
-        path = path / "experiment.h5"
-    with h5py.File(path, "r") as file:
+        path = path / "dataset.h5"
+    with h5py.File(path, "r") as snapshot:
+        file = snapshot[group]
+        if file.attrs.get("kind", "dataset") != "dataset":
+            raise ValueError("Expected a Dataset snapshot; use Experiment.open for experiments")
         if file.attrs.get("format") != "molcore" or file.attrs.get("format_version") not in (
             1,
             2,
+            3,
             FORMAT_VERSION,
         ):
             raise ValueError("Unsupported MolCore format/version")
-        experiment = Experiment(metadata=json.loads(file.attrs["metadata"]))
+        dataset = Dataset(
+            id=file.attrs.get("id"), name=file.attrs.get("name"), metadata=json.loads(file.attrs["metadata"])
+        )
         processing = json.loads(file.attrs["processing"])
-        experiment.processing.settings = processing["settings"]
-        experiment.processing.software = processing["software"]
+        dataset.processing.settings = processing["settings"]
+        dataset.processing.software = processing["software"]
         for group in file["acquisitions"].values():
+            report(None, cancel_event)
             info = json.loads(group.attrs["info"])
             if "images" in group:
                 source = HDF5Source(path, group["images"].name)
@@ -524,44 +570,44 @@ def open_experiment(path: str | Path) -> Experiment:
                 pixel_size=info["pixel_size"],
                 metadata=info["metadata"],
             )
-            experiment.add_acquisition(acquisition)
+            dataset.add_acquisition(acquisition)
         for sequence in json.loads(file.attrs["sequences"]):
-            experiment.add_sequence(**sequence)
+            dataset.add_sequence(**sequence)
         for name in ("localizations", "observations"):
-            table, group = getattr(experiment, name), file[name]
+            table, group = getattr(dataset, name), file[name]
             table._data = _read_columns(group)
             table._next_id, table.revision = int(group.attrs["next_id"]), int(group.attrs["revision"])
         tracks = file["tracks"]
-        experiment.tracks.metadata = {int(k): v for k, v in json.loads(tracks.attrs["metadata"]).items()}
+        dataset.tracks.metadata = {int(k): v for k, v in json.loads(tracks.attrs["metadata"]).items()}
         membership = tracks["memberships"][:]
-        for track in experiment.tracks.metadata:
-            experiment.tracks._members[track] = membership[membership[:, 0] == track, 1]
-        experiment.tracks._next_id = int(tracks.attrs["next_id"])
-        experiment.tracks.revision = int(tracks.attrs["revision"])
+        for track in dataset.tracks.metadata:
+            dataset.tracks._members[track] = membership[membership[:, 0] == track, 1]
+        dataset.tracks._next_id = int(tracks.attrs["next_id"])
+        dataset.tracks.revision = int(tracks.attrs["revision"])
         transforms = file["transforms"]
         for value in json.loads(transforms.attrs["calibrations"]):
             calibration = Calibration(**value)
-            experiment.transforms._calibrations[calibration.name] = calibration
-        experiment.transforms._selected = {
+            dataset.transforms._calibrations[calibration.name] = calibration
+        dataset.transforms._selected = {
             (a, c): name for a, c, name in json.loads(transforms.attrs["selected"])
         }
         for group in transforms["drift"].values():
-            experiment.transforms._drift[group.attrs["acquisition_id"]] = (
+            dataset.transforms._drift[group.attrs["acquisition_id"]] = (
                 group["frames"][:],
                 group["displacement"][:],
             )
-        experiment.transforms.revision = int(transforms.attrs["revision"])
+        dataset.transforms.revision = int(transforms.attrs["revision"])
         for group in file["segmentations"].values():
             segmentation = Segmentation(
                 **json.loads(group.attrs["info"]),
                 labels=group["labels"][:],
                 source_image=group["source"][:] if "source" in group else None,
             )
-            experiment.segmentations[segmentation.id] = segmentation
+            dataset.segmentations[segmentation.id] = segmentation
         if "crops" in file:
             width = int(file["crops"].attrs["width"])
             for index, localization_id in enumerate(file["crops/ids"][:]):
-                experiment.crops._saved[int(localization_id), width] = (str(path), index)
+                dataset.crops._saved[int(localization_id), width] = (str(path), index, file["crops"].name)
         if "photon_sequences" in file:
             for group in file["photon_sequences"].values():
                 info = json.loads(group.attrs["info"])
@@ -576,22 +622,160 @@ def open_experiment(path: str | Path) -> Experiment:
                     localization_ids=group["localization_ids"][:] if "localization_ids" in group else None,
                     measurements=_read_columns(group["measurements"]) if "measurements" in group else {},
                 )
-                experiment.photon_sequences._data[sequence.id] = sequence
+                dataset.photon_sequences._data[sequence.id] = sequence
                 if stale:
-                    experiment.photon_sequences._stale.add(sequence.id)
-            experiment.photon_sequences.revision = int(file["photon_sequences"].attrs["revision"])
+                    dataset.photon_sequences._stale.add(sequence.id)
+            dataset.photon_sequences.revision = int(file["photon_sequences"].attrs["revision"])
         if "photon_crops" in file:
             group = file["photon_crops"]
             width = int(group.attrs["width"])
             for index, (sequence_id, sample_index) in enumerate(
                 zip(group["sequence_ids"].asstr()[:], group["sample_indices"][:], strict=True)
             ):
-                experiment.crops._photon_saved[sequence_id, int(sample_index), width] = (str(path), index)
+                dataset.crops._photon_saved[sequence_id, int(sample_index), width] = (
+                    str(path),
+                    index,
+                    group.name,
+                )
+    report(progress, cancel_event, 1, 1, "Dataset opened")
+    return dataset
+
+
+@logged
+def save_experiment(
+    experiment: Experiment,
+    path: str | Path,
+    *,
+    layout: str = "hdf5",
+    image_policy: str = "none",
+    crop_width: int = 7,
+    progress: ProgressCallback | None = None,
+    cancel_event: CancelEvent | None = None,
+    publish_guard: Any = None,
+) -> None:
+    """Atomically save datasets and common-view registrations in one snapshot.
+
+    Movie embedding always stores original camera pixels. Explicit TIFF exports
+    are the route for writing resampled images.
+
+    Args:
+        experiment: Experiment containing the probing rounds.
+        path: Snapshot file or output directory.
+        layout: hdf5 or directory snapshot layout.
+        image_policy: Microscopy pixels to embed; original frames are retained unchanged.
+        crop_width: Positive odd width of stored crops.
+        progress: Optional structured progress callback.
+        cancel_event: Optional cooperative cancellation event.
+    """
+    from contextlib import ExitStack
+
+    from .files import report
+
+    if layout not in ("hdf5", "directory"):
+        raise ValueError("Layout must be hdf5 or directory")
+    policy = ImagePolicy(image_policy)
+    validate_width(crop_width)
+    destination = Path(path).resolve()
+    if layout == "directory":
+        destination /= "experiment.h5"
+    report(progress, cancel_event, 0, 1, "Saving sequencing experiment")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".molcore-", suffix=".tmp", dir=destination.parent)
+    os.close(fd)
+    try:
+        with experiment._lock, ExitStack() as stack:
+            for dataset in sorted(experiment.datasets.values(), key=lambda d: d.id):
+                stack.enter_context(dataset._lock)
+            with h5py.File(temporary, "w") as file:
+                file.attrs["format"], file.attrs["format_version"] = "molcore", FORMAT_VERSION
+                file.attrs["kind"] = "experiment"
+                file.attrs["metadata"] = _json(experiment.metadata)
+                file.attrs["alignments"] = _json([asdict(r) for r in experiment.alignment._records.values()])
+                file.attrs["alignment_revision"] = experiment.alignment.revision
+                datasets = file.create_group("datasets", track_order=True)
+                for index, dataset in enumerate(experiment.datasets.values()):
+                    _write_dataset_group(
+                        datasets.create_group(str(index)),
+                        dataset,
+                        destination,
+                        layout=layout,
+                        policy=policy,
+                        crop_width=crop_width,
+                        progress=progress,
+                        cancel_event=cancel_event,
+                    )
+                file.flush()
+            report(progress, cancel_event, 1, 1, "Committing experiment snapshot")
+            with publish_guard() if publish_guard is not None else nullcontext():
+                os.replace(temporary, destination)
+                restored = open_experiment(destination)
+                for key, dataset in experiment.datasets.items():
+                    saved = restored.datasets[key]
+                    for name in ("_saved", "_photon_saved"):
+                        cache = getattr(dataset.crops, name)
+                        cache = {k: v for k, v in cache.items() if Path(v[0]).resolve() != destination}
+                        cache.update(getattr(saved.crops, name))
+                        setattr(dataset.crops, name, cache)
+                    for aid, acquisition in dataset.acquisitions.items():
+                        source = acquisition.source
+                        while isinstance(source, CachedSource):
+                            source = source.source
+                        if isinstance(source, HDF5Source) and Path(source.path).resolve() == destination:
+                            acquisition.source = saved.acquisitions[aid].source
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+@logged
+def open_experiment(
+    path: str | Path, *, progress: ProgressCallback | None = None, cancel_event: CancelEvent | None = None
+) -> Experiment:
+    """Restore one surface experiment and lazy nested dataset sources.
+
+    Args:
+        path: Snapshot file or output directory.
+        progress: Optional structured progress callback.
+        cancel_event: Optional cooperative cancellation event.
+
+    Returns:
+        Result of this operation.
+    """
+    from .files import report
+    from .types.dataset_alignment import DatasetAlignmentResult, DatasetAlignmentSettings
+    from .types.experiment import Experiment
+
+    report(progress, cancel_event, 0, 1, "Opening experiment")
+    path = Path(path).resolve()
+    if path.is_dir():
+        path /= "experiment.h5"
+    with h5py.File(path, "r") as file:
+        if (
+            file.attrs.get("format") != "molcore"
+            or file.attrs.get("kind") != "experiment"
+            or file.attrs.get("format_version") != FORMAT_VERSION
+        ):
+            raise ValueError("Expected a supported Experiment snapshot; use Dataset.open for datasets")
+        experiment = Experiment(metadata=json.loads(file.attrs["metadata"]))
+        for group in file["datasets"].values():
+            experiment.add_dataset(open_dataset(path, group=group.name, cancel_event=cancel_event))
+        for value in json.loads(file.attrs["alignments"]):
+            value["settings"] = DatasetAlignmentSettings(**value["settings"])
+            value["fingerprints"] = tuple(value["fingerprints"])
+            for key in ("matrix", "residuals", "inliers", "source_ids", "reference_ids"):
+                dtype = bool if key == "inliers" else np.uint64 if key.endswith("ids") else float
+                value[key] = np.asarray(value[key], dtype=dtype)
+            result = DatasetAlignmentResult(**value)
+            experiment.alignment._records[result.source_dataset_id] = result
+            experiment.alignment.reference_dataset_id = result.reference_dataset_id
+            experiment.alignment.reference_acquisition_id = result.reference_acquisition_id
+            experiment.alignment.reference_channel = result.reference_channel
+        experiment.alignment.revision = int(file.attrs["alignment_revision"])
+    report(progress, cancel_event, 1, 1, "Experiment opened")
     return experiment
 
 
 @logged
-def read_crop(path: str | Path, index: int, *, group_name: str = "crops") -> Crop:
+def read_crop(path: str | Path, index: int, group_name: str = "crops") -> Crop:
     """Read one saved crop without loading neighbouring crop pixels.
 
     Args:

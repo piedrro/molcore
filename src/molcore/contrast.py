@@ -11,7 +11,7 @@ from numpy.typing import ArrayLike
 
 from ._logging import logged
 from .staging import state_token
-from .types import CancelEvent, Experiment, ProgressCallback, ProgressUpdate, StaleResultError
+from .types import CancelEvent, Dataset, ProgressCallback, ProgressUpdate, StaleResultError
 from .types.contrast import ContrastMethod, ContrastResult, ContrastScope, ContrastSettings
 
 _DEFAULT_SETTINGS = ContrastSettings()
@@ -228,7 +228,7 @@ def autocontrast(
 
 @logged
 def autocontrast_channels(
-    experiment: Experiment,
+    dataset: Dataset,
     acquisition_id: str,
     *,
     channels: Sequence[str] | None = None,
@@ -251,7 +251,7 @@ def autocontrast_channels(
     unavailable images, stale model state and cancellation raise without mutation.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         acquisition_id: Source acquisition identifier.
         channels: Channels used by this operation.
         settings: Validated settings controlling this operation.
@@ -267,7 +267,7 @@ def autocontrast_channels(
     if not isinstance(settings, ContrastSettings) or not isinstance(scope, ContrastScope):
         raise TypeError("Use ContrastSettings and ContrastScope enum")
     _report(0, 1, None, cancel_event)
-    acquisition = experiment.acquisitions[acquisition_id]
+    acquisition = dataset.acquisitions[acquisition_id]
     names = list(acquisition.channels) if channels is None else list(channels)
     if not names or len(set(names)) != len(names):
         raise ValueError("Select at least one distinct channel")
@@ -284,7 +284,7 @@ def autocontrast_channels(
             or frame_range[1] < frame_range[0]
         ):
             raise ValueError("Expected a nonnegative half-open camera-frame range")
-    expected = state_token(experiment)
+    expected = state_token(dataset)
     indices = {}
     included = {}
     for name in names:
@@ -329,6 +329,6 @@ def autocontrast_channels(
             scope,
         )
     _report(completed, total, None, cancel_event)
-    if state_token(experiment) != expected:
+    if state_token(dataset) != expected:
         raise StaleResultError("Autocontrast inputs changed during computation")
     return result

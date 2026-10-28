@@ -9,6 +9,7 @@ import numpy as np
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -21,7 +22,7 @@ from qtpy.QtWidgets import (
 from .. import alignment, cellpose, localisation, undrifting
 from .._logging import logged
 from ..processing import apply_alignment, apply_drift, apply_localisation, apply_segmentations
-from ..staging import state_token
+from ..staging import clone_dataset, experiment_state_token, state_token
 from ..types.processing import (
     CameraSettings,
     CellposeSettings,
@@ -59,7 +60,7 @@ class LocalisationWidget(ToolWidget):
         """Initialise the object and validate its configuration.
 
         Args:
-            session: Shared host-owned experiment, selection and background-job coordinator.
+            session: Shared host-owned dataset, selection and background-job coordinator.
             parent: Optional Qt parent controlling widget lifetime.
         """
         super().__init__(session, parent)
@@ -86,7 +87,7 @@ class LocalisationWidget(ToolWidget):
         for name in ("baseline", "sensitivity", "gain"):
             self.camera_form.controls[name].clear()
         if self.session.acquisition_id is not None:
-            acquisition = self.session.experiment.acquisitions[self.session.acquisition_id]
+            acquisition = self.session.dataset.acquisitions[self.session.acquisition_id]
             self.camera_form.populate(acquisition.metadata.get("camera", {}))
 
     @logged
@@ -146,7 +147,7 @@ class LocalisationWidget(ToolWidget):
                 + ("current-frame preview" if preview else "full-channel detections cached for fitting"),
             )
             if not preview:
-                self.detections, self._detection_token = result, state_token(session.experiment)
+                self.detections, self._detection_token = result, state_token(session.dataset)
 
         session.submit(compute, completed=complete)
 
@@ -163,7 +164,7 @@ class LocalisationWidget(ToolWidget):
     @logged
     def fit_cached(self) -> None:
         """Fit cached full-channel detections and atomically replace their partition."""
-        if self.detections is None or self._detection_token != state_token(self.session.experiment):
+        if self.detections is None or self._detection_token != state_token(self.session.dataset):
             raise ValueError("Detect the full channel again before fitting")
         self._fit(self.detections)
 
@@ -230,7 +231,7 @@ class UndriftingWidget(ToolWidget):
         """Initialise the object and validate its configuration.
 
         Args:
-            session: Shared host-owned experiment, selection and background-job coordinator.
+            session: Shared host-owned dataset, selection and background-job coordinator.
             parent: Optional Qt parent controlling widget lifetime.
         """
         super().__init__(session, parent)
@@ -283,7 +284,7 @@ class UndriftingWidget(ToolWidget):
         """Apply the current non-stale drift preview on the GUI thread."""
         self.require_preview()
         apply_drift(
-            self.session.experiment, {self.preview.acquisition_id: self.preview}, expected=self.preview_token
+            self.session.dataset, {self.preview.acquisition_id: self.preview}, expected=self.preview_token
         )
         self.session.changed()
         self.status.setText("Drift applied")
@@ -301,34 +302,44 @@ class ChannelAlignmentWidget(ToolWidget):
         """Initialise the object and validate its configuration.
 
         Args:
-            session: Shared host-owned experiment, selection and background-job coordinator.
+            session: Shared host-owned dataset, selection and background-job coordinator.
             parent: Optional Qt parent controlling widget lifetime.
         """
         super().__init__(session, parent)
         form = QFormLayout()
         self.target = combo([])
-        self.model = combo(["affine", "translation"])
+        self.source = combo([])
+        self.apply_all = QCheckBox("Apply optical calibration to all compatible datasets")
+        self.apply_all.setChecked(True)
+        self.model = combo(["affine", "translation", "homography"])
         self.radius = QDoubleSpinBox()
         self.radius.setRange(0.000001, 1e9)
         self.radius.setDecimals(6)
         self.radius.setValue(5)
         self.source_ids, self.target_ids, self.name = QLineEdit(), QLineEdit(), QLineEdit()
         for label, control in (
+            ("Source emission channel", self.source),
             ("Reference channel", self.target),
             ("Model", self.model),
             ("Matching radius (pixels)", self.radius),
             ("Paired source IDs (optional)", self.source_ids),
             ("Paired reference IDs (optional)", self.target_ids),
             ("New calibration name", self.name),
+            ("Scope", self.apply_all),
         ):
             form.addRow(label, control)
         self.form.addLayout(form)
-        for control in (self.target, self.model):
+        self.model.setToolTip("Homography uses deterministic RANSAC (1 pixel inlier threshold).")
+        self.target.setToolTip(
+            "Optical registration applies to every channel sharing the source emission path, across all excitation frames. ALEX DA/AA share one transform into DD/AD."
+        )
+        for control in (self.source, self.target, self.model):
             control.currentTextChanged.connect(self.invalidate)
         self.radius.valueChanged.connect(self.invalidate)
         self.source_ids.textChanged.connect(self.invalidate)
         self.target_ids.textChanged.connect(self.invalidate)
         self.name.textChanged.connect(self.invalidate)
+        self.apply_all.toggled.connect(self.invalidate)
         session.selection_changed.connect(self._targets)
         self._targets()
         self.button("Estimate alignment preview", self.estimate)
@@ -337,14 +348,22 @@ class ChannelAlignmentWidget(ToolWidget):
     def _targets(self) -> None:
         """Targets."""
         previous = self.target.currentText()
+        previous_source = self.source.currentText()
+        self.source.clear()
         self.target.clear()
         if self.session.acquisition_id is not None:
-            self.target.addItems(
-                list(self.session.experiment.acquisitions[self.session.acquisition_id].channels)
-            )
+            acquisition = self.session.dataset.acquisitions[self.session.acquisition_id]
+            acceptor = [c for c, spec in acquisition.channel_specs.items() if spec.emission == "A"]
+            donor = [c for c, spec in acquisition.channel_specs.items() if spec.emission == "D"]
+            self.source.addItems(acceptor or list(acquisition.channels))
+            self.target.addItems(donor or list(acquisition.channels))
+            if previous_source in (acceptor or list(acquisition.channels)):
+                self.source.setCurrentText(previous_source)
+            elif not acceptor:
+                self.source.setCurrentText(self.session.channel)
             if previous:
                 self.target.setCurrentText(previous)
-            if self.target.currentText() == self.session.channel and self.target.count() > 1:
+            if self.target.currentText() == self.source.currentText() and self.target.count() > 1:
                 self.target.setCurrentIndex((self.target.currentIndex() + 1) % self.target.count())
 
     @logged
@@ -353,7 +372,7 @@ class ChannelAlignmentWidget(ToolWidget):
         session = self.session
         a, c, target, cpus = (
             session.acquisition_id,
-            session.channel,
+            self.source.currentText(),
             self.target.currentText(),
             session.num_cpus,
         )
@@ -365,6 +384,7 @@ class ChannelAlignmentWidget(ToolWidget):
             match_radius=options["match_radius"],
             name=self.name.text().strip() or None,
         )
+        self._experiment_preview_token = experiment_state_token(session.experiment)
 
         def compute(model: str, progress: ProgressCallback | None, cancel: Any) -> AlignmentResult:
             """Compute a detached result using the current controls.
@@ -394,9 +414,23 @@ class ChannelAlignmentWidget(ToolWidget):
     def apply_preview(self) -> None:
         """Apply a validated preview under its fresh calibration name."""
         self.require_preview()
-        apply_alignment(
-            self.session.experiment, self.preview, expected=self.preview_token, **self._fit_options
+        emission = (
+            self.session.dataset.acquisitions[self.preview.acquisition_id]
+            .channel_specs[self.preview.source_channel]
+            .emission
         )
+        if self.apply_all.isChecked() and emission is not None:
+            if experiment_state_token(self.session.experiment) != self._experiment_preview_token:
+                raise ValueError("Experiment changed; estimate a fresh optical calibration")
+            staged = clone_dataset(self.session.dataset)
+            result = apply_alignment(staged, self.preview, expected=self.preview_token, **self._fit_options)
+            self.session.experiment.apply_channel_calibration(
+                staged.calibrations[result.calibration_name], emission=emission
+            )
+        else:
+            apply_alignment(
+                self.session.dataset, self.preview, expected=self.preview_token, **self._fit_options
+            )
         self.session.changed()
         self.status.setText("Calibration applied")
 
@@ -413,7 +447,7 @@ class SegmentationWidget(ToolWidget):
         """Initialise the object and validate its configuration.
 
         Args:
-            session: Shared host-owned experiment, selection and background-job coordinator.
+            session: Shared host-owned dataset, selection and background-job coordinator.
             parent: Optional Qt parent controlling widget lifetime.
         """
         super().__init__(session, parent)
@@ -439,7 +473,7 @@ class SegmentationWidget(ToolWidget):
         self.button("Apply preview / complete batch", self.apply_preview)
         session.selection_changed.connect(self._targets)
         session.frame_changed.connect(self.invalidate)
-        session.experiment_changed.connect(self._targets)
+        session.dataset_changed.connect(self._targets)
         self._targets()
 
     def _targets(self, *_: Any) -> None:
@@ -449,7 +483,7 @@ class SegmentationWidget(ToolWidget):
             *_: Additional positional values supplied by the caller.
         """
         self.targets.clear()
-        for a, acquisition in self.session.experiment.acquisitions.items():
+        for a, acquisition in self.session.dataset.acquisitions.items():
             for c, view in acquisition.channels.items():
                 if len(view):
                     item = QListWidgetItem(f"{a} / {c} (first camera frame {view.source_frames[0]})")
@@ -543,6 +577,6 @@ class SegmentationWidget(ToolWidget):
     def apply_preview(self) -> None:
         """Apply every mask in a non-stale successful preview atomically."""
         self.require_preview()
-        apply_segmentations(self.session.experiment, self.preview, expected=self.preview_token)
+        apply_segmentations(self.session.dataset, self.preview, expected=self.preview_token)
         self.session.changed()
         self.status.setText("Segmentations applied")

@@ -14,7 +14,7 @@ from .cpu import CpuExecutor
 from .staging import state_token, transact
 from .types import (
     CancelEvent,
-    Experiment,
+    Dataset,
     ProgressCallback,
     StaleResultError,
     TrackingResult,
@@ -101,7 +101,7 @@ def _job(payload: tuple, reporter: WorkerProgress) -> tuple[np.ndarray, ...]:
 
 @logged
 def track(
-    experiment: Experiment,
+    dataset: Dataset,
     acquisition_id: str,
     channel: str,
     *,
@@ -121,7 +121,7 @@ def track(
     run replaces wholly contained partition tracks, preserving localization IDs.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         acquisition_id: Source acquisition identifier.
         channel: Logical source channel name.
         settings: Validated settings controlling this operation.
@@ -137,37 +137,35 @@ def track(
     """
     if not isinstance(settings, TrackingSettings):
         raise TypeError("settings must be TrackingSettings")
-    if channel not in experiment.acquisitions[acquisition_id].channels:
+    if channel not in dataset.acquisitions[acquisition_id].channels:
         raise ValueError("Unknown channel")
-    expected = state_token(experiment)
-    rows = experiment.localizations.query(
-        acquisition_id=acquisition_id, channel=channel, space=settings.space
-    )
+    expected = state_token(dataset)
+    rows = dataset.localizations.query(acquisition_id=acquisition_id, channel=channel, space=settings.space)
     labels = np.ones(len(rows["id"]), dtype=np.int64)
     if segmentation_id is not None:
-        raw = experiment.localizations.query(acquisition_id=acquisition_id, channel=channel)
-        labels = experiment.segmentation_labels(segmentation_id, raw)
+        raw = dataset.localizations.query(acquisition_id=acquisition_id, channel=channel, space="raw")
+        labels = dataset.segmentation_labels(segmentation_id, raw)
     installed = version("trackpy")
     if tuple(int(p) for p in installed.split(".")[:2]) != (0, 7):
         raise ImportError(f"MolCore supports Trackpy >=0.7,<0.8; found {installed}")
     with executor(cpu, num_cpus) as runner:
         output = runner.map(_job, [(rows, labels, settings)], progress=progress, cancel_event=cancel_event)
-    if state_token(experiment) != expected:
+    if state_token(dataset) != expected:
         raise StaleResultError("Tracking inputs changed during computation")
     result = TrackingResult(
         acquisition_id, channel, output[0], settings, expected, installed, segmentation_id
     )
-    return apply_tracking(experiment, result) if apply else result
+    return apply_tracking(dataset, result) if apply else result
 
 
 @logged
 def apply_tracking(
-    experiment: Experiment, result: TrackingResult, *, expected: tuple | None = None
+    dataset: Dataset, result: TrackingResult, *, expected: tuple | None = None
 ) -> TrackingResult:
     """Apply detached memberships transactionally after checking the source state.
 
     Args:
-        experiment: Scientific model supplying acquisitions and result tables.
+        dataset: Scientific model supplying acquisitions and result tables.
         result: Detached computation result to inspect or apply.
         expected: Source revision token used to reject stale results.
 
@@ -175,7 +173,7 @@ def apply_tracking(
         Computed TrackingResult value.
     """
 
-    def commit(model: Experiment) -> TrackingResult:
+    def commit(model: Dataset) -> TrackingResult:
         """Commit.
 
         Args:
@@ -201,4 +199,4 @@ def apply_tracking(
         model.processing.software["trackpy"] = result.backend_version
         return replace(result, track_ids=ids)
 
-    return transact(experiment, commit, expected=result.expected if expected is None else expected)
+    return transact(dataset, commit, expected=result.expected if expected is None else expected)
