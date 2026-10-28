@@ -13,7 +13,7 @@ from uuid import uuid4
 import numpy as np
 from numpy.typing import NDArray
 
-from .._locking import model_locked
+from .._locking import model_locked, model_mutated
 from .._logging import logged
 
 if TYPE_CHECKING:
@@ -245,7 +245,7 @@ class PhotonSequenceStore:
         """
         return replace(self._data[id])
 
-    @model_locked
+    @model_mutated
     @logged
     def add(self, sequence: PhotonSequence) -> PhotonSequence:
         """Validate source frames and anchors before adding a detached record.
@@ -338,7 +338,7 @@ class PhotonSequenceStore:
             raise KeyError(id)
         return id in self._stale
 
-    @model_locked
+    @model_mutated
     @logged
     def remove(self, id: str) -> None:
         """Delete one sequence and its saved crop descriptors.

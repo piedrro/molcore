@@ -10,13 +10,15 @@ import numpy as np
 
 from ._logging import logged
 from ._processing import executor
+from .backends import BackendRegistry, ProcessorBackend, missing_backend, resolve_backend
 from .cpu import CpuExecutor
-from .staging import state_token, transact
+from .execution import ExecutionContext
+from .revisions import FreshnessToken
+from .staging import transact
 from .types import (
     CancelEvent,
     Dataset,
     ProgressCallback,
-    StaleResultError,
     TrackingResult,
     TrackingSettings,
 )
@@ -112,6 +114,9 @@ def track(
     num_cpus: int | None = None,
     progress: ProgressCallback | None = None,
     cancel_event: CancelEvent | None = None,
+    context: ExecutionContext | None = None,
+    backend: ProcessorBackend | str | None = None,
+    registry: BackendRegistry | None = None,
 ) -> TrackingResult:
     """Link one acquisition/channel partition independently using Trackpy 0.7.
 
@@ -135,23 +140,43 @@ def track(
     Returns:
         Computed TrackingResult value.
     """
+    options = (
+        (context or ExecutionContext())
+        .resolve(cpu=cpu, num_cpus=num_cpus, progress=progress, cancel_event=cancel_event)
+        .kwargs()
+    )
+    cpu, num_cpus, progress, cancel_event = (
+        options[k] for k in ("cpu", "num_cpus", "progress", "cancel_event")
+    )
+    selected_backend = resolve_backend("track", backend, registry=registry)
     if not isinstance(settings, TrackingSettings):
         raise TypeError("settings must be TrackingSettings")
     if channel not in dataset.acquisitions[acquisition_id].channels:
         raise ValueError("Unknown channel")
-    expected = state_token(dataset)
-    rows = dataset.localizations.query(acquisition_id=acquisition_id, channel=channel, space=settings.space)
+    expected = dataset.dependencies(acquisition_id, channel)
+    rows = dataset.localizations.query(
+        acquisition_id=acquisition_id, channel=channel, space=settings.space
+    ).to_columns()
     labels = np.ones(len(rows["id"]), dtype=np.int64)
     if segmentation_id is not None:
         raw = dataset.localizations.query(acquisition_id=acquisition_id, channel=channel, space="raw")
         labels = dataset.segmentation_labels(segmentation_id, raw)
-    installed = version("trackpy")
-    if tuple(int(p) for p in installed.split(".")[:2]) != (0, 7):
+    from importlib.metadata import PackageNotFoundError
+
+    try:
+        installed = version("trackpy") if selected_backend is None else selected_backend.version
+    except PackageNotFoundError as exc:
+        raise missing_backend("trackpy") from exc
+    if selected_backend is None and tuple(int(p) for p in installed.split(".")[:2]) != (0, 7):
         raise ImportError(f"MolCore supports Trackpy >=0.7,<0.8; found {installed}")
     with executor(cpu, num_cpus) as runner:
-        output = runner.map(_job, [(rows, labels, settings)], progress=progress, cancel_event=cancel_event)
-    if state_token(dataset) != expected:
-        raise StaleResultError("Tracking inputs changed during computation")
+        output = runner.map(
+            _job if selected_backend is None else selected_backend.compute,
+            [(rows, labels, settings)],
+            progress=progress,
+            cancel_event=cancel_event,
+        )
+    expected.validate(dataset)
     result = TrackingResult(
         acquisition_id, channel, output[0], settings, expected, installed, segmentation_id
     )
@@ -160,7 +185,7 @@ def track(
 
 @logged
 def apply_tracking(
-    dataset: Dataset, result: TrackingResult, *, expected: tuple | None = None
+    dataset: Dataset, result: TrackingResult, *, expected: FreshnessToken | None = None
 ) -> TrackingResult:
     """Apply detached memberships transactionally after checking the source state.
 
@@ -196,7 +221,6 @@ def apply_tracking(
             "segmentation_id": result.segmentation_id,
             "backend": result.backend_version,
         }
-        model.processing.software["trackpy"] = result.backend_version
         return replace(result, track_ids=ids)
 
     return transact(dataset, commit, expected=result.expected if expected is None else expected)

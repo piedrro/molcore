@@ -2,25 +2,43 @@
 
 import logging
 
+from .backends import BackendRegistry, ProcessorBackend
+from .execution import ExecutionContext, Executor
+from .revisions import ChangeSet, DependencyToken, StateToken
 from .types import (
     Acquisition,
     AcquisitionMode,
     AcquisitionSequence,
+    AlignmentResult,
     Calibration,
+    CameraSettings,
+    CellposeSettings,
     ChannelName,
     ChannelSpec,
+    ColumnSchema,
     CoordinateSpace,
     Crop,
     Dataset,
     DatasetAlignmentResult,
     DatasetAlignmentSettings,
+    DetectionResult,
+    DriftMethod,
+    DriftResult,
+    DriftSettings,
     Experiment,
+    FitMethod,
     FrameInfo,
     ImagePolicy,
     ImageSource,
     ImageUnavailableError,
+    LocalisationResult,
+    LocalisationSettings,
+    LocalizationBatch,
     ProcessingMetadata,
+    ProgressUpdate,
+    SaveOptions,
     Segmentation,
+    SegmentationRequest,
     StaleResultError,
 )
 from .types.analysis import (
@@ -54,6 +72,21 @@ from .types.scientific import (
 __version__ = "0.1.0"
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 __all__ = [
+    "AlignmentResult",
+    "CameraSettings",
+    "CellposeSettings",
+    "ColumnSchema",
+    "DetectionResult",
+    "DriftMethod",
+    "DriftResult",
+    "DriftSettings",
+    "FitMethod",
+    "LocalisationResult",
+    "LocalisationSettings",
+    "LocalizationBatch",
+    "ProgressUpdate",
+    "SaveOptions",
+    "SegmentationRequest",
     "AcquisitionMode",
     "ChannelName",
     "Dataset",
@@ -79,6 +112,16 @@ __all__ = [
     "ProcessingMetadata",
     "Segmentation",
     "StaleResultError",
+]
+
+__all__ += [
+    "BackendRegistry",
+    "ProcessorBackend",
+    "ExecutionContext",
+    "Executor",
+    "ChangeSet",
+    "DependencyToken",
+    "StateToken",
 ]
 
 __all__ += [

@@ -10,6 +10,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._logging import logged
+from ..revisions import FreshnessToken
 
 
 class ChannelName(StrEnum):
@@ -240,6 +241,7 @@ class Segmentation:
     source_path: str | None = None
     mask_path: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    expected: FreshnessToken | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """Validate the immutable record after construction."""

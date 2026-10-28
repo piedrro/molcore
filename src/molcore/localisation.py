@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from ._logging import logged
-from ._processing import backend_version, check_snapshot, executor, record, snapshot
+from ._processing import backend_version, check_snapshot, executor
+from .backends import BackendRegistry, ProcessorBackend, resolve_backend
+from .execution import ExecutionContext
 from .types.dataset import Dataset
 from .types.processing import CameraSettings, DetectionResult, LocalisationResult, LocalisationSettings
 
@@ -150,6 +151,9 @@ def _run(
     cpu: CpuExecutor | None,
     progress: ProgressCallback | None,
     cancel_event: CancelEvent | None,
+    context: ExecutionContext | None = None,
+    backend: ProcessorBackend | str | None = None,
+    registry: BackendRegistry | None = None,
 ) -> Iterator[Any]:
     """Run.
 
@@ -171,15 +175,30 @@ def _run(
     Yields:
         Values produced by the iterator, retaining their original order.
     """
-    installed = backend_version()
+    options = (
+        (context or ExecutionContext())
+        .resolve(cpu=cpu, num_cpus=num_cpus, progress=progress, cancel_event=cancel_event)
+        .kwargs()
+    )
+    cpu, num_cpus, progress, cancel_event = (
+        options[k] for k in ("cpu", "num_cpus", "progress", "cancel_event")
+    )
+    selected_backend = resolve_backend("localise", backend, registry=registry)
+    installed = backend_version() if selected_backend is None else selected_backend.version
     if frame_range is not None and apply:
         raise ValueError("Subset processing is a preview; pass apply=False")
     acquisition = dataset.acquisitions[acquisition_id]
     view = acquisition.channels[channel]
-    token = hash((id(acquisition.source), id(view)))
+    token = hash((id(acquisition.source), channel, view.roi, view.source_frames.tobytes()))
     if detections is not None and detections.source_token != token:
         raise ValueError("Detection image source/channel changed; detect again")
-    expected = snapshot(dataset, acquisition_id)
+    if detections is not None and detections.expected is not None:
+        from .staging import validate_expected
+
+        validate_expected(dataset, detections.expected)
+    expected = dataset.dependencies(
+        acquisition_id, channel, components={"localizations", "tracks"} if fitting else ()
+    )
     indices = np.arange(len(view))
     if frame_range is not None:
         first, last = frame_range
@@ -223,31 +242,32 @@ def _run(
 
     total = (len(indices) + settings.chunk_size - 1) // settings.chunk_size
     with executor(cpu, num_cpus) as runner:
-        chunks = runner.map(_job, jobs(), total=total, progress=progress, cancel_event=cancel_event)
+        chunks = runner.map(
+            _job if selected_backend is None else selected_backend.compute,
+            jobs(),
+            total=total,
+            progress=progress,
+            cancel_event=cancel_event,
+        )
     check_snapshot(dataset, acquisition_id, expected)
     result = _combine([columns for columns, _ in chunks], fitting)
     failed_fits = sum(count for _, count in chunks)
     if not fitting:
-        return DetectionResult(acquisition_id, str(channel), result, settings, token, frame_range)
-    ids = None
+        return DetectionResult(acquisition_id, str(channel), result, settings, token, frame_range, expected)
     if apply and failed_fits and len(result["frame"]) == 0:
         raise ValueError("No localisation fits converged; active results were preserved")
-    if apply:
-        ids = dataset.localizations.replace(acquisition_id, channel, **result)
-        record(
-            dataset,
-            "localisation",
-            acquisition_id,
-            str(channel),
-            {
-                "settings": asdict(settings),
-                "camera": asdict(camera),
-                "backend": installed,
-                "camera_frames": "all logical-channel frames",
-                "failed_fits": failed_fits,
-            },
-        )
-    return LocalisationResult(acquisition_id, str(channel), result, settings, ids, failed_fits)
+    fitted = LocalisationResult(
+        acquisition_id,
+        str(channel),
+        result,
+        settings,
+        failed_fits=failed_fits,
+        frame_range=frame_range,
+        camera=camera,
+        backend_version=installed,
+        expected=expected,
+    )
+    return dataset.apply(fitted) if apply else fitted
 
 
 @logged
@@ -262,6 +282,9 @@ def detect(
     cpu: CpuExecutor | None = None,
     progress: ProgressCallback | None = None,
     cancel_event: CancelEvent | None = None,
+    context: ExecutionContext | None = None,
+    backend: ProcessorBackend | str | None = None,
+    registry: BackendRegistry | None = None,
 ) -> DetectionResult:
     """Detect candidates in MolCore channel frames using Picasso net gradient.
 
@@ -293,6 +316,9 @@ def detect(
         cpu=cpu,
         progress=progress,
         cancel_event=cancel_event,
+        context=context,
+        backend=backend,
+        registry=registry,
     )
 
 
@@ -308,6 +334,9 @@ def fit(
     cpu: CpuExecutor | None = None,
     progress: ProgressCallback | None = None,
     cancel_event: CancelEvent | None = None,
+    context: ExecutionContext | None = None,
+    backend: ProcessorBackend | str | None = None,
+    registry: BackendRegistry | None = None,
 ) -> LocalisationResult:
     """Fit typed detections and optionally replace their active model partition.
 
@@ -339,6 +368,9 @@ def fit(
         cpu=cpu,
         progress=progress,
         cancel_event=cancel_event,
+        context=context,
+        backend=backend,
+        registry=registry,
     )
 
 
@@ -356,6 +388,9 @@ def localise(
     cpu: CpuExecutor | None = None,
     progress: ProgressCallback | None = None,
     cancel_event: CancelEvent | None = None,
+    context: ExecutionContext | None = None,
+    backend: ProcessorBackend | str | None = None,
+    registry: BackendRegistry | None = None,
 ) -> LocalisationResult:
     """Detect and fit a MolCore channel through bounded CPU image chunks.
 
@@ -393,4 +428,7 @@ def localise(
         cpu=cpu,
         progress=progress,
         cancel_event=cancel_event,
+        context=context,
+        backend=backend,
+        registry=registry,
     )

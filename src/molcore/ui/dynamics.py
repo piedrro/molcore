@@ -96,13 +96,11 @@ class TrackingWidget(IdTool):
             )
 
         def complete(result: Any) -> None:
-            # Snapshot tokens contain source object identities; bind previews to the live model.
             """Present a successful detached computation on the GUI thread.
 
             Args:
                 result: Detached computation result to inspect or apply.
             """
-            result = replace(result, expected=state_token(session.dataset))
             self.ready(result, f"{len(result.memberships)} tracks; active memberships unchanged")
             ids = np.concatenate(result.memberships) if result.memberships else np.array([], dtype=np.uint64)
             groups = (
@@ -110,7 +108,7 @@ class TrackingWidget(IdTool):
                 if len(ids)
                 else ids
             )
-            rows = session.dataset.localizations.query(ids=ids, space=settings.space)
+            rows = session.dataset.localizations.query(ids=ids, space=settings.space).to_columns()
             membership = {int(v): i for i, members in enumerate(result.memberships) for v in members}
             rows["preview_track"] = np.array([membership[int(v)] for v in rows["id"]], dtype=np.int64)
             self.show_columns(rows)
@@ -262,7 +260,6 @@ class PhotometryWidget(IdTool):
             Args:
                 result: Detached computation result to inspect or apply.
             """
-            result = replace(result, expected=state_token(session.dataset))
             description = (
                 f"{len(result.sequences)} photon sequences"
                 if isinstance(result, PhotonSequenceResult)

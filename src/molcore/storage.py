@@ -14,16 +14,98 @@ import h5py
 import numpy as np
 
 from ._logging import logged
-from .crops import validate_width
 from .types._shared import Calibration, ChannelSpec, Crop, ImagePolicy, Segmentation
 from .types.images import CachedSource, FitsSource, HDF5Source, MissingSource, TiffSource
 from .types.photons import PhotonSequence
+from .types.storage import SaveOptions
 
 if TYPE_CHECKING:
     from .types import Dataset, Experiment, ImageSource
     from .types.scientific import CancelEvent, ProgressCallback
 
 FORMAT_VERSION = 4
+
+_SOURCE_CODECS: dict[str, tuple[type, Any, Any]] = {}
+
+
+def register_image_source(kind: str, source_type: type, *, writer: Any, reader: Any) -> None:
+    """Register trusted descriptor callbacks; snapshot data never imports plugins.
+
+    Writers return JSON-compatible metadata with an absolute ``path`` to a file
+    or directory. Readers receive the metadata with its path resolved. Register
+    stable namespaced kinds in each process that saves or opens these sources.
+
+    Args:
+        kind: Stable namespaced descriptor identifier.
+        source_type: Exact image source class handled by this codec.
+        writer: Callback returning JSON-compatible descriptor metadata.
+        reader: Callback restoring a source from resolved descriptor metadata.
+    """
+    if not isinstance(kind, str) or not kind or not isinstance(source_type, type):
+        raise ValueError("A nonempty kind and source type are required")
+    if not callable(writer) or not callable(reader):
+        raise TypeError("writer and reader must be callable")
+    if kind in _SOURCE_CODECS:
+        raise ValueError(f"Image source kind already registered: {kind}")
+    _SOURCE_CODECS[kind] = (source_type, writer, reader)
+
+
+register_image_source(
+    "TiffSource", TiffSource, writer=lambda s: {"path": s.path}, reader=lambda d: TiffSource(d["path"])
+)
+register_image_source(
+    "FitsSource",
+    FitsSource,
+    writer=lambda s: {"path": s.path, "hdu": s.hdu},
+    reader=lambda d: FitsSource(d["path"], d["hdu"]),
+)
+register_image_source(
+    "HDF5Source",
+    HDF5Source,
+    writer=lambda s: {"path": s.path, "dataset": s.dataset},
+    reader=lambda d: HDF5Source(d["path"], d["dataset"]),
+)
+
+
+def _resolve_options(
+    options: SaveOptions | None, policy: ImagePolicy, width: int, layout: str
+) -> SaveOptions:
+    """Translate legacy policies once into independent image choices."""
+    if options is not None:
+        if not isinstance(options, SaveOptions):
+            raise TypeError("options must be SaveOptions")
+        if policy != ImagePolicy.NONE or width != 7:
+            raise ValueError("Do not combine options with image_policy or crop_width")
+        if options.originals == "external" and layout != "directory":
+            raise ValueError("External originals require directory layout")
+        return options
+    kinds = set()
+    if policy in (
+        ImagePolicy.LOCALIZATION_CROPS,
+        ImagePolicy.BOTH,
+        ImagePolicy.LOCALIZATION_AND_PHOTON_CROPS,
+        ImagePolicy.ALL_CROPS,
+    ):
+        kinds.add("localization")
+    if policy in (
+        ImagePolicy.TRACK_CROPS,
+        ImagePolicy.BOTH,
+        ImagePolicy.TRACK_AND_PHOTON_CROPS,
+        ImagePolicy.ALL_CROPS,
+    ):
+        kinds.add("track")
+    if policy in (
+        ImagePolicy.PHOTON_SEQUENCE_CROPS,
+        ImagePolicy.LOCALIZATION_AND_PHOTON_CROPS,
+        ImagePolicy.TRACK_AND_PHOTON_CROPS,
+        ImagePolicy.ALL_CROPS,
+    ):
+        kinds.add("photon_sequence")
+    return SaveOptions(
+        originals="full" if policy == ImagePolicy.FULL else "external" if layout == "directory" else "none",
+        crops=frozenset(kinds),
+        crop_width=width,
+    )
 
 
 def _json(value: Any) -> str:
@@ -104,24 +186,26 @@ def _external(source: ImageSource, directory: Path | None, destination: Path) ->
     """
     while isinstance(source, CachedSource):
         source = source.source
-    if not isinstance(source, (TiffSource, FitsSource, HDF5Source)):
+    codec = next(
+        ((kind, writer) for kind, (typ, writer, _) in _SOURCE_CODECS.items() if type(source) is typ), None
+    )
+    if codec is None:
         return None
-    if Path(source.path).resolve() == destination:
+    kind, writer = codec
+    spec = dict(writer(source))
+    source_path = Path(spec["path"]).resolve()
+    if source_path == destination:
         return None  # Do not leave references into the file being replaced.
     try:
-        path = os.path.relpath(source.path, directory)
+        path = os.path.relpath(source_path, directory)
     except ValueError:
-        path = source.path  # Different Windows drive; still usable, not relocatable.
-    spec = {"path": path, "kind": type(source).__name__}
-    if isinstance(source, FitsSource):
-        spec["hdu"] = source.hdu
-    if isinstance(source, HDF5Source):
-        spec["dataset"] = source.dataset
+        path = str(source_path)  # Different Windows drive; still usable, not relocatable.
+    spec.update(path=path, kind=kind)
     return spec
 
 
 def _load_external(
-    spec: ChannelSpec, directory: Path | None, shape: tuple[int, ...], dtype: np.dtype | str
+    spec: dict[str, Any], directory: Path | None, shape: tuple[int, ...], dtype: np.dtype | str
 ) -> ImageSource:
     """Load external.
 
@@ -134,24 +218,20 @@ def _load_external(
     Returns:
         Result retaining the input format or backend-specific representation.
     """
-    path = (directory / spec["path"]).resolve()
-    if not path.is_file():
+    kind = spec["kind"]
+    if kind not in _SOURCE_CODECS:
+        raise ValueError(f"Unsupported external image source; register reader for {kind!r}")
+    path = (Path(directory or ".") / spec["path"]).resolve()
+    if not path.exists():
         return MissingSource(shape, dtype, f"External images unavailable: {path}")
-    match spec["kind"]:
-        case "TiffSource":
-            source = TiffSource(path)
-        case "FitsSource":
-            source = FitsSource(path, spec["hdu"])
-        case "HDF5Source":
-            source = HDF5Source(path, spec["dataset"])
-        case _:
-            raise ValueError("Unsupported external image source")
-    if source.shape != tuple(shape) or source.dtype != np.dtype(dtype):
+    source = _SOURCE_CODECS[kind][2]({**spec, "path": str(path)})
+    if tuple(source.shape) != tuple(shape) or np.dtype(source.dtype) != np.dtype(dtype):
+        source.close()
         raise ValueError(f"External image geometry/dtype changed: {path}")
     return source
 
 
-def _write_crops(file: Any, dataset: Dataset, policy: str, width: int) -> list[int]:
+def _write_crops(file: Any, dataset: Dataset, policy: frozenset[str], width: int) -> list[int]:
     """Write crops.
 
     Args:
@@ -164,19 +244,9 @@ def _write_crops(file: Any, dataset: Dataset, policy: str, width: int) -> list[i
         Result retaining the input format or backend-specific representation.
     """
     ids = set()
-    if policy in (
-        ImagePolicy.LOCALIZATION_CROPS,
-        ImagePolicy.BOTH,
-        ImagePolicy.LOCALIZATION_AND_PHOTON_CROPS,
-        ImagePolicy.ALL_CROPS,
-    ):
+    if "localization" in policy:
         ids.update(int(i) for i in dataset.localizations._data.get("id", []))
-    if policy in (
-        ImagePolicy.TRACK_CROPS,
-        ImagePolicy.BOTH,
-        ImagePolicy.TRACK_AND_PHOTON_CROPS,
-        ImagePolicy.ALL_CROPS,
-    ):
+    if "track" in policy:
         for members in dataset.tracks._members.values():
             ids.update(int(i) for i in members)
     if not ids:
@@ -246,7 +316,7 @@ def _write_photon_sequences(file: h5py.File, dataset: Dataset) -> None:
 
 
 def _write_photon_crops(
-    file: h5py.File, dataset: Dataset, policy: ImagePolicy, width: int, cancel_event: CancelEvent | None
+    file: h5py.File, dataset: Dataset, policy: frozenset[str], width: int, cancel_event: CancelEvent | None
 ) -> list[tuple[str, int]]:
     """Stream selected photon-sequence crops while retaining sample provenance.
 
@@ -262,12 +332,7 @@ def _write_photon_crops(
     """
     from .files import report
 
-    if policy not in (
-        ImagePolicy.PHOTON_SEQUENCE_CROPS,
-        ImagePolicy.LOCALIZATION_AND_PHOTON_CROPS,
-        ImagePolicy.TRACK_AND_PHOTON_CROPS,
-        ImagePolicy.ALL_CROPS,
-    ):
+    if "photon_sequence" not in policy:
         return []
     sequences = dataset.photon_sequences.query(include_stale=True)
     for sequence in sequences:
@@ -324,6 +389,8 @@ def _write_dataset_group(
     *,
     layout: str,
     policy: ImagePolicy,
+    options: SaveOptions,
+    strict_external: bool,
     crop_width: int,
     progress: Any,
     cancel_event: Any,
@@ -335,6 +402,9 @@ def _write_dataset_group(
     file.attrs["format_version"] = FORMAT_VERSION
     file.attrs["metadata"] = _json(dataset.metadata)
     file.attrs["image_policy"] = policy.value
+    file.attrs["image_storage"] = _json(
+        dict(originals=options.originals, crops=sorted(options.crops), crop_width=options.crop_width)
+    )
     file.attrs["processing"] = _json(asdict(dataset.processing))
     acquisitions = file.create_group("acquisitions", track_order=True)
     for index, acquisition in enumerate(dataset.acquisitions.values()):
@@ -353,7 +423,7 @@ def _write_dataset_group(
         }
         if acquisition.timestamps is not None:
             group.create_dataset("timestamps", data=acquisition.timestamps)
-        if policy == ImagePolicy.FULL:
+        if options.originals == "full":
             n, y, x = acquisition.source.shape
             images = group.create_dataset(
                 "images",
@@ -366,8 +436,10 @@ def _write_dataset_group(
             for frame in range(n):
                 report(progress, cancel_event, frame, max(1, n), f"Saving images: {acquisition.id}")
                 images[frame] = acquisition.source[frame]
-        elif layout == "directory":
+        elif options.originals == "external":
             info["external"] = _external(acquisition.source, destination.parent, destination)
+            if strict_external and info["external"] is None:
+                raise ValueError(f"No external descriptor available for acquisition {acquisition.id!r}")
         group.attrs["info"] = _json(info)
     file.attrs["sequences"] = _json(
         [
@@ -407,14 +479,26 @@ def _write_dataset_group(
     for index, segmentation in enumerate(dataset.segmentations.values()):
         report(None, cancel_event)
         group = segmentations.create_group(str(index))
-        info = {k: v for k, v in vars(segmentation).items() if k not in ("labels", "source_image")}
+        info = {
+            key: getattr(segmentation, key)
+            for key in (
+                "id",
+                "acquisition_id",
+                "channel",
+                "space",
+                "frame",
+                "source_path",
+                "mask_path",
+                "metadata",
+            )
+        }
         group.attrs["info"] = _json(info)
         group.create_dataset("labels", data=segmentation.labels, compression="gzip")
         if segmentation.source_image is not None:
             group.create_dataset("source", data=segmentation.source_image, compression="gzip")
-    saved_crop_ids = _write_crops(file, dataset, policy, crop_width)
+    saved_crop_ids = _write_crops(file, dataset, options.crops, crop_width)
     _write_photon_sequences(file, dataset)
-    saved_photon_keys = _write_photon_crops(file, dataset, policy, crop_width, cancel_event)
+    saved_photon_keys = _write_photon_crops(file, dataset, options.crops, crop_width, cancel_event)
     file.attrs["kind"] = "dataset"
     file.attrs["id"], file.attrs["name"] = dataset.id, dataset.name
     return saved_crop_ids, saved_photon_keys
@@ -427,6 +511,7 @@ def save_dataset(
     *,
     layout: str | None = "hdf5",
     image_policy: str = "none",
+    options: SaveOptions | None = None,
     crop_width: int = 7,
     progress: ProgressCallback | None = None,
     cancel_event: CancelEvent | None = None,
@@ -439,6 +524,7 @@ def save_dataset(
         path: Destination file or directory.
         layout: hdf5 embeds selected content; directory may reference external images.
         image_policy: Raw-image inclusion policy.
+        options: Independent original-image and crop choices, replacing legacy arguments.
         crop_width: Positive odd pixel width for saved crops.
         progress: Optional callback receiving structured save progress.
         cancel_event: Optional event requesting cancellation before atomic replacement.
@@ -453,7 +539,9 @@ def save_dataset(
     if layout not in ("hdf5", "directory"):
         raise ValueError("Layout must be hdf5 or directory")
     policy = ImagePolicy(image_policy)
-    validate_width(crop_width)
+    strict_external = options is not None
+    options = _resolve_options(options, policy, crop_width, layout)
+    crop_width = options.crop_width
     path = Path(path).resolve()
     destination = path / "dataset.h5" if layout == "directory" else path
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -467,6 +555,8 @@ def save_dataset(
                 destination,
                 layout=layout,
                 policy=policy,
+                options=options,
+                strict_external=strict_external,
                 crop_width=crop_width,
                 progress=progress,
                 cancel_event=cancel_event,
@@ -497,7 +587,7 @@ def save_dataset(
                 if isinstance(source, HDF5Source) and Path(source.path).resolve() == destination:
                     acquisition.source = (
                         HDF5Source(destination, f"/acquisitions/{index}/images")
-                        if policy == ImagePolicy.FULL
+                        if options.originals == "full"
                         else MissingSource(source.shape, source.dtype)
                     )
     finally:
@@ -603,7 +693,7 @@ def open_dataset(
                 labels=group["labels"][:],
                 source_image=group["source"][:] if "source" in group else None,
             )
-            dataset.segmentations[segmentation.id] = segmentation
+            dataset._segmentations[segmentation.id] = segmentation
         if "crops" in file:
             width = int(file["crops"].attrs["width"])
             for index, localization_id in enumerate(file["crops/ids"][:]):
@@ -648,6 +738,7 @@ def save_experiment(
     *,
     layout: str = "hdf5",
     image_policy: str = "none",
+    options: SaveOptions | None = None,
     crop_width: int = 7,
     progress: ProgressCallback | None = None,
     cancel_event: CancelEvent | None = None,
@@ -663,6 +754,7 @@ def save_experiment(
         path: Snapshot file or output directory.
         layout: hdf5 or directory snapshot layout.
         image_policy: Microscopy pixels to embed; original frames are retained unchanged.
+        options: Independent original-image and crop choices, replacing legacy arguments.
         crop_width: Positive odd width of stored crops.
         progress: Optional structured progress callback.
         cancel_event: Optional cooperative cancellation event.
@@ -674,7 +766,9 @@ def save_experiment(
     if layout not in ("hdf5", "directory"):
         raise ValueError("Layout must be hdf5 or directory")
     policy = ImagePolicy(image_policy)
-    validate_width(crop_width)
+    strict_external = options is not None
+    options = _resolve_options(options, policy, crop_width, layout)
+    crop_width = options.crop_width
     destination = Path(path).resolve()
     if layout == "directory":
         destination /= "experiment.h5"
@@ -700,6 +794,8 @@ def save_experiment(
                         destination,
                         layout=layout,
                         policy=policy,
+                        options=options,
+                        strict_external=strict_external,
                         crop_width=crop_width,
                         progress=progress,
                         cancel_event=cancel_event,

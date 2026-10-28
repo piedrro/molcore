@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ._locking import model_locked
+from ._locking import model_mutated
 from ._logging import logged
 from .types._shared import Calibration, CoordinateSpace
 from .types.images import Source
@@ -97,7 +97,7 @@ class TransformManager:
         self.dataset.photon_sequences._invalidate(acquisition_id=acquisition_id)
         self.dataset.observations._invalidate_partition(acquisition_id)
 
-    @model_locked
+    @model_mutated
     @logged
     def add_calibration(self, calibration: Calibration) -> None:
         """Store a named calibration without selecting it automatically.
@@ -129,7 +129,7 @@ class TransformManager:
             )
         ]
 
-    @model_locked
+    @model_mutated
     @logged
     def select(self, acquisition_id: str, channel: str, calibration_name: str) -> None:
         """Choose registration into a shared reference coordinate system.
@@ -197,7 +197,7 @@ class TransformManager:
         self._refresh_selected_groups(calibration_name)
         self._changed(acquisition_id)
 
-    @model_locked
+    @model_mutated
     @logged
     def set_drift(
         self, acquisition_id: str, displacement: ArrayLike, *, frames: ArrayLike | None = None

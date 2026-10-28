@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -21,7 +20,7 @@ from qtpy.QtWidgets import (
 
 from .. import alignment, cellpose, localisation, undrifting
 from .._logging import logged
-from ..processing import apply_alignment, apply_drift, apply_localisation, apply_segmentations
+from ..processing import apply_alignment, apply_drift, apply_segmentations
 from ..staging import clone_dataset, experiment_state_token, state_token
 from ..types.processing import (
     CameraSettings,
@@ -206,13 +205,11 @@ class LocalisationWidget(ToolWidget):
             )
             if detections is None:
                 return localisation.localise(model, a, c, **options)
-            view = model.acquisitions[a].channels[c]
-            cached = replace(detections, source_token=hash((id(model.acquisitions[a].source), id(view))))
-            return localisation.fit(model, cached, **options)
+            return localisation.fit(model, detections, **options)
 
         session.submit(
             compute,
-            commit=lambda model, value: apply_localisation(model, value, camera=camera),
+            commit=lambda model, value: model.apply(value),
             completed=lambda value: self.summary.setPlainText(
                 f"Applied {len(value.columns['frame'])} localizations; {value.failed_fits} failed fits"
             ),

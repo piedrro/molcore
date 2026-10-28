@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from .._logging import logged
+from ..revisions import FreshnessToken
 from ._shared import CoordinateSpace
 
 
@@ -251,6 +252,7 @@ class DetectionResult:
     settings: LocalisationSettings
     source_token: int
     frame_range: tuple[int, int] | None = None
+    expected: FreshnessToken | None = None
 
 
 @dataclass(frozen=True)
@@ -272,6 +274,10 @@ class LocalisationResult:
     settings: LocalisationSettings
     localization_ids: np.ndarray | None = None
     failed_fits: int = 0
+    frame_range: tuple[int, int] | None = None
+    camera: CameraSettings | None = None
+    backend_version: str = "external"
+    expected: FreshnessToken | None = None
 
 
 @dataclass(frozen=True)
@@ -293,6 +299,8 @@ class DriftResult:
     displacement: np.ndarray
     settings: DriftSettings
     applied: bool = False
+    expected: FreshnessToken | None = None
+    backend_version: str = "external"
 
 
 @dataclass(frozen=True)
@@ -321,3 +329,7 @@ class AlignmentResult:
     target_ids: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.uint64))
     calibration_name: str | None = None
     inliers: np.ndarray = field(default_factory=lambda: np.array([], dtype=bool))
+    expected: FreshnessToken | None = None
+    model: str = "affine"
+    match_radius: float | None = None
+    requested_name: str | None = None

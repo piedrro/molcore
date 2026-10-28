@@ -9,24 +9,33 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "astropy",
-    "cellpose>=4.2,<5",
     "dask[array]",
     "h5py",
     "numpy",
-    "scikit-learn",
-    "picassosr>=0.11,<0.12",
     "pyyaml",
     "scipy",
     "threadpoolctl",
-    "trackpy>=0.7,<0.8",
     "tifffile",
 ]
 
 [project.optional-dependencies]
 ui = ["qtpy>=2.4", "pyqtgraph>=0.13"]
+localisation = ["picassosr>=0.11,<0.12"]
+tracking = ["trackpy>=0.7,<0.8"]
+segmentation = ["cellpose>=4.2,<5"]
+clustering = ["scikit-learn"]
+all = ["picassosr>=0.11,<0.12", "trackpy>=0.7,<0.8", "cellpose>=4.2,<5", "scikit-learn", "qtpy>=2.4", "pyqtgraph>=0.13"]
 
 [dependency-groups]
-dev = ["ruff"]
+dev = ["ruff", "mypy>=1.15"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src/molcore/backends.py", "src/molcore/execution.py", "src/molcore/revisions.py", "src/molcore/types/batches.py", "src/molcore/types/storage.py", "tests/typing_consumer.py"]
+follow_imports = "silent"
+ignore_missing_imports = true
+check_untyped_defs = true
+disallow_untyped_defs = true
 
 [tool.ruff]
 target-version = "py312"

@@ -82,6 +82,7 @@ class UiSession(QObject):
     preview_changed = Signal(object)
     finished = Signal()
     shutdown_finished = Signal()
+    _model_change = Signal(object, object)
 
     def __init__(self, dataset: Dataset | Experiment | None = None, parent: QWidget | None = None) -> None:
         """Initialise the object and validate its configuration.
@@ -107,7 +108,21 @@ class UiSession(QObject):
         self._job = None
         self._closing, self.dirty = False, False
         self.publication_current = True
+        self._unsubscribe_model = None
+        self._model_change.connect(self._on_model_change)
+        self._subscribe_model()
         self._select_first()
+
+    def _subscribe_model(self) -> None:
+        if self._unsubscribe_model is not None:
+            self._unsubscribe_model()
+        model = self.dataset
+        self._unsubscribe_model = model.subscribe(lambda change: self._model_change.emit(model, change))
+
+    @Slot(object, object)
+    def _on_model_change(self, model: Dataset, change: Any) -> None:
+        if model is self.dataset and not self._closing:
+            self.changed()
 
     @property
     @logged
@@ -199,6 +214,7 @@ class UiSession(QObject):
         if self.busy:
             raise RuntimeError("Finish the active job before switching datasets")
         self.dataset = self.experiment.datasets[dataset_id]
+        self._subscribe_model()
         self.dataset_id = dataset_id
         self.sequence_id = None
         self._select_first()
@@ -227,6 +243,7 @@ class UiSession(QObject):
             experiment.datasets[self.dataset_id] if self.dataset_id is not None else self._empty_dataset
         )
         self.sequence_id, self.dirty = None, False
+        self._subscribe_model()
         self._select_first()
         self.experiment_changed.emit(experiment)
         self.dataset_changed.emit(self.dataset)
@@ -350,11 +367,21 @@ class UiSession(QObject):
             self.publication_current = (
                 current is original and token(original) == job.publication_token if job.published else True
             )
-            if check_stale and not job.published and (current is not original or token(original) != expected):
-                raise StaleResultError("Model changed during computation; results were discarded")
+            if check_stale and not job.published:
+                if current is not original:
+                    raise StaleResultError("Model changed during computation; results were discarded")
+                result_token = getattr(job.result, "expected", None)
+                from ..revisions import DependencyToken
+
+                if isinstance(result_token, DependencyToken) and isinstance(original, Dataset):
+                    result_token.validate(original)
+                elif token(original) != expected:
+                    raise StaleResultError("Model changed during computation; results were discarded")
             if commit is not None:
+                revision = original.revision if isinstance(original, Dataset) else None
                 commit(original, job.result)
-                self.changed()
+                if revision is None or original.revision == revision:
+                    self.changed()
             # Job is now fully stopped; callbacks may replace the model.
             self._job = None
             if completed is not None:
@@ -386,6 +413,9 @@ class UiSession(QObject):
         if self._closing:
             return
         self._closing = True
+        if self._unsubscribe_model is not None:
+            self._unsubscribe_model()
+            self._unsubscribe_model = None
         if self.busy:
             self.cancel()
         else:

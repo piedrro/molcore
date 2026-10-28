@@ -14,12 +14,13 @@ Python 3.12 or newer:
 ```bash
 pip install .
 # Or, for development:
-uv sync
+uv sync --all-extras
 ```
 
-The standard installation includes all runtime dependencies for image reading,
-lazy arrays, image resampling, Picasso CPU processing, channel alignment and
-Cellpose 4 (including its PyTorch dependencies).
+The standard installation includes image reading, lazy arrays, image resampling,
+and core data models. Install `molcore[localisation]`, `molcore[tracking]`,
+`molcore[segmentation]`, or `molcore[clustering]` for selected scientific backends;
+`molcore[all]` includes all scientific backends and optional UI libraries.
 Ruff is kept in the development dependency group. MolCore's APIs remain independent
 of napari and GUI code.
 
@@ -87,6 +88,8 @@ Google-style docstrings.
 - Localizations and observations use positive, monotonically allocated `uint64`
   IDs. Zero in an optional anchor column means no anchor. IDs are never reused.
 - Queries return detached NumPy columns. Extra measurement columns are accepted.
+  Localisation queries return immutable `LocalizationBatch` mappings with coordinate,
+  frame and schema context; use `.to_columns()` for writable arrays.
   Missing numeric measurements become NaN when new rows omit them.
 - Localization and track queries default to `space="corrected"`: manual edits,
   selected channel registration/alignment and drift correction apply automatically
@@ -224,6 +227,10 @@ three non-collinear pairs. Results include pair residuals and compose through th
 target channel's existing registration. Homography and GPU processing are outside
 this increment.
 
+See [application integration contracts](docs/api-contracts.md) for stable model
+handles, automatic change notifications, scoped input dependencies and the common
+`dataset.snapshot()` / `dataset.apply(result)` workflow.
+
 All processors accept `num_cpus`, a reusable `cpu` executor, `progress`, and
 `cancel_event`. Workers return detached results; the caller validates model
 revisions before committing. Failed, cancelled, and stale runs preserve active
@@ -286,8 +293,10 @@ inference are not downloaded or exercised automatically.
 ## Development and current limits
 
 ```bash
-uv sync
+uv sync --all-extras
+uv pip install PySide6  # Qt binding for the full UI test suite
 uv run python -m unittest discover -s tests -v
+uv run mypy
 uv run ruff check src tests examples
 uv run ruff format --check src tests examples
 uv run python examples/foundation.py

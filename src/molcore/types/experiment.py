@@ -101,8 +101,9 @@ class Experiment:
             dataset_ids: Selected rounds; None includes every registered dataset.
             emission: Physical source emission path, normally A for acceptor.
         """
-        from ..staging import clone_dataset
+        from ..staging import adopt_dataset, clone_dataset
 
+        changes = []
         with self._lock, ExitStack() as stack:
             keys = list(self.datasets) if dataset_ids is None else list(dataset_ids)
             if not keys or len(set(keys)) != len(keys):
@@ -140,12 +141,11 @@ class Experiment:
                 raise ValueError("No acquisitions have the selected physical emission path")
             for key, model in staged.items():
                 live = self.datasets[key]
-                for name in ("transforms", "observations", "photon_sequences"):
-                    item = getattr(model, name)
-                    item.dataset = live
-                    setattr(live, name, item)
-                live.calibrations = live.transforms.calibrations
-                live.processing = model.processing
+                change = adopt_dataset(live, model)
+                if change is not None:
+                    changes.append((live, change))
+        for live, change in changes:
+            live._publish_change(change)
 
     @classmethod
     def open(cls, path: str | Path, **options: Any) -> Experiment:

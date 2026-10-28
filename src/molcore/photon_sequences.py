@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from ._logging import logged
+from .revisions import FreshnessToken
 from .types.dataset import Dataset
 from .types.photons import PhotonSequence, PhotonUnit
 
@@ -249,7 +250,7 @@ def to_columns(sequences: Sequence[PhotonSequence]) -> dict[str, np.ndarray]:
 
 @logged
 def apply_photon_sequences(
-    dataset: Dataset, result: PhotonSequenceResult, *, expected: tuple | None = None
+    dataset: Dataset, result: PhotonSequenceResult, *, expected: FreshnessToken | None = None
 ) -> PhotonSequenceResult:
     """Atomically add a trace run directly to the primary photon-sequence collection.
 

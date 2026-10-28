@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from ._logging import logged
-from ._processing import backend_version, check_snapshot, executor, record, snapshot
+from ._processing import backend_version, check_snapshot, executor, snapshot
 from .types.dataset import Dataset
 from .types.processing import DriftResult, DriftSettings
 
@@ -272,23 +271,18 @@ def _many(
             [np.interp(frames, sampled_frames, displacement[:, axis]) for axis in (0, 1)]
         )
         results[acquisition_id] = DriftResult(
-            acquisition_id, str(selections[acquisition_id]), frames, interpolated, settings, apply
+            acquisition_id,
+            str(selections[acquisition_id]),
+            frames,
+            interpolated,
+            settings,
+            expected=prepared[acquisition_id][0],
+            backend_version=installed,
         )
     if apply:
-        for acquisition_id, result in results.items():
-            dataset.transforms.set_drift(acquisition_id, result.displacement, frames=result.frames)
-            record(
-                dataset,
-                "undrifting",
-                acquisition_id,
-                result.channel,
-                {
-                    "settings": asdict(settings),
-                    "backend": installed,
-                    "frame_coverage": [int(result.frames[0]), int(result.frames[-1])],
-                    "coordinates": "registered reference pixels",
-                },
-            )
+        from .processing import apply_drift
+
+        return apply_drift(dataset, results)
     return results
 
 

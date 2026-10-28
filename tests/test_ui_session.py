@@ -24,6 +24,22 @@ def dataset():
 
 
 class SessionTests(unittest.TestCase):
+    def test_model_mutation_refreshes_session_and_replacement_unsubscribes(self):
+        original = dataset()
+        session = UiSession(original)
+        changes = []
+        session.results_changed.connect(lambda: changes.append(True))
+        original.localizations.add(acquisition_id="a", channel="image", frame=[0], x=[2], y=[2])
+        self.app.processEvents()
+        self.assertEqual(changes, [True])
+        self.assertTrue(session.dirty)
+        session.set_dataset(dataset())
+        original.localizations.move(1, x=3, y=3)
+        self.app.processEvents()
+        self.assertEqual(changes, [True])
+        self.assertFalse(session.dirty)
+        session.shutdown()
+
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

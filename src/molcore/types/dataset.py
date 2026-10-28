@@ -6,13 +6,15 @@ from collections.abc import Sequence
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from threading import RLock
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import numpy as np
 
-from .._locking import model_locked
+from .._locking import model_mutated
 from .._logging import logged
+from .._model_api import DatasetServices
 from ._shared import ImagePolicy, ProcessingMetadata, Segmentation
 from .acquisition import Acquisition, AcquisitionSequence
 from .photons import PhotonSequenceStore
@@ -24,9 +26,10 @@ if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
     from .scientific import CancelEvent, ProgressCallback
+    from .storage import SaveOptions
 
 
-class Dataset:
+class Dataset(DatasetServices):
     """Own acquisitions, active results, calibrations and provenance.
 
     Args:
@@ -56,6 +59,13 @@ class Dataset:
             metadata: Additional structured provenance and acquisition metadata.
         """
         self._lock = RLock()
+        self._lineage = str(uuid4())
+        self.revision = 0
+        self._metadata_revision = 0
+        self._partition_revisions = {}
+        self._subscribers = {}
+        self._mutation_depth = 0
+        self._mutation_partitions = set()
         self.id = str(uuid4()) if id is None else id
         if not isinstance(self.id, str) or not self.id.strip():
             raise ValueError("Dataset ID must be a nonempty string")
@@ -63,9 +73,12 @@ class Dataset:
         if not isinstance(self.name, str) or not self.name.strip():
             raise ValueError("Dataset name must be a nonempty string")
         self.metadata = dict(metadata or {})
-        self.acquisitions: dict[str, Acquisition] = {}
-        self.sequences: dict[str, AcquisitionSequence] = {}
-        self.segmentations: dict[str, Segmentation] = {}
+        self._acquisitions: dict[str, Acquisition] = {}
+        self._sequences: dict[str, AcquisitionSequence] = {}
+        self._segmentations: dict[str, Segmentation] = {}
+        self.acquisitions = MappingProxyType(self._acquisitions)
+        self.sequences = MappingProxyType(self._sequences)
+        self.segmentations = MappingProxyType(self._segmentations)
         self.localizations = LocalizationTable(self)
         self.tracks = TrackTable(self)
         self.observations = ObservationTable(self)
@@ -83,7 +96,7 @@ class Dataset:
         self.calibrations = self.transforms.calibrations
         self.crops = CropStore(self)
 
-    @model_locked
+    @model_mutated
     @logged
     def add_acquisition(self, acquisition: Acquisition) -> Acquisition:
         """Register an acquisition without replacing an existing identifier.
@@ -96,7 +109,7 @@ class Dataset:
         """
         if acquisition.id in self.acquisitions:
             raise ValueError("Acquisition ID already exists")
-        self.acquisitions[acquisition.id] = acquisition
+        self._acquisitions[acquisition.id] = acquisition
         return acquisition
 
     @logged
@@ -167,9 +180,9 @@ class Dataset:
                 model.tracks.delete(track)
             model.localizations.delete(ids)
             for key in sequences:
-                del model.sequences[key]
+                del model._sequences[key]
             for key in masks:
-                del model.segmentations[key]
+                del model._segmentations[key]
             model.transforms._selected = {k: v for k, v in model.transforms._selected.items() if k[0] != id}
             model.transforms._drift.pop(id, None)
             model.transforms.revision += 1
@@ -193,11 +206,11 @@ class Dataset:
                         values.pop(mask_id, None)
                 else:
                     values.pop(id, None)
-            del model.acquisitions[id]
+            del model._acquisitions[id]
 
         transact(self, remove)
 
-    @model_locked
+    @model_mutated
     @logged
     def add_sequence(
         self,
@@ -226,10 +239,10 @@ class Dataset:
         )
         if sequence.id in self.sequences:
             raise ValueError("Sequence ID already exists")
-        self.sequences[sequence.id] = sequence
+        self._sequences[sequence.id] = sequence
         return sequence
 
-    @model_locked
+    @model_mutated
     @logged
     def add_segmentation(self, segmentation: Segmentation) -> None:
         """Add or replace a static segmentation and invalidate its dependents.
@@ -244,7 +257,10 @@ class Dataset:
         view.channel_index(segmentation.frame)
         if segmentation.labels.shape != view.shape[1:]:
             raise ValueError("Segmentation geometry must match its bound channel")
-        self.segmentations[segmentation.id] = segmentation
+        previous = self._segmentations.get(segmentation.id)
+        if previous is not None:
+            self.observations._invalidate_partition(previous.acquisition_id)
+        self._segmentations[segmentation.id] = segmentation
         self.observations._invalidate_partition(segmentation.acquisition_id)
 
     @logged
@@ -301,6 +317,7 @@ class Dataset:
         layout: str = "hdf5",
         image_policy: str | ImagePolicy = "none",
         crop_width: int = 7,
+        options: SaveOptions | None = None,
         progress: ProgressCallback | None = None,
         cancel_event: CancelEvent | None = None,
         publish_guard: Any = None,
@@ -314,6 +331,7 @@ class Dataset:
                 of localisation, track and photon-sequence crops. both retains its
                 original localisation-plus-track meaning; all_crops includes all three.
             crop_width: Odd pixel width used when saving crops.
+            options: Composable SaveOptions; replaces the legacy image policy.
             progress: Optional callback receiving structured save progress.
             cancel_event: Optional event requesting cancellation before atomic replacement.
         """
@@ -325,6 +343,7 @@ class Dataset:
             layout=layout,
             image_policy=image_policy,
             crop_width=crop_width,
+            options=options,
             progress=progress,
             cancel_event=cancel_event,
             publish_guard=publish_guard,

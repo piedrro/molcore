@@ -91,6 +91,7 @@ class EditingTests(unittest.TestCase):
         converted = exp.transforms.convert_coordinates(
             rows, source_space=CoordinateSpace.RAW, target_space=CoordinateSpace.CORRECTED
         )
+        rows = rows.to_columns()
         rows["x"], rows["y"] = converted
         x, y = exp.transforms.convert_coordinates(
             rows, source_space=CoordinateSpace.CORRECTED, target_space=CoordinateSpace.RAW
@@ -155,6 +156,7 @@ class ScientificEdgeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             exp.tracks.query(track_id=[1.5])
         rows = exp.localizations.query()
+        rows = rows.to_columns()
         rows["frame"] = rows["frame"].astype(float)
         with self.assertRaises(ValueError):
             exp.transforms.convert_coordinates(rows)

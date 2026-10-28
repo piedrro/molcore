@@ -91,7 +91,7 @@ class TableTests(unittest.TestCase):
         self.assertEqual(self.exp.localizations.query(ids=[self.ids[1]], original=True)["x"].tolist(), [2.0])
         self.assertEqual(len(self.exp.observations.query()["id"]), 0)
         self.assertEqual(len(self.exp.observations.query(include_stale=True)["id"]), 1)
-        selected["x"][0] = 100
+        selected.to_columns()["x"][0] = 100
         self.assertEqual(self.exp.localizations.query(ids=[self.ids[1]])["x"].tolist(), [7.0])
 
     def test_track_membership_split_merge_and_deletion(self):

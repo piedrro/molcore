@@ -8,6 +8,7 @@ import numpy as np
 
 from ._logging import logged
 from .files import report
+from .revisions import StateToken
 from .staging import state_token
 from .types import CoordinateSpace, StaleResultError
 
@@ -47,7 +48,7 @@ def partition(
 @logged
 def finish(
     dataset: Dataset,
-    expected: tuple | None,
+    expected: StateToken | None,
     progress: ProgressCallback | None,
     cancel_event: CancelEvent | None,
 ) -> None:
@@ -70,7 +71,7 @@ def start(
     space: CoordinateSpace | str,
     progress: ProgressCallback | None,
     cancel_event: CancelEvent | None,
-) -> tuple[tuple, CoordinateSpace]:
+) -> tuple[StateToken, CoordinateSpace]:
     """Start.
 
     Args:

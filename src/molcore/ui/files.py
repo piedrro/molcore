@@ -804,7 +804,7 @@ class FileToolsWidget(ToolWidget):
             rows = (
                 model.tracks.query(space="raw")
                 if tracks
-                else model.localizations.query(acquisition_id=a, channel=c, space="raw")
+                else model.localizations.query(acquisition_id=a, channel=c, space="raw").to_columns()
             )
             if tracks:
                 selected = (rows["acquisition_id"] == a) & (rows["channel"] == c)

@@ -27,6 +27,7 @@ from .analysis import (
     RenderResult,
     RenderSettings,
 )
+from .batches import ColumnSchema, LocalizationBatch
 from .contrast import ContrastMethod, ContrastResult, ContrastScope, ContrastSettings
 from .dataset import Dataset
 from .dataset_alignment import DatasetAlignmentResult, DatasetAlignmentSettings
@@ -62,9 +63,13 @@ from .scientific import (
     TrackingSettings,
     TrajectoryStatistics,
 )
+from .storage import SaveOptions
 from .tables import LocalizationTable, ObservationTable, TrackTable
 
 __all__ = [
+    "ColumnSchema",
+    "LocalizationBatch",
+    "SaveOptions",
     "CellposeSettings",
     "SegmentationRequest",
     "AlignmentResult",

@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 from collections.abc import Callable, Sequence
-from copy import deepcopy
 from dataclasses import asdict
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -15,7 +14,9 @@ import numpy as np
 
 from ._logging import logged
 from ._processing import check_snapshot, executor, snapshot
+from .backends import BackendRegistry, ProcessorBackend, resolve_backend
 from .cpu import CpuExecutor
+from .execution import ExecutionContext
 from .storage import _json
 from .types import (
     CellposeSettings,
@@ -47,7 +48,7 @@ def _backend_version() -> str:
     try:
         installed = version("cellpose")
     except PackageNotFoundError as exc:
-        raise ImportError("Cellpose is missing; reinstall MolCore with its runtime dependencies") from exc
+        raise ImportError("Cellpose is missing; install molcore[segmentation]") from exc
     major, minor = (int(part) for part in installed.split(".")[:2])
     if major != 4 or minor < 2:
         raise ImportError(f"MolCore segmentation requires Cellpose >=4.2,<5; found {installed}")
@@ -266,6 +267,9 @@ def segment_many(
     cpu: CpuExecutor | None = None,
     progress: Callable[[ProgressUpdate], None] | None = None,
     cancel_event: CancelEvent | None = None,
+    context: ExecutionContext | None = None,
+    backend: ProcessorBackend | str | None = None,
+    registry: BackendRegistry | None = None,
 ) -> dict[str, Segmentation]:
     """Segment model-bound source frames and stage every result before application.
 
@@ -292,10 +296,20 @@ def segment_many(
         paths support offline operation. GPU inference requires one worker.
         Native inference kernels finish before cooperative cancellation is checked.
     """
-    _backend_version()
+    options = (
+        (context or ExecutionContext())
+        .resolve(cpu=cpu, num_cpus=num_cpus, progress=progress, cancel_event=cancel_event)
+        .kwargs()
+    )
+    cpu, num_cpus, progress, cancel_event = (
+        options[k] for k in ("cpu", "num_cpus", "progress", "cancel_event")
+    )
+    selected_backend = resolve_backend("segment", backend, registry=registry)
+    if selected_backend is None:
+        _backend_version()
     settings = settings or CellposeSettings()
-    model_ref, model_stat = _resolve_model(settings)
-    configured = cpu.num_cpus if cpu is not None else (num_cpus if num_cpus is not None else 1)
+    model_ref, model_stat = _resolve_model(settings) if selected_backend is None else (None, None)
+    configured = getattr(cpu, "num_cpus", 1) if cpu is not None else (num_cpus if num_cpus is not None else 1)
     if settings.gpu and configured != 1:
         raise ValueError("GPU Cellpose inference requires exactly one worker")
     requests = tuple(requests)
@@ -342,8 +356,14 @@ def segment_many(
             yield request, frame, identifier, image, source_path, settings, model_ref, model_stat
 
     with executor(cpu, (configured if cpu is None else num_cpus)) as runner:
-        values = runner.map(_job, jobs(), total=len(prepared), progress=progress, cancel_event=cancel_event)
-    if _resolve_model(settings) != (model_ref, model_stat):
+        values = runner.map(
+            _job if selected_backend is None else selected_backend.compute,
+            jobs(),
+            total=len(prepared),
+            progress=progress,
+            cancel_event=cancel_event,
+        )
+    if selected_backend is None and _resolve_model(settings) != (model_ref, model_stat):
         raise StaleResultError("Cellpose weights changed during inference")
     for request, frame, identifier, _, expected, fingerprint, target in prepared:
         check_snapshot(dataset, request.acquisition_id, expected)
@@ -351,17 +371,15 @@ def segment_many(
             raise StaleResultError("Segmentation source pixels changed during inference")
         if apply and _target_token(dataset.segmentations.get(identifier)) != target:
             raise StaleResultError("Target segmentation changed during inference")
+    for value, entry in zip(values, prepared, strict=True):
+        value.expected = entry[4]
+        if selected_backend is not None:
+            value.metadata.update({"algorithm": "external", "backend": selected_backend.version})
     results = {value.id: value for value in values}
     if apply and results:
-        previous = dataset.processing.settings.get("cellpose", {})
-        if not isinstance(previous, dict):
-            raise ValueError("Cellpose processing metadata must be a dictionary")
-        metadata = {**previous, **{value.id: deepcopy(value.metadata) for value in values}}
-        for value in values:
-            dataset.add_segmentation(value)
-        dataset.processing.settings["cellpose"] = metadata
-        dataset.processing.software["cellpose"] = values[0].metadata["cellpose_version"]
-        dataset.processing.software["torch"] = values[0].metadata["torch_version"]
+        from .processing import apply_segmentations
+
+        return apply_segmentations(dataset, results)
     return results
 
 
@@ -380,6 +398,9 @@ def segment(
     cpu: CpuExecutor | None = None,
     progress: Callable[[ProgressUpdate], None] | None = None,
     cancel_event: CancelEvent | None = None,
+    context: ExecutionContext | None = None,
+    backend: ProcessorBackend | str | None = None,
+    registry: BackendRegistry | None = None,
 ) -> Segmentation:
     """Segment one MolCore channel frame with the Cellpose 4 backend.
 
@@ -410,5 +431,8 @@ def segment(
         cpu=cpu,
         progress=progress,
         cancel_event=cancel_event,
+        context=context,
+        backend=backend,
+        registry=registry,
     )
     return next(iter(results.values()))

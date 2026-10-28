@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from ._logging import logged
 from .cpu import CpuExecutor
-from .types._shared import StaleResultError
+from .revisions import DependencyToken
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -26,14 +26,14 @@ def backend_version() -> str:
     try:
         installed = version("picassosr")
     except PackageNotFoundError as exc:
-        raise ImportError("Picasso is missing; reinstall MolCore with its runtime dependencies") from exc
+        raise ImportError("Picasso is missing; install molcore[localisation]") from exc
     if tuple(int(part) for part in installed.split(".")[:2]) != (0, 11):
         raise ImportError(f"MolCore processing supports Picasso >=0.11,<0.12; found {installed}")
     return installed
 
 
 @logged
-def snapshot(dataset: Dataset, acquisition_id: str) -> tuple:
+def snapshot(dataset: Dataset, acquisition_id: str) -> DependencyToken:
     """Snapshot.
 
     Args:
@@ -43,18 +43,11 @@ def snapshot(dataset: Dataset, acquisition_id: str) -> tuple:
     Returns:
         Computed tuple value.
     """
-    acquisition = dataset.acquisitions[acquisition_id]
-    return (
-        dataset.localizations.revision,
-        dataset.tracks.revision,
-        dataset.transforms.revision,
-        id(acquisition.source),
-        tuple((name, id(view)) for name, view in acquisition.channels.items()),
-    )
+    return dataset.dependencies(acquisition_id)
 
 
 @logged
-def check_snapshot(dataset: Dataset, acquisition_id: str, expected: tuple | None) -> None:
+def check_snapshot(dataset: Dataset, acquisition_id: str, expected: DependencyToken) -> None:
     """Check snapshot.
 
     Args:
@@ -62,8 +55,7 @@ def check_snapshot(dataset: Dataset, acquisition_id: str, expected: tuple | None
         acquisition_id: Source acquisition identifier.
         expected: Source revision token used to reject stale results.
     """
-    if snapshot(dataset, acquisition_id) != expected:
-        raise StaleResultError("Processing inputs changed during computation; no result was applied")
+    expected.validate(dataset)
 
 
 @contextmanager
@@ -99,5 +91,3 @@ def record(dataset: Dataset, stage: Any, acquisition_id: str, channel: str, valu
         values: Input values to validate, convert or display.
     """
     dataset.processing.settings.setdefault(stage, {}).setdefault(acquisition_id, {})[channel] = values
-    if "backend" in values:
-        dataset.processing.software["picassosr"] = values["backend"]

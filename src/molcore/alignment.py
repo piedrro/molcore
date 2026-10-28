@@ -267,47 +267,7 @@ def _run(
         )[0]
     check_snapshot(dataset, acquisition_id, expected)
     reference_matrix = dataset.transforms._registration(acquisition_id, target_channel) @ matrix
-    calibration_name = None
-    if apply:
-        calibration_name = name or f"{acquisition_id}:{source_channel}->{target_channel}"
-        existing = dataset.calibrations.get(calibration_name)
-        if existing is not None:
-            raise ValueError(
-                "Calibration name already exists; choose a new name to preserve other selections"
-            )
-        dataset.transforms.add_calibration(
-            Calibration(
-                calibration_name,
-                reference_matrix,
-                {
-                    "model": model,
-                    "source_channel": source_channel,
-                    "target_channel": target_channel,
-                    "source_ids": source_ids.tolist(),
-                    "target_ids": target_ids.tolist(),
-                    "residuals": residuals.tolist(),
-                    "inliers": inliers.tolist(),
-                    "source_emission": source_emission,
-                    "source_shape": list(acquisition.channels[source_channel].shape[1:]),
-                    "source_roi": list(acquisition.channels[source_channel].roi),
-                    "target_emission": target_emission,
-                    "target_shape": list(acquisition.channels[target_channel].shape[1:]),
-                    "target_roi": list(acquisition.channels[target_channel].roi),
-                    "pixel_size_nm": acquisition.pixel_size,
-                },
-            )
-        )
-        dataset.transforms.select(acquisition_id, source_channel, calibration_name)
-        dataset.processing.settings.setdefault("alignment", {}).setdefault(acquisition_id, {})[
-            str(source_channel)
-        ] = {
-            "model": model,
-            "match_radius": match_radius,
-            "target_channel": target_channel,
-            "calibration_name": calibration_name,
-            "rms_residual": float(np.sqrt(np.mean(residuals**2))),
-        }
-    return AlignmentResult(
+    result = AlignmentResult(
         acquisition_id,
         str(source_channel),
         str(target_channel),
@@ -316,9 +276,14 @@ def _run(
         residuals,
         source_ids,
         target_ids,
-        calibration_name,
+        None,
         inliers,
+        expected=expected,
+        model=model,
+        match_radius=match_radius,
+        requested_name=name,
     )
+    return dataset.apply(result) if apply else result
 
 
 @logged

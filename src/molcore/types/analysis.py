@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ..revisions import FreshnessToken
 from ._shared import CoordinateSpace
 
 
@@ -91,7 +92,7 @@ class AnalysisResult:
     space: CoordinateSpace
     settings: object
     columns: dict[str, np.ndarray]
-    expected: tuple
+    expected: FreshnessToken
 
 
 @dataclass(frozen=True)

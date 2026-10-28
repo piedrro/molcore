@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import asdict, is_dataclass, replace
+from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -133,10 +133,6 @@ class AnalysisTool(ToolWidget):
             if generation != self._generation:
                 self.status.setText("Inputs changed; compute a new preview")
                 return
-            if is_dataclass(result) and hasattr(result, "expected"):
-                from ..staging import state_token
-
-                result = replace(result, expected=state_token(self.session.dataset))
             complete(result)
             self.result_ready.emit(self.preview if self.preview is not None else result)
 

@@ -13,7 +13,8 @@ from numpy.typing import ArrayLike
 from ._logging import logged
 from ._processing import executor
 from .cpu import CpuExecutor
-from .staging import state_token, transact
+from .revisions import FreshnessToken
+from .staging import dependency_token, transact
 from .transforms import project_points
 from .types import (
     ApertureShape,
@@ -235,13 +236,21 @@ def _extract(
         raise ValueError("Select distinct target channels")
     if not isinstance(settings, PhotometrySettings):
         raise TypeError("settings must be PhotometrySettings")
-    expected = state_token(dataset)
-    if mode == TraceMode.TRACK:
-        rows = dataset.tracks.query(track_id=selected, space="raw")
-    else:
-        rows = dataset.localizations.query(ids=selected, space="raw")
-        if len(rows["id"]) != len(selected):
-            raise ValueError("Unknown localization ID")
+    with dataset._lock:
+        initial = dataset.dependencies()
+        if mode == TraceMode.TRACK:
+            rows = dataset.tracks.query(track_id=selected, space="raw")
+        else:
+            rows = dataset.localizations.query(ids=selected, space="raw")
+            if len(rows["id"]) != len(selected):
+                raise ValueError("Unknown localization ID")
+        selected_acquisitions = set(rows["acquisition_id"].tolist())
+        expected = dependency_token(
+            dataset,
+            ((a, c) for a in selected_acquisitions for c in dataset.acquisitions[a].channels),
+            components={"localizations", "tracks", "transforms", "segmentations"},
+        )
+        initial.validate(dataset)
     requests = defaultdict(list)
     transforms = dataset.transforms
     for index in range(len(rows["id"])):
@@ -325,16 +334,16 @@ def _extract(
             depends_on_localizations=settings.exclude_neighbours,
         )
         result = PhotonSequenceResult(sequences, settings, mode, run_id, expected)
-    if state_token(dataset) != expected:
-        from .types import StaleResultError
-
-        raise StaleResultError("Photometry inputs changed during computation")
+    expected.validate(dataset)
     return apply_photometry(dataset, result) if apply else result
 
 
 @logged
 def apply_photometry(
-    dataset: Dataset, result: PhotometryResult | PhotonSequenceResult, *, expected: tuple | None = None
+    dataset: Dataset,
+    result: PhotometryResult | PhotonSequenceResult,
+    *,
+    expected: FreshnessToken | None = None,
 ) -> PhotometryResult | PhotonSequenceResult:
     """Apply localisation measurements or primary photon sequences atomically.
 

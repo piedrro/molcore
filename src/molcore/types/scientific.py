@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 
 from .._logging import logged
+from ..revisions import FreshnessToken
 from ._shared import CoordinateSpace
 from .processing import ProgressUpdate
 
@@ -98,7 +99,7 @@ class PhotometryResult:
     settings: PhotometrySettings
     mode: TraceMode
     run_id: str
-    expected: tuple
+    expected: FreshnessToken
     observation_ids: np.ndarray | None = None
 
 
@@ -119,7 +120,7 @@ class PhotonSequenceResult:
     settings: PhotometrySettings
     mode: TraceMode
     run_id: str
-    expected: tuple
+    expected: FreshnessToken
     sequence_ids: tuple[str, ...] | None = None
 
     @property
@@ -163,7 +164,7 @@ class TrackingResult:
     channel: str
     memberships: tuple[np.ndarray, ...]
     settings: TrackingSettings
-    expected: tuple
+    expected: FreshnessToken
     backend_version: str
     segmentation_id: str | None = None
     track_ids: np.ndarray | None = None
