@@ -26,6 +26,8 @@ class CellposeSettings:
         min_size: Minimum object area in pixels; zero disables size filtering.
         batch_size: Network image-tile batch size, separate from process count.
         gpu: Explicitly request CUDA or MPS execution in one worker.
+        invert: Infer from np.max(image) - image for each source frame before
+            float32 conversion and normalization; retain original source pixels.
     """
 
     pretrained_model: str | Path = "cyto3"
@@ -36,6 +38,7 @@ class CellposeSettings:
     min_size: int = 15
     batch_size: int = 8
     gpu: bool = False
+    invert: bool = False
 
     def __post_init__(self) -> None:
         """Validate the immutable record after construction."""
@@ -58,7 +61,7 @@ class CellposeSettings:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
                 raise ValueError(f"{name} must be an integer >= {minimum}")
-        for name in ("normalize", "gpu"):
+        for name in ("normalize", "gpu", "invert"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"{name} must be a boolean")
 

@@ -174,6 +174,30 @@ class CellposeTests(unittest.TestCase):
                     "cyto3",
                 )
 
+    def test_inversion_changes_inference_pixels_and_retains_original_source(self):
+        settings = CellposeSettings(invert=True, normalize=False)
+        with patch.object(cellpose, "_backend_version", return_value="3.0.9"):
+            result = cellpose.segment(
+                self.exp,
+                "a",
+                "image",
+                frame=1,
+                settings=settings,
+                apply=False,
+                cpu=InlineCpu(),
+            )
+        np.testing.assert_array_equal(
+            ControlledModel.evaluations[0][0], np.arange(24, -1, -1).reshape(5, 5)
+        )
+        np.testing.assert_array_equal(result.source_image, self.image[1])
+        self.assertEqual(result.source_image.dtype, np.dtype("uint16"))
+        self.assertTrue(result.metadata["settings"]["invert"])
+
+    def test_invert_requires_a_boolean(self):
+        for value in (1, "yes", None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                CellposeSettings(invert=value)
+
     def test_preview_and_model_cache_and_camera_frame_mapping(self):
         self.exp.add_acquisition(
             Acquisition(

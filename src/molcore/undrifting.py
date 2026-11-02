@@ -10,9 +10,12 @@ from ._logging import logged
 from ._processing import backend_version, check_snapshot, executor, snapshot
 from .types.dataset import Dataset
 from .types.processing import DriftResult, DriftSettings
+from .types.tables import identifiers
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from numpy.typing import ArrayLike
 
     from .cpu import CpuExecutor, WorkerProgress
     from .types import CancelEvent, ProgressCallback
@@ -178,7 +181,11 @@ def _job(payload: tuple, reporter: WorkerProgress) -> Any:
 
 
 def _prepare(
-    dataset: Dataset, acquisition_id: str, channel: str, settings: DriftSettings
+    dataset: Dataset,
+    acquisition_id: str,
+    channel: str,
+    settings: DriftSettings,
+    ids: ArrayLike | None = None,
 ) -> tuple:
     """Prepare.
 
@@ -196,11 +203,21 @@ def _prepare(
     view = acquisition.channels[channel]
     rows = dataset.localizations.query(
         acquisition_id=acquisition_id, channel=channel, space="registered"
-    )
+    ).to_columns()
     if len(rows["frame"]) == 0:
         raise ValueError(
             "Drift estimation requires localizations in the selected channel"
         )
+    if ids is not None:
+        selected = identifiers(ids)
+        if len(np.unique(selected)) != len(selected):
+            raise ValueError("Selected localization IDs must be distinct")
+        if not np.isin(selected, rows["id"]).all():
+            raise ValueError("Selected localization IDs must belong to the partition")
+        keep = np.isin(rows["id"], selected)
+        rows = {name: values[keep] for name, values in rows.items()}
+        if not len(rows["id"]):
+            raise ValueError("Drift estimation requires selected localizations")
     logical_frames = np.searchsorted(view.source_frames, rows["frame"])
     start, last = int(logical_frames.min()), int(logical_frames.max())
     n_frames = last - start + 1
@@ -256,6 +273,7 @@ def _many(
     cpu: CpuExecutor | None,
     progress: ProgressCallback | None,
     cancel_event: CancelEvent | None,
+    ids: Mapping[str, ArrayLike] | None = None,
 ) -> Any:
     """Many.
 
@@ -274,7 +292,13 @@ def _many(
     """
     installed = backend_version()
     prepared = {
-        acquisition_id: _prepare(dataset, acquisition_id, channel, settings)
+        acquisition_id: _prepare(
+            dataset,
+            acquisition_id,
+            channel,
+            settings,
+            None if ids is None else ids.get(acquisition_id),
+        )
         for acquisition_id, channel in selections.items()
     }
     with executor(cpu, num_cpus) as runner:
@@ -328,7 +352,13 @@ def _run(dataset: Dataset, acquisition_id: str, channel: str, **kwargs: Any) -> 
     Returns:
         Result retaining the input format or backend-specific representation.
     """
-    return _many(dataset, {acquisition_id: channel}, **kwargs)[acquisition_id]
+    selected = kwargs.pop("ids", None)
+    return _many(
+        dataset,
+        {acquisition_id: channel},
+        ids=None if selected is None else {acquisition_id: selected},
+        **kwargs,
+    )[acquisition_id]
 
 
 @logged
@@ -337,6 +367,7 @@ def estimate_drift(
     acquisition_id: str,
     channel: str,
     *,
+    ids: ArrayLike | None = None,
     settings: DriftSettings | None = None,
     num_cpus: int | None = None,
     cpu: CpuExecutor | None = None,
@@ -349,6 +380,8 @@ def estimate_drift(
         dataset: Dataset supplying registered localization positions.
         acquisition_id: Acquisition identifier.
         channel: Logical reference channel.
+        ids: Stable localization IDs within the partition; None selects all.
+            Duplicate, unknown, out-of-partition and empty selections are rejected.
         settings: RCC/AIM settings; defaults to RCC with 1000-frame segments.
         num_cpus: Positive CPU process count or None for the CPU default.
         cpu: Optional reusable CpuExecutor.
@@ -363,6 +396,7 @@ def estimate_drift(
         acquisition_id,
         channel,
         settings=settings or DriftSettings(),
+        ids=ids,
         apply=False,
         num_cpus=num_cpus,
         cpu=cpu,
@@ -377,6 +411,7 @@ def undrift(
     acquisition_id: str,
     channel: str,
     *,
+    ids: ArrayLike | None = None,
     settings: DriftSettings | None = None,
     num_cpus: int | None = None,
     cpu: CpuExecutor | None = None,
@@ -389,6 +424,8 @@ def undrift(
         dataset: Dataset whose TransformManager receives the estimated drift.
         acquisition_id: Acquisition identifier.
         channel: Logical reference channel supplying localization measurements.
+        ids: Stable IDs used for estimation only; None selects all localizations.
+            Drift application still covers the acquisition, including other origins.
         settings: RCC/AIM settings in logical-channel frames and reference pixels.
         num_cpus: Positive CPU process count; default leaves one CPU available.
         cpu: Optional reusable CpuExecutor.
@@ -407,6 +444,7 @@ def undrift(
         acquisition_id,
         channel,
         settings=settings or DriftSettings(),
+        ids=ids,
         apply=True,
         num_cpus=num_cpus,
         cpu=cpu,

@@ -966,18 +966,22 @@ class TrackTable:
         channel: str,
         memberships: list[ArrayLike],
         *,
+        ids: ArrayLike | None = None,
         segmentation_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> np.ndarray:
         """Replace wholly contained partition tracks atomically, retaining localization IDs.
 
         Memberships is an iterable of nonempty localization-ID arrays. Spanning
-        tracks intersecting the partition are rejected, including empty replacements.
+        tracks intersecting the scope are rejected, including empty replacements.
+        Explicit IDs restrict replacement to that exact scope; an empty selection
+        replaces nothing. Unknown, duplicate and out-of-partition IDs are rejected.
 
         Args:
             acquisition_id: Source acquisition identifier.
             channel: Logical source channel name.
             memberships: Memberships used by this operation.
+            ids: Stable localization IDs defining the scope; None selects the partition.
             segmentation_id: Optional segmentation identifier restricting the selected objects.
             metadata: Additional structured provenance and acquisition metadata.
 
@@ -991,6 +995,15 @@ class TrackTable:
         partition = self.dataset.localizations.query(
             acquisition_id=acquisition_id, channel=channel, space="raw"
         )["id"]
+        if ids is not None:
+            selected = identifiers(ids)
+            if len(np.unique(selected)) != len(selected):
+                raise ValueError("Selected localization IDs must be distinct")
+            if not np.isin(selected, partition).all():
+                raise ValueError(
+                    "Selected localization IDs must belong to the partition"
+                )
+            partition = selected
         old = []
         for track, members in self._members.items():
             inside = np.isin(members, partition)

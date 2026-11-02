@@ -27,6 +27,7 @@ from .types import (
     TrackingResult,
     TrackingSettings,
 )
+from .types.tables import identifiers
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
@@ -116,6 +117,7 @@ def track(
     acquisition_id: str,
     channel: str,
     *,
+    ids: ArrayLike | None = None,
     settings: TrackingSettings = _DEFAULT_SETTINGS,
     segmentation_id: str | None = None,
     apply: bool = True,
@@ -133,11 +135,15 @@ def track(
     including other excitation frames. Segmentation labels constrain independent
     linking groups; background label zero is excluded. A full successful applying
     run replaces wholly contained partition tracks, preserving localization IDs.
+    Explicit IDs restrict linking and replacement to those localizations. Tracks
+    partially overlapping the selection are rejected on application; disjoint
+    tracks retain their IDs and metadata. Empty IDs select and replace nothing.
 
     Args:
         dataset: Scientific model supplying acquisitions and result tables.
         acquisition_id: Source acquisition identifier.
         channel: Logical source channel name.
+        ids: Stable localization IDs within this partition; None selects all.
         settings: Validated settings controlling this operation.
         segmentation_id: Optional segmentation identifier restricting the selected objects.
         apply: Whether to commit successful results to the model.
@@ -168,10 +174,24 @@ def track(
     rows = dataset.localizations.query(
         acquisition_id=acquisition_id, channel=channel, space=settings.space
     ).to_columns()
+    selected_ids = None
+    if ids is not None:
+        selected_ids = identifiers(ids)
+        if len(np.unique(selected_ids)) != len(selected_ids):
+            raise ValueError("Selected localization IDs must be distinct")
+        if not np.isin(selected_ids, rows["id"]).all():
+            raise ValueError("Selected localization IDs must belong to the partition")
+        keep = np.isin(rows["id"], selected_ids)
+        rows = {name: values[keep] for name, values in rows.items()}
+        # Keep the detached replacement scope independent of caller-owned arrays.
+        selected_ids.flags.writeable = False
     labels = np.ones(len(rows["id"]), dtype=np.int64)
     if segmentation_id is not None:
         raw = dataset.localizations.query(
-            acquisition_id=acquisition_id, channel=channel, space="raw"
+            acquisition_id=acquisition_id,
+            channel=channel,
+            ids=selected_ids,
+            space="raw",
         )
         labels = dataset.segmentation_labels(segmentation_id, raw)
     from importlib.metadata import PackageNotFoundError
@@ -190,19 +210,25 @@ def track(
     with executor(cpu, num_cpus) as runner:
         output = runner.map(
             _job if selected_backend is None else selected_backend.compute,
-            [(rows, labels, settings)],
+            [(rows, labels, settings)] if len(rows["id"]) else [],
             progress=progress,
             cancel_event=cancel_event,
         )
     expected.validate(dataset)
+    memberships = tuple(identifiers(members) for members in output[0]) if output else ()
+    if any(not np.isin(members, rows["id"]).all() for members in memberships):
+        raise ValueError(
+            "Tracking backend returned memberships outside the selected scope"
+        )
     result = TrackingResult(
         acquisition_id,
         channel,
-        output[0],
+        memberships,
         settings,
         expected,
         installed,
         segmentation_id,
+        selected_ids=selected_ids,
     )
     return apply_tracking(dataset, result) if apply else result
 
@@ -212,6 +238,10 @@ def apply_tracking(
     dataset: Dataset, result: TrackingResult, *, expected: FreshnessToken | None = None
 ) -> TrackingResult:
     """Apply detached memberships transactionally after checking the source state.
+
+    selected_ids limits replacement, preserving disjoint tracks; tracks partially
+    overlapping that scope cause atomic rejection. None retains whole-partition
+    replacement for existing callers.
 
     Args:
         dataset: Scientific model supplying acquisitions and result tables.
@@ -235,6 +265,7 @@ def apply_tracking(
             result.acquisition_id,
             result.channel,
             list(result.memberships),
+            ids=result.selected_ids,
             segmentation_id=result.segmentation_id,
             metadata={
                 "settings": asdict(result.settings),

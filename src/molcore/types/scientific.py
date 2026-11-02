@@ -162,7 +162,11 @@ class TrackingSettings:
 
 @dataclass(frozen=True)
 class TrackingResult:
-    """Stable localization memberships independent of Trackpy particle labels."""
+    """Stable localization memberships independent of Trackpy particle labels.
+
+    selected_ids is the exact replacement scope; None means the whole partition.
+    An empty array selects nothing and never replaces unrelated tracks.
+    """
 
     acquisition_id: str
     channel: str
@@ -172,6 +176,7 @@ class TrackingResult:
     backend_version: str
     segmentation_id: str | None = None
     track_ids: np.ndarray | None = None
+    selected_ids: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
