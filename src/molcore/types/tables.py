@@ -1048,6 +1048,43 @@ class TrackTable:
 
     @model_mutated
     @logged
+    def retain_members(self, track_id: int, ids: ArrayLike) -> None:
+        """Retain a track subset in its existing order without removing localizations.
+
+        A nonempty subset preserves the track ID and metadata. An empty subset
+        deletes the track. Changed memberships invalidate dependent observations
+        and photon sequences, including access to their historical crops. Raw
+        localization crops remain valid; track crops resolve current membership.
+        Keeping every member is a no-op, regardless of input order.
+
+        Args:
+            track_id: Existing track identifier.
+            ids: Distinct existing members to retain; order does not reorder the track.
+
+        Raises:
+            ValueError: The track is unknown or selected IDs are duplicated,
+                malformed, unknown, or not members of this track.
+        """
+        track_id = int(track_id)
+        if track_id not in self._members:
+            raise ValueError("Unknown track ID")
+        selected = identifiers(ids)
+        if len(np.unique(selected)) != len(selected):
+            raise ValueError("Retained localization IDs must be distinct")
+        members = self._members[track_id]
+        if not np.isin(selected, members).all():
+            raise ValueError("Retained localization IDs must belong to the track")
+        if not len(selected):
+            self.delete(track_id)
+            return
+        if len(selected) == len(members):
+            return
+        self._members[track_id] = members[np.isin(members, selected)]
+        self.dataset.observations._invalidate(tracks=[track_id])
+        self.revision += 1
+
+    @model_mutated
+    @logged
     def split(self, track_id: int, *, frame: int) -> int:
         """Split at a camera frame, using sequence frames for crossing tracks.
 
