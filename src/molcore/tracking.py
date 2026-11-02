@@ -1,4 +1,4 @@
-"""Headless Trackpy linking with camera-frame memory and atomic application."""
+"""Headless Trackpy linking with explicit frame-clock memory and atomic application."""
 
 from __future__ import annotations
 
@@ -131,8 +131,11 @@ def track(
 ) -> TrackingResult:
     """Link one acquisition/channel partition independently using Trackpy 0.7.
 
-    Search range is in selected-space pixels. Empty camera frames consume memory,
-    including other excitation frames. Segmentation labels constrain independent
+    Search range is in selected-space pixels. With the default camera clock,
+    empty camera frames consume memory, including other excitation frames. With
+    the channel clock, memory counts missing frames in the selected ChannelView.
+    Only the detached linker payload is remapped; model frames remain camera
+    frames. Segmentation labels constrain independent
     linking groups; background label zero is excluded. A full successful applying
     run replaces wholly contained partition tracks, preserving localization IDs.
     Explicit IDs restrict linking and replacement to those localizations. Tracks
@@ -194,6 +197,9 @@ def track(
             space="raw",
         )
         labels = dataset.segmentation_labels(segmentation_id, raw)
+    if settings.frame_clock == "channel":
+        view = dataset.acquisitions[acquisition_id].channels[channel]
+        rows["frame"] = view.channel_indices(rows["frame"])
     from importlib.metadata import PackageNotFoundError
 
     try:
