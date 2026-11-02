@@ -55,7 +55,11 @@ def _fingerprint(dataset: Dataset) -> str:
     for key, value in sorted(dataset.transforms._calibrations.items()):
         digest.update(key.encode())
         digest.update(value.matrix.tobytes())
-    digest.update(_json(sorted((a, c, n) for (a, c), n in dataset.transforms._selected.items())).encode())
+    digest.update(
+        _json(
+            sorted((a, c, n) for (a, c), n in dataset.transforms._selected.items())
+        ).encode()
+    )
     for key, (frames, displacement) in sorted(dataset.transforms._drift.items()):
         digest.update(key.encode())
         digest.update(frames.tobytes())
@@ -76,7 +80,9 @@ def _fiducials(dataset: Dataset, acquisition: str, channel: str, ids: Any) -> tu
     if ids is not None:
         ids = identifiers(ids)
         if len(np.unique(ids)) != len(ids) or len(rows["id"]) != len(ids):
-            raise ValueError("Fiducial IDs must be unique and belong to the selected partition")
+            raise ValueError(
+                "Fiducial IDs must be unique and belong to the selected partition"
+            )
         positions = {int(v): i for i, v in enumerate(rows["id"])}
         order = [positions[int(i)] for i in ids]
         rows = {k: v[order] for k, v in rows.items()}
@@ -96,9 +102,14 @@ def _fit_job(payload: tuple, reporter: Any) -> tuple:
 
         distances, nearest = cKDTree(reference).query(source)
         _, reverse = cKDTree(source).query(reference)
-        keep = (distances <= settings.match_radius) & (reverse[nearest] == np.arange(len(source)))
+        keep = (distances <= settings.match_radius) & (
+            reverse[nearest] == np.arange(len(source))
+        )
         source, source_ids = source[keep], source_ids[keep]
-        reference, reference_ids = reference[nearest[keep]], reference_ids[nearest[keep]]
+        reference, reference_ids = (
+            reference[nearest[keep]],
+            reference_ids[nearest[keep]],
+        )
     reporter.check_cancelled()
     matrix, residuals, inliers = fit_transform(
         source,
@@ -160,16 +171,23 @@ def estimate_dataset_alignment(
         raise ValueError("Supply both ordered fiducial ID lists, or neither")
     paired = source_ids is not None
     if not paired and settings.match_radius is None:
-        raise ValueError("Automatic matching requires an explicit positive match_radius")
+        raise ValueError(
+            "Automatic matching requires an explicit positive match_radius"
+        )
     source_dataset = experiment.datasets[source_dataset_id]
     reference_dataset = experiment.datasets[reference_dataset_id]
     with ExitStack() as stack:
         for dataset in sorted((source_dataset, reference_dataset), key=lambda d: d.id):
             stack.enter_context(dataset._lock)
         fingerprints = (_fingerprint(source_dataset), _fingerprint(reference_dataset))
-        source, source_ids = _fiducials(source_dataset, source_acquisition_id, source_channel, source_ids)
+        source, source_ids = _fiducials(
+            source_dataset, source_acquisition_id, source_channel, source_ids
+        )
         reference, reference_ids = _fiducials(
-            reference_dataset, reference_acquisition_id, reference_channel, reference_ids
+            reference_dataset,
+            reference_acquisition_id,
+            reference_channel,
+            reference_ids,
         )
     if paired and len(source) != len(reference):
         raise ValueError("Paired fiducial lists must have equal length")
@@ -232,7 +250,9 @@ class DatasetAlignmentManager:
         Returns:
             Detached registration, correspondence IDs and fit quality.
         """
-        return estimate_dataset_alignment(self.experiment, source_dataset_id, reference_dataset_id, **options)
+        return estimate_dataset_alignment(
+            self.experiment, source_dataset_id, reference_dataset_id, **options
+        )
 
     def apply(self, results: Any) -> None:
         """Atomically install fresh results sharing one reference anchor.
@@ -246,7 +266,9 @@ class DatasetAlignmentManager:
         if len({r.source_dataset_id for r in results}) != len(results):
             raise ValueError("Duplicate source dataset in alignment batch")
         with self.experiment._lock, ExitStack() as stack:
-            for dataset in sorted(self.experiment.datasets.values(), key=lambda d: d.id):
+            for dataset in sorted(
+                self.experiment.datasets.values(), key=lambda d: d.id
+            ):
                 stack.enter_context(dataset._lock)
             anchor = (
                 results[0].reference_dataset_id,
@@ -258,7 +280,9 @@ class DatasetAlignmentManager:
                 self.reference_acquisition_id,
                 self.reference_channel,
             ):
-                raise ValueError("Reset existing alignments before changing the reference")
+                raise ValueError(
+                    "Reset existing alignments before changing the reference"
+                )
             for result in results:
                 if anchor != (
                     result.reference_dataset_id,
@@ -270,15 +294,26 @@ class DatasetAlignmentManager:
                     raise ValueError("Source and reference datasets must differ")
                 source = self.experiment.datasets[result.source_dataset_id]
                 reference = self.experiment.datasets[result.reference_dataset_id]
-                if result.fingerprints != (_fingerprint(source), _fingerprint(reference)):
-                    raise StaleResultError("Alignment inputs changed; estimate a new preview")
+                if result.fingerprints != (
+                    _fingerprint(source),
+                    _fingerprint(reference),
+                ):
+                    raise StaleResultError(
+                        "Alignment inputs changed; estimate a new preview"
+                    )
                 Calibration("validation", result.matrix)
-                if not np.isfinite(result.residuals).all() or not np.any(result.inliers):
+                if not np.isfinite(result.residuals).all() or not np.any(
+                    result.inliers
+                ):
                     raise ValueError("Alignment result has no valid inliers")
             staged = deepcopy(self._records)
             staged.update({r.source_dataset_id: deepcopy(r) for r in results})
             self._records = staged
-            self.reference_dataset_id, self.reference_acquisition_id, self.reference_channel = anchor
+            (
+                self.reference_dataset_id,
+                self.reference_acquisition_id,
+                self.reference_channel,
+            ) = anchor
             self.revision += 1
 
     def reset(self, dataset_id: str | None = None) -> None:
@@ -293,7 +328,9 @@ class DatasetAlignmentManager:
             else:
                 self._records.pop(dataset_id, None)
             if not self._records:
-                self.reference_dataset_id = self.reference_acquisition_id = self.reference_channel = None
+                self.reference_dataset_id = self.reference_acquisition_id = (
+                    self.reference_channel
+                ) = None
             self.revision += 1
 
     def is_stale(self, dataset_id: str) -> bool:
@@ -324,10 +361,14 @@ class DatasetAlignmentManager:
         if dataset_id not in self._records:
             raise ValueError("Dataset has no alignment to the selected reference")
         if self.is_stale(dataset_id):
-            raise StaleResultError("Dataset alignment is stale; estimate a new alignment")
+            raise StaleResultError(
+                "Dataset alignment is stale; estimate a new alignment"
+            )
         return self._records[dataset_id].matrix.copy()
 
-    def coordinates(self, dataset_id: str, rows: dict[str, np.ndarray], *, space: str = "raw") -> tuple:
+    def coordinates(
+        self, dataset_id: str, rows: dict[str, np.ndarray], *, space: str = "raw"
+    ) -> tuple:
         """Map rows from an explicitly stated local space into the common view.
 
         Args:
@@ -341,11 +382,15 @@ class DatasetAlignmentManager:
         from .transforms import project_points
 
         dataset = self.experiment.datasets[dataset_id]
-        x, y = dataset.transforms.convert_coordinates(rows, source_space=space, target_space="corrected")
+        x, y = dataset.transforms.convert_coordinates(
+            rows, source_space=space, target_space="corrected"
+        )
         result = project_points(self._matrix(dataset_id), np.column_stack([x, y]))
         return result[:, 0], result[:, 1]
 
-    def image(self, dataset_id: str, acquisition_id: str, channel: str, camera_frame: int) -> np.ndarray:
+    def image(
+        self, dataset_id: str, acquisition_id: str, channel: str, camera_frame: int
+    ) -> np.ndarray:
         """Resample a raw frame once into the reference canvas, on demand.
 
         Args:
@@ -362,19 +407,29 @@ class DatasetAlignmentManager:
         from .transforms import project_points
 
         dataset = self.experiment.datasets[dataset_id]
-        matrix = self._matrix(dataset_id) @ dataset.transforms.matrix(acquisition_id, channel, camera_frame)
+        matrix = self._matrix(dataset_id) @ dataset.transforms.matrix(
+            acquisition_id, channel, camera_frame
+        )
         source = dataset.acquisitions[acquisition_id].channels[channel]
         image = source[source.channel_index(camera_frame)]
         reference = self.experiment.datasets[self.reference_dataset_id]
         shape = (
-            reference.acquisitions[self.reference_acquisition_id].channels[self.reference_channel].shape[1:]
+            reference.acquisitions[self.reference_acquisition_id]
+            .channels[self.reference_channel]
+            .shape[1:]
         )
         y, x = np.indices(shape)
-        raw = project_points(np.linalg.inv(matrix), np.column_stack([x.ravel(), y.ravel()]))
+        raw = project_points(
+            np.linalg.inv(matrix), np.column_stack([x.ravel(), y.ravel()])
+        )
         valid = np.isfinite(raw).all(axis=1)
         raw[~valid] = -1e20
         pixels = map_coordinates(
-            image.astype(float), [raw[:, 1], raw[:, 0]], order=1, mode="constant", cval=0
+            image.astype(float),
+            [raw[:, 1], raw[:, 0]],
+            order=1,
+            mode="constant",
+            cval=0,
         )
         pixels[~valid] = 0
         return pixels.reshape(shape)
@@ -398,7 +453,11 @@ class AlignedDatasetView(Source):
     """One-frame-at-a-time experiment view; original pixels stay untouched."""
 
     def __init__(
-        self, manager: DatasetAlignmentManager, dataset_id: str, acquisition_id: str, channel: str
+        self,
+        manager: DatasetAlignmentManager,
+        dataset_id: str,
+        acquisition_id: str,
+        channel: str,
     ) -> None:
         self.manager, self.dataset_id, self.acquisition_id, self.channel = (
             manager,
@@ -406,12 +465,21 @@ class AlignedDatasetView(Source):
             acquisition_id,
             channel,
         )
-        self.source = manager.experiment.datasets[dataset_id].acquisitions[acquisition_id].channels[channel]
+        self.source = (
+            manager.experiment.datasets[dataset_id]
+            .acquisitions[acquisition_id]
+            .channels[channel]
+        )
         reference = manager.experiment.datasets[manager.reference_dataset_id]
-        canvas = reference.acquisitions[manager.reference_acquisition_id].channels[manager.reference_channel]
+        canvas = reference.acquisitions[manager.reference_acquisition_id].channels[
+            manager.reference_channel
+        ]
         self.shape, self.dtype = (len(self.source), *canvas.shape[1:]), np.dtype(float)
 
     def _frame(self, index: int) -> np.ndarray:
         return self.manager.image(
-            self.dataset_id, self.acquisition_id, self.channel, int(self.source.source_frames[index])
+            self.dataset_id,
+            self.acquisition_id,
+            self.channel,
+            int(self.source.source_frames[index]),
         )

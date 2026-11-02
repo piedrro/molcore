@@ -170,7 +170,11 @@ class SelectionPanel(QWidget):
         super().__init__(parent)
         self.session = session
         form = QFormLayout(self)
-        self.acquisition, self.channel, self.sequence = QComboBox(), QComboBox(), QComboBox()
+        self.acquisition, self.channel, self.sequence = (
+            QComboBox(),
+            QComboBox(),
+            QComboBox(),
+        )
         self.dataset = QComboBox()
         self.frame = QSpinBox()
         self.frame.setRange(0, 0)
@@ -193,7 +197,9 @@ class SelectionPanel(QWidget):
         self.channel.currentTextChanged.connect(self._selection)
         self.sequence.currentIndexChanged.connect(self._selection)
         self.frame.valueChanged.connect(self._frame)
-        self.cpus.valueChanged.connect(lambda v: setattr(session, "num_cpus", v or None))
+        self.cpus.valueChanged.connect(
+            lambda v: setattr(session, "num_cpus", v or None)
+        )
         session.selection_changed.connect(self.refresh)
         session.dataset_changed.connect(self.refresh)
         session.experiment_changed.connect(self.refresh)
@@ -208,7 +214,10 @@ class SelectionPanel(QWidget):
         Args:
             *_: Additional positional values supplied by the caller.
         """
-        blockers = [QSignalBlocker(w) for w in (self.dataset, self.acquisition, self.channel, self.sequence)]
+        blockers = [
+            QSignalBlocker(w)
+            for w in (self.dataset, self.acquisition, self.channel, self.sequence)
+        ]
         self.dataset.clear()
         for key, dataset in self.session.experiment.datasets.items():
             self.dataset.addItem(dataset.name, key)
@@ -219,14 +228,18 @@ class SelectionPanel(QWidget):
         self.acquisition.setCurrentText(self.session.acquisition_id or "")
         self.channel.clear()
         if self.session.acquisition_id in model.acquisitions:
-            self.channel.addItems(list(model.acquisitions[self.session.acquisition_id].channels))
+            self.channel.addItems(
+                list(model.acquisitions[self.session.acquisition_id].channels)
+            )
         self.channel.setCurrentText(self.session.channel or "")
         self.sequence.clear()
         self.sequence.addItem("Independent acquisition", None)
         for key, seq in model.sequences.items():
             if self.session.acquisition_id in seq.offsets:
                 self.sequence.addItem(key, key)
-        self.sequence.setCurrentIndex(max(0, self.sequence.findData(self.session.sequence_id)))
+        self.sequence.setCurrentIndex(
+            max(0, self.sequence.findData(self.session.sequence_id))
+        )
         del blockers
         self.options_refresh()
         self.frame_refresh()
@@ -243,9 +256,9 @@ class SelectionPanel(QWidget):
         """Frame refresh."""
         blocker = QSignalBlocker(self.frame)
         if self.session.acquisition_id is not None:
-            view = self.session.dataset.acquisitions[self.session.acquisition_id].channels[
-                self.session.channel
-            ]
+            view = self.session.dataset.acquisitions[
+                self.session.acquisition_id
+            ].channels[self.session.channel]
             self.frame.setRange(0, max(0, len(view) - 1))
             if len(view):
                 index = view.channel_index(self.session.camera_frame)
@@ -298,9 +311,9 @@ class SelectionPanel(QWidget):
             Computed NumPy array value.
         """
         if self.session.acquisition_id is not None:
-            view = self.session.dataset.acquisitions[self.session.acquisition_id].channels[
-                self.session.channel
-            ]
+            view = self.session.dataset.acquisitions[
+                self.session.acquisition_id
+            ].channels[self.session.channel]
             if len(view):
                 self.session.set_frame(int(view.source_frames[index]))
 
@@ -471,15 +484,27 @@ class CurvePreview(QWidget):
         """
         painter = QPainter(self)
         if len(self.frames) < 2:
-            painter.drawText(self.rect(), Qt.AlignCenter, "Drift preview: dx (red), dy (blue)")
+            painter.drawText(
+                self.rect(), Qt.AlignCenter, "Drift preview: dx (red), dy (blue)"
+            )
             return
         values = self.values
         low, high = float(values.min()), float(values.max())
-        x = 8 + (self.width() - 16) * (self.frames - self.frames.min()) / max(1, np.ptp(self.frames))
+        x = 8 + (self.width() - 16) * (self.frames - self.frames.min()) / max(
+            1, np.ptp(self.frames)
+        )
         for axis, color in enumerate(("#ef5350", "#42a5f5")):
-            y = self.height() - 8 - (self.height() - 16) * (values[:, axis] - low) / max(1e-9, high - low)
+            y = (
+                self.height()
+                - 8
+                - (self.height() - 16) * (values[:, axis] - low) / max(1e-9, high - low)
+            )
             painter.setPen(QColor(color))
-            painter.drawPolyline(QPolygonF([QPointF(float(a), float(b)) for a, b in zip(x, y, strict=True)]))
+            painter.drawPolyline(
+                QPolygonF(
+                    [QPointF(float(a), float(b)) for a, b in zip(x, y, strict=True)]
+                )
+            )
 
 
 class MaskPreview(QLabel):
@@ -492,12 +517,22 @@ class MaskPreview(QLabel):
         """
         labels = segmentation.labels
         source = segmentation.source_image
-        gray = np.zeros(labels.shape) if source is None else np.asarray(source, dtype=float)
+        gray = (
+            np.zeros(labels.shape)
+            if source is None
+            else np.asarray(source, dtype=float)
+        )
         low, high = np.nanpercentile(gray, [1, 99])
         gray = np.nan_to_num(np.clip((gray - low) / max(1e-9, high - low), 0, 1)) * 255
         rgb = np.repeat(gray[..., None], 3, axis=2)
         colors = np.stack([(labels * p) % 255 for p in (67, 131, 197)], axis=-1)
         rgb[labels > 0] = 0.4 * rgb[labels > 0] + 0.6 * colors[labels > 0]
         rgb = np.ascontiguousarray(rgb, dtype=np.uint8)
-        image = QImage(rgb.data, rgb.shape[1], rgb.shape[0], rgb.strides[0], QImage.Format_RGB888).copy()
-        self.setPixmap(QPixmap.fromImage(image).scaled(300, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        image = QImage(
+            rgb.data, rgb.shape[1], rgb.shape[0], rgb.strides[0], QImage.Format_RGB888
+        ).copy()
+        self.setPixmap(
+            QPixmap.fromImage(image).scaled(
+                300, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+        )

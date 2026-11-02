@@ -75,11 +75,15 @@ class DependencyToken:
         from .types import StaleResultError
 
         try:
-            current = dependency_token(dataset, self.partitions, components=self.components)
+            current = dependency_token(
+                dataset, self.partitions, components=self.components
+            )
         except (KeyError, ValueError) as exc:
             raise StaleResultError("Result input partition no longer exists") from exc
         if current != self:
-            raise StaleResultError("Result inputs changed; compute a new preview before applying")
+            raise StaleResultError(
+                "Result inputs changed; compute a new preview before applying"
+            )
 
 
 FreshnessToken = StateToken | DependencyToken

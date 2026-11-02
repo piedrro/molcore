@@ -11,15 +11,31 @@ from qtpy.QtWidgets import QDoubleSpinBox, QFileDialog
 
 from .. import clustering, colocalisation, filtering, rendering
 from .._logging import logged
-from ..types.analysis import ClusteringSettings, ColocalisationSettings, FilterSettings, RenderSettings
-from ._analysis import AnalysisTool, numeric_metrics, partition_rows, refresh_combo, settings_metadata
+from ..types.analysis import (
+    ClusteringSettings,
+    ColocalisationSettings,
+    FilterSettings,
+    RenderSettings,
+)
+from ._analysis import (
+    AnalysisTool,
+    numeric_metrics,
+    partition_rows,
+    refresh_combo,
+    settings_metadata,
+)
 from ._common import SettingsForm, combo
 
 if TYPE_CHECKING:
     from qtpy.QtWidgets import QWidget
 
     from ..types import Dataset, ProgressCallback
-    from ..types.analysis import ClusteringResult, ColocalisationResult, FilterResult, RenderResult
+    from ..types.analysis import (
+        ClusteringResult,
+        ColocalisationResult,
+        FilterResult,
+        RenderResult,
+    )
     from .session import UiSession
 
 
@@ -36,7 +52,9 @@ class ResultsFilterWidget(AnalysisTool):
         super().__init__(session, parent)
         self.target = self.field("Target", combo(["localizations", "tracks"]))
         self.metric = self.field("Numeric metric", combo([]))
-        self.aggregation = self.field("Track aggregation", combo(["mean", "median", "min", "max", "std"]))
+        self.aggregation = self.field(
+            "Track aggregation", combo(["mean", "median", "min", "max", "std"])
+        )
         self.minimum, self.maximum = QDoubleSpinBox(), QDoubleSpinBox()
         for control in (self.minimum, self.maximum):
             control.setDecimals(6)
@@ -60,7 +78,9 @@ class ResultsFilterWidget(AnalysisTool):
         Args:
             *_: Additional positional values supplied by the caller.
         """
-        rows = partition_rows(self.session, tracks=self.target.currentText() == "tracks")
+        rows = partition_rows(
+            self.session, tracks=self.target.currentText() == "tracks"
+        )
         refresh_combo(self.metric, numeric_metrics(rows))
         self.aggregation.setEnabled(self.target.currentText() == "tracks")
 
@@ -77,7 +97,9 @@ class ResultsFilterWidget(AnalysisTool):
             self.aggregation.currentText(),
         )
 
-        def compute(model: Dataset, progress: ProgressCallback | None, cancel: Any) -> FilterResult:
+        def compute(
+            model: Dataset, progress: ProgressCallback | None, cancel: Any
+        ) -> FilterResult:
             """Compute a detached result using the current controls.
 
             Args:
@@ -89,7 +111,13 @@ class ResultsFilterWidget(AnalysisTool):
                 Detached result produced by this background computation.
             """
             return filtering.filter_results(
-                model, a, c, settings=settings, space=space, progress=progress, cancel_event=cancel
+                model,
+                a,
+                c,
+                settings=settings,
+                space=space,
+                progress=progress,
+                cancel_event=cancel,
             )
 
         def complete(result: Any) -> None:
@@ -99,7 +127,8 @@ class ResultsFilterWidget(AnalysisTool):
                 result: Detached computation result to inspect or apply.
             """
             self.ready(
-                result, f"{len(result.selected_ids)} {settings.target} selected; source data unchanged"
+                result,
+                f"{len(result.selected_ids)} {settings.target} selected; source data unchanged",
             )
             self.show_columns(result.columns)
             self.histogram(result.values, settings.metric)
@@ -137,7 +166,9 @@ class ClusteringWidget(AnalysisTool):
         session, settings = self.session, self.settings_form.value()
         a, c, space = session.acquisition_id, session.channel, session.space
 
-        def compute(model: Dataset, progress: ProgressCallback | None, cancel: Any) -> ClusteringResult:
+        def compute(
+            model: Dataset, progress: ProgressCallback | None, cancel: Any
+        ) -> ClusteringResult:
             """Compute a detached result using the current controls.
 
             Args:
@@ -149,7 +180,13 @@ class ClusteringWidget(AnalysisTool):
                 Detached result produced by this background computation.
             """
             return clustering.cluster_localizations(
-                model, a, c, settings=settings, space=space, progress=progress, cancel_event=cancel
+                model,
+                a,
+                c,
+                settings=settings,
+                space=space,
+                progress=progress,
+                cancel_event=cancel,
             )
 
         def complete(result: Any) -> None:
@@ -167,9 +204,18 @@ class ClusteringWidget(AnalysisTool):
             self.plot.clear()
             for label in np.unique(rows["cluster"]):
                 mask = rows["cluster"] == label
-                color = (140, 140, 140) if label < 0 else __import__("pyqtgraph").intColor(int(label))
+                color = (
+                    (140, 140, 140)
+                    if label < 0
+                    else __import__("pyqtgraph").intColor(int(label))
+                )
                 self.plot.plot(
-                    rows["x"][mask], rows["y"][mask], pen=None, symbol="o", symbolSize=6, symbolBrush=color
+                    rows["x"][mask],
+                    rows["y"][mask],
+                    pen=None,
+                    symbol="o",
+                    symbolSize=6,
+                    symbolBrush=color,
                 )
             self.plot.setLabel("bottom", "x (coordinate pixels)")
             self.plot.setLabel("left", "y (coordinate pixels)")
@@ -182,7 +228,9 @@ class ClusteringWidget(AnalysisTool):
         from ._analysis import export_columns
 
         self.require_preview()
-        path, _ = QFileDialog.getSaveFileName(self, "Export cluster centroids", "", "CSV (*.csv)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export cluster centroids", "", "CSV (*.csv)"
+        )
         if path:
             export_columns(path, self.preview.centroids)
 
@@ -217,7 +265,9 @@ class ColocalisationWidget(AnalysisTool):
         """
         session = self.session
         channels = (
-            session.dataset.acquisitions[session.acquisition_id].channels if session.acquisition_id else {}
+            session.dataset.acquisitions[session.acquisition_id].channels
+            if session.acquisition_id
+            else {}
         )
         refresh_combo(self.target, [c for c in channels if c != session.channel])
 
@@ -234,7 +284,9 @@ class ColocalisationWidget(AnalysisTool):
         if not target:
             raise ValueError("A second channel is required")
 
-        def compute(model: Dataset, progress: ProgressCallback | None, cancel: Any) -> ColocalisationResult:
+        def compute(
+            model: Dataset, progress: ProgressCallback | None, cancel: Any
+        ) -> ColocalisationResult:
             """Compute a detached result using the current controls.
 
             Args:
@@ -246,7 +298,14 @@ class ColocalisationWidget(AnalysisTool):
                 Detached result produced by this background computation.
             """
             return colocalisation.colocalise(
-                model, a, c, target, settings=settings, space=space, progress=progress, cancel_event=cancel
+                model,
+                a,
+                c,
+                target,
+                settings=settings,
+                space=space,
+                progress=progress,
+                cancel_event=cancel,
             )
 
         def complete(result: Any) -> None:
@@ -262,7 +321,13 @@ class ColocalisationWidget(AnalysisTool):
             )
             self.show_columns(result.columns)
             self.plot.clear()
-            self.plot.plot(result.columns["x"], result.columns["y"], pen=None, symbol="+", symbolSize=10)
+            self.plot.plot(
+                result.columns["x"],
+                result.columns["y"],
+                pen=None,
+                symbol="+",
+                symbolSize=10,
+            )
             self.plot.setLabel("bottom", "Midpoint x (coordinate pixels)")
             self.plot.setLabel("left", "Midpoint y (coordinate pixels)")
 
@@ -309,7 +374,9 @@ class LocalisationRenderWidget(AnalysisTool):
         session, settings = self.session, self.settings_form.value()
         a, c, space = session.acquisition_id, session.channel, session.space
 
-        def compute(model: Dataset, progress: ProgressCallback | None, cancel: Any) -> RenderResult:
+        def compute(
+            model: Dataset, progress: ProgressCallback | None, cancel: Any
+        ) -> RenderResult:
             """Compute a detached result using the current controls.
 
             Args:
@@ -321,7 +388,13 @@ class LocalisationRenderWidget(AnalysisTool):
                 Detached result produced by this background computation.
             """
             return rendering.render_localizations(
-                model, a, c, settings=settings, space=space, progress=progress, cancel_event=cancel
+                model,
+                a,
+                c,
+                settings=settings,
+                space=space,
+                progress=progress,
+                cancel_event=cancel,
             )
 
         def complete(result: Any) -> None:
@@ -362,12 +435,20 @@ class LocalisationRenderWidget(AnalysisTool):
         from ..files import atomic_files
 
         self.require_preview()
-        path, _ = QFileDialog.getSaveFileName(self, "Export density image", "", "TIFF (*.tif)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export density image", "", "TIFF (*.tif)"
+        )
         if path:
             result = self.preview
             metadata = settings_metadata(result)
-            metadata.update(origin=result.origin, pixel_spacing=result.pixel_spacing, count=result.count)
+            metadata.update(
+                origin=result.origin,
+                pixel_spacing=result.pixel_spacing,
+                count=result.count,
+            )
             sidecar = Path(path).with_suffix(".json")
             with atomic_files([path, sidecar]) as (image_path, metadata_path):
                 tifffile.imwrite(image_path, result.image, metadata=metadata)
-                metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+                metadata_path.write_text(
+                    json.dumps(metadata, indent=2), encoding="utf-8"
+                )

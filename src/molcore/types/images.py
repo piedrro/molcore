@@ -37,7 +37,9 @@ def _shape(shape: tuple[int, ...]) -> tuple[int, int, int]:
 
 
 @logged
-def selection(key: int | slice | ArrayLike, length: int) -> tuple[np.ndarray, bool, tuple]:
+def selection(
+    key: int | slice | ArrayLike, length: int
+) -> tuple[np.ndarray, bool, tuple]:
     """Selection.
 
     Args:
@@ -51,7 +53,9 @@ def selection(key: int | slice | ArrayLike, length: int) -> tuple[np.ndarray, bo
     parts = parts or (slice(None),)
     ellipses = [i for i, part in enumerate(parts) if part is Ellipsis]
     if len(ellipses) > 1 or len(parts) > 3 or any(part is None for part in parts):
-        raise IndexError("Use at most three indices and one ellipsis; new axes are unsupported")
+        raise IndexError(
+            "Use at most three indices and one ellipsis; new axes are unsupported"
+        )
     if ellipses:
         index = ellipses[0]
         parts = parts[:index] + (slice(None),) * (4 - len(parts)) + parts[index + 1 :]
@@ -97,7 +101,11 @@ class Source:
         if scalar:
             return self._frame(int(indices[0]))[spatial or (...,)]
         frames = [self._frame(int(i)) for i in indices]
-        data = np.stack(frames) if frames else np.empty((0, *self.shape[1:]), dtype=self.dtype)
+        data = (
+            np.stack(frames)
+            if frames
+            else np.empty((0, *self.shape[1:]), dtype=self.dtype)
+        )
         return data[(slice(None), *spatial)]
 
     @logged
@@ -129,7 +137,9 @@ class Source:
         try:
             import dask.array as da
         except ImportError as exc:
-            raise ImportError("Dask is missing; reinstall MolCore with its runtime dependencies") from exc
+            raise ImportError(
+                "Dask is missing; reinstall MolCore with its runtime dependencies"
+            ) from exc
         return da.from_array(
             self,
             chunks=chunks or (1, *self.shape[1:]),
@@ -218,7 +228,9 @@ class TiffSource(Source):
                 mapped = tifffile.memmap(self.path)
                 del mapped
             except ValueError as exc:
-                raise ValueError("TIFF must be frame-addressable or memory-mappable") from exc
+                raise ValueError(
+                    "TIFF must be frame-addressable or memory-mappable"
+                ) from exc
 
     def _frame(self, index: int) -> np.ndarray:
         """Read one original image frame from the bound source.
@@ -261,12 +273,18 @@ class FitsSource(Source):
         try:
             from astropy.io import fits
         except ImportError as exc:
-            raise ImportError("Astropy is missing; reinstall MolCore with its runtime dependencies") from exc
+            raise ImportError(
+                "Astropy is missing; reinstall MolCore with its runtime dependencies"
+            ) from exc
         self.path, self.hdu = str(Path(path).resolve()), hdu
         with fits.open(self.path, memmap=False) as file:
             header = file[hdu].header
-            self.shape = _shape(tuple(header[f"NAXIS{i}"] for i in range(header["NAXIS"], 0, -1)))
-            self.dtype = np.dtype(file[hdu].section[(slice(0, 1),) * header["NAXIS"]].dtype)
+            self.shape = _shape(
+                tuple(header[f"NAXIS{i}"] for i in range(header["NAXIS"], 0, -1))
+            )
+            self.dtype = np.dtype(
+                file[hdu].section[(slice(0, 1),) * header["NAXIS"]].dtype
+            )
 
     def _frame(self, index: int) -> np.ndarray:
         """Read one original image frame from the bound source.
@@ -336,7 +354,10 @@ class MissingSource(Source):
     """
 
     def __init__(
-        self, shape: tuple[int, ...], dtype: np.dtype | str, reason: str = "Raw images were not saved"
+        self,
+        shape: tuple[int, ...],
+        dtype: np.dtype | str,
+        reason: str = "Raw images were not saved",
     ) -> None:
         """Initialise the object and validate its configuration.
 

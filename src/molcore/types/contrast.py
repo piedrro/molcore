@@ -47,7 +47,9 @@ class ContrastSettings:
         if (
             not isinstance(self.percentiles, tuple)
             or len(self.percentiles) != 2
-            or any(isinstance(v, bool) or not isinstance(v, Real) for v in self.percentiles)
+            or any(
+                isinstance(v, bool) or not isinstance(v, Real) for v in self.percentiles
+            )
         ):
             raise ValueError("percentiles must be a pair of real numbers")
         low, high = self.percentiles
@@ -55,7 +57,9 @@ class ContrastSettings:
             raise ValueError("Require 0 <= lower percentile < upper percentile <= 100")
         for name in ("max_frames", "max_pixels_per_frame"):
             value = getattr(self, name)
-            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 1
+            ):
                 raise ValueError(f"{name} must be a positive integer or None")
 
 

@@ -30,7 +30,9 @@ def _homography(source: np.ndarray, target: np.ndarray) -> np.ndarray:
         if radius <= np.finfo(float).eps:
             raise ValueError("Homography fiducials are degenerate")
         scale = np.sqrt(2) / radius
-        transform = np.array([[scale, 0, -scale * center[0]], [0, scale, -scale * center[1]], [0, 0, 1]])
+        transform = np.array(
+            [[scale, 0, -scale * center[0]], [0, scale, -scale * center[1]], [0, 0, 1]]
+        )
         transforms.append(transform)
         normalized.append(project_points(transform, points))
     src, dst = normalized
@@ -94,7 +96,9 @@ def fit_transform(
         raise ValueError("Fiducials must be finite")
     minimum = {"translation": 1, "affine": 3, "homography": 4}.get(model)
     if minimum is None or len(source) < minimum:
-        raise ValueError("Choose translation (1+), affine (3+), or homography (4+) fiducial pairs")
+        raise ValueError(
+            "Choose translation (1+), affine (3+), or homography (4+) fiducial pairs"
+        )
     if (
         not np.isfinite(ransac_threshold)
         or ransac_threshold <= 0
@@ -143,14 +147,26 @@ def _job(payload: tuple, reporter: WorkerProgress) -> tuple:
     Returns:
         Computed tuple value.
     """
-    source, target, source_ids, target_ids, model, match_radius, matched, threshold, trials = payload
+    (
+        source,
+        target,
+        source_ids,
+        target_ids,
+        model,
+        match_radius,
+        matched,
+        threshold,
+        trials,
+    ) = payload
     reporter.report(0, 1, "Matching channel fiducials")
     if not matched:
         from scipy.spatial import cKDTree
 
         distances, nearest = cKDTree(target).query(source)
         _, reverse = cKDTree(source).query(target)
-        keep = (distances <= match_radius) & (reverse[nearest] == np.arange(len(source)))
+        keep = (distances <= match_radius) & (
+            reverse[nearest] == np.arange(len(source))
+        )
         source, source_ids = source[keep], source_ids[keep]
         target, target_ids = target[nearest[keep]], target_ids[nearest[keep]]
     reporter.report(0.5, 1, "Estimating channel transform")
@@ -175,13 +191,17 @@ def _rows(
     Returns:
         Detached named result columns.
     """
-    rows = dataset.localizations.query(acquisition_id=acquisition_id, channel=channel, ids=ids, space="raw")
+    rows = dataset.localizations.query(
+        acquisition_id=acquisition_id, channel=channel, ids=ids, space="raw"
+    )
     if len(rows["id"]) == 0:
         raise ValueError("No fiducial localizations in selected channel")
     if ids is not None:
         ids = identifiers(ids)
         if len(np.unique(ids)) != len(ids) or len(rows["id"]) != len(ids):
-            raise ValueError("Fiducial IDs must exist, be unique, and belong to the selected channel")
+            raise ValueError(
+                "Fiducial IDs must exist, be unique, and belong to the selected channel"
+            )
         positions = {int(value): i for i, value in enumerate(rows["id"])}
         order = [positions[int(value)] for value in ids]
         rows = {k: v[order] for k, v in rows.items()}
@@ -229,22 +249,41 @@ def _run(
     Returns:
         Result retaining the input format or backend-specific representation.
     """
-    if source_channel == target_channel or model not in ("translation", "affine", "homography"):
-        raise ValueError("Choose distinct channels and translation, affine or homography alignment")
+    if source_channel == target_channel or model not in (
+        "translation",
+        "affine",
+        "homography",
+    ):
+        raise ValueError(
+            "Choose distinct channels and translation, affine or homography alignment"
+        )
     matched = source_ids is not None and target_ids is not None
     if (source_ids is None) != (target_ids is None):
         raise ValueError("Supply both source_ids and target_ids, or neither")
-    if not matched and (match_radius is None or not np.isfinite(match_radius) or match_radius <= 0):
-        raise ValueError("Automatic matching requires an explicit positive match_radius")
+    if not matched and (
+        match_radius is None or not np.isfinite(match_radius) or match_radius <= 0
+    ):
+        raise ValueError(
+            "Automatic matching requires an explicit positive match_radius"
+        )
     acquisition = dataset.acquisitions[acquisition_id]
-    if source_channel not in acquisition.channels or target_channel not in acquisition.channels:
+    if (
+        source_channel not in acquisition.channels
+        or target_channel not in acquisition.channels
+    ):
         raise ValueError("Unknown alignment channel")
     source_emission = acquisition.channel_specs[source_channel].emission
     target_emission = acquisition.channel_specs[target_channel].emission
     if source_emission is not None and source_emission == target_emission:
         raise ValueError("Choose distinct physical emission paths")
-    if acquisition.mode in ("fret", "alex") and source_emission == "D" and target_emission == "A":
-        raise ValueError("Donor emission is the optical reference; align acceptor into donor")
+    if (
+        acquisition.mode in ("fret", "alex")
+        and source_emission == "D"
+        and target_emission == "A"
+    ):
+        raise ValueError(
+            "Donor emission is the optical reference; align acceptor into donor"
+        )
     expected = snapshot(dataset, acquisition_id)
     source, source_ids = _rows(dataset, acquisition_id, source_channel, source_ids)
     target, target_ids = _rows(dataset, acquisition_id, target_channel, target_ids)
@@ -266,7 +305,9 @@ def _run(
             _job, [payload], progress=progress, cancel_event=cancel_event
         )[0]
     check_snapshot(dataset, acquisition_id, expected)
-    reference_matrix = dataset.transforms._registration(acquisition_id, target_channel) @ matrix
+    reference_matrix = (
+        dataset.transforms._registration(acquisition_id, target_channel) @ matrix
+    )
     result = AlignmentResult(
         acquisition_id,
         str(source_channel),

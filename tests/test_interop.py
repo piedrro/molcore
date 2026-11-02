@@ -34,9 +34,15 @@ class InteropTests(unittest.TestCase):
         exp = Dataset()
         for name in ("a", "b"):
             exp.add_acquisition(Acquisition(ArraySource(np.zeros((3, 9, 9))), id=name))
-        seq = exp.add_sequence(["a", "b"], id="s", allow_cross_boundary_tracks=True, reference="camera")
+        seq = exp.add_sequence(
+            ["a", "b"], id="s", allow_cross_boundary_tracks=True, reference="camera"
+        )
         ids = exp.localizations.add(
-            acquisition_id=["a", "b"], channel="image", frame=[2, 0], x=[1.0, 2.0], y=[3.0, 4.0]
+            acquisition_id=["a", "b"],
+            channel="image",
+            frame=[2, 0],
+            x=[1.0, 2.0],
+            y=[3.0, 4.0],
         )
         exp.tracks.add(ids, sequence_id=seq.id)
         rows = exp.localizations.query(sequence_id="s")
@@ -44,7 +50,9 @@ class InteropTests(unittest.TestCase):
             napari_points(rows, frame_column="sequence_frame"), [[2, 3, 1], [3, 4, 2]]
         )
         np.testing.assert_array_equal(
-            napari_tracks(exp.tracks.query(sequence_id="s"), frame_column="sequence_frame"),
+            napari_tracks(
+                exp.tracks.query(sequence_id="s"), frame_column="sequence_frame"
+            ),
             [[1, 2, 3, 1], [1, 3, 4, 2]],
         )
         with self.assertRaises(ValueError):

@@ -47,7 +47,11 @@ def from_observations(
         raise ValueError("Select an available numeric measurement column")
     mask = rows["run_id"] == run_id
     selected = {k: v[mask] for k, v in rows.items()}
-    settings = dataset.processing.settings.get("photometry", {}).get(run_id, {}).get("settings", {})
+    settings = (
+        dataset.processing.settings.get("photometry", {})
+        .get(run_id, {})
+        .get("settings", {})
+    )
     return from_columns(
         selected,
         run_id=run_id,
@@ -85,7 +89,10 @@ def from_columns(
     """
     selected = columns
     required = {"acquisition_id", "channel", "molecule_id", "frame", value_column}
-    if not required <= selected.keys() or selected[value_column].dtype.kind not in "iuf":
+    if (
+        not required <= selected.keys()
+        or selected[value_column].dtype.kind not in "iuf"
+    ):
         raise ValueError("Missing or nonnumeric sequence sample fields")
     if len({len(v) for v in selected.values()}) > 1:
         raise ValueError("Sample columns must have equal lengths")
@@ -112,7 +119,14 @@ def from_columns(
         "track_id",
     }
     groups = sorted(
-        set(zip(selected["acquisition_id"], selected["channel"], selected["molecule_id"], strict=True))
+        set(
+            zip(
+                selected["acquisition_id"],
+                selected["channel"],
+                selected["molecule_id"],
+                strict=True,
+            )
+        )
     )
     result = []
     for acquisition, channel, molecule in groups:
@@ -122,10 +136,14 @@ def from_columns(
             & (selected["molecule_id"] == molecule)
         )
         indexes = indexes[np.argsort(selected["frame"][indexes], kind="stable")]
-        anchors = selected.get("localization_id", np.zeros(len(selected["frame"]), dtype=np.uint64))[indexes]
+        anchors = selected.get(
+            "localization_id", np.zeros(len(selected["frame"]), dtype=np.uint64)
+        )[indexes]
         localization_ids = np.unique(anchors)
         tracks = np.unique(
-            selected.get("track_id", np.zeros(len(selected["frame"]), dtype=np.uint64))[indexes]
+            selected.get("track_id", np.zeros(len(selected["frame"]), dtype=np.uint64))[
+                indexes
+            ]
         )
         positions = (
             np.column_stack((selected["x"][indexes], selected["y"][indexes]))
@@ -154,7 +172,9 @@ def from_columns(
                 frames=selected["frame"][indexes],
                 photons=selected[value_column][indexes],
                 positions=positions,
-                timestamps=selected["timestamp"][indexes] if "timestamp" in selected else None,
+                timestamps=(
+                    selected["timestamp"][indexes] if "timestamp" in selected else None
+                ),
                 valid=selected["valid"][indexes] if "valid" in selected else None,
                 molecule_id=str(molecule),
                 unit=unit,
@@ -164,9 +184,11 @@ def from_columns(
                 depends_on_localizations=depends_on_localizations,
                 localization_ids=anchors,
                 measurements=measurements,
-                localization_id=int(localization_ids[0])
-                if len(localization_ids) == 1 and localization_ids[0]
-                else None,
+                localization_id=(
+                    int(localization_ids[0])
+                    if len(localization_ids) == 1 and localization_ids[0]
+                    else None
+                ),
                 track_id=int(tracks[0]) if len(tracks) == 1 and tracks[0] else None,
                 metadata={
                     **(metadata or {}),
@@ -197,7 +219,11 @@ def to_columns(sequences: Sequence[PhotonSequence]) -> dict[str, np.ndarray]:
     pieces = []
     for sequence in sequences:
         n = len(sequence.frames)
-        positions = sequence.positions if sequence.positions is not None else np.full((n, 2), np.nan)
+        positions = (
+            sequence.positions
+            if sequence.positions is not None
+            else np.full((n, 2), np.nan)
+        )
         piece = dict(
             id=np.array([f"{sequence.id}:{i}" for i in range(n)]),
             sequence_id=np.full(n, sequence.id),
@@ -205,7 +231,11 @@ def to_columns(sequences: Sequence[PhotonSequence]) -> dict[str, np.ndarray]:
             acquisition_id=np.full(n, sequence.acquisition_id),
             channel=np.full(n, sequence.channel),
             molecule_id=np.full(n, sequence.molecule_id or sequence.id),
-            run_id=np.full(n, sequence.run_id or str(sequence.metadata.get("source_run_id", sequence.id))),
+            run_id=np.full(
+                n,
+                sequence.run_id
+                or str(sequence.metadata.get("source_run_id", sequence.id)),
+            ),
             frame=sequence.frames.copy(),
             timestamp=sequence.timestamps.copy(),
             intensity=sequence.photons.copy(),
@@ -219,7 +249,9 @@ def to_columns(sequences: Sequence[PhotonSequence]) -> dict[str, np.ndarray]:
         )
         for name in metrics:
             piece[name] = (
-                sequence.measurements[name].copy() if name in sequence.measurements else np.full(n, np.nan)
+                sequence.measurements[name].copy()
+                if name in sequence.measurements
+                else np.full(n, np.nan)
             )
         pieces.append(piece)
     if not pieces:
@@ -250,7 +282,10 @@ def to_columns(sequences: Sequence[PhotonSequence]) -> dict[str, np.ndarray]:
 
 @logged
 def apply_photon_sequences(
-    dataset: Dataset, result: PhotonSequenceResult, *, expected: FreshnessToken | None = None
+    dataset: Dataset,
+    result: PhotonSequenceResult,
+    *,
+    expected: FreshnessToken | None = None,
 ) -> PhotonSequenceResult:
     """Atomically add a trace run directly to the primary photon-sequence collection.
 
@@ -290,4 +325,6 @@ def apply_photon_sequences(
         )
         return replace(result, sequence_ids=ids)
 
-    return transact(dataset, commit, expected=result.expected if expected is None else expected)
+    return transact(
+        dataset, commit, expected=result.expected if expected is None else expected
+    )

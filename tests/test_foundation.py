@@ -35,7 +35,9 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual(acquisition.channels["DD"].shape, (3, 4, 3))
         self.assertEqual(acquisition.channels["AA"].source_frames.tolist(), [1, 3])
         np.testing.assert_array_equal(acquisition.channels["DD"][2], frames[4, :, :3])
-        np.testing.assert_array_equal(acquisition.channels["AA"][::-1], frames[[3, 1], :, 3:])
+        np.testing.assert_array_equal(
+            acquisition.channels["AA"][::-1], frames[[3, 1], :, 3:]
+        )
         self.assertEqual(acquisition.channels["AA"].frame_info(1).camera_frame, 3)
         with self.assertRaises(IndexError):
             acquisition.channels["AA"][2]
@@ -87,12 +89,21 @@ class TableTests(unittest.TestCase):
             localization_id=[int(self.ids[1])],
         )
         self.exp.localizations.move(self.ids[1], x=7, y=6)
-        self.assertEqual(self.exp.localizations.query(ids=[self.ids[1]])["x"].tolist(), [7.0])
-        self.assertEqual(self.exp.localizations.query(ids=[self.ids[1]], original=True)["x"].tolist(), [2.0])
+        self.assertEqual(
+            self.exp.localizations.query(ids=[self.ids[1]])["x"].tolist(), [7.0]
+        )
+        self.assertEqual(
+            self.exp.localizations.query(ids=[self.ids[1]], original=True)[
+                "x"
+            ].tolist(),
+            [2.0],
+        )
         self.assertEqual(len(self.exp.observations.query()["id"]), 0)
         self.assertEqual(len(self.exp.observations.query(include_stale=True)["id"]), 1)
         selected.to_columns()["x"][0] = 100
-        self.assertEqual(self.exp.localizations.query(ids=[self.ids[1]])["x"].tolist(), [7.0])
+        self.assertEqual(
+            self.exp.localizations.query(ids=[self.ids[1]])["x"].tolist(), [7.0]
+        )
 
     def test_track_membership_split_merge_and_deletion(self):
         track = self.exp.tracks.add(self.ids)
@@ -100,17 +111,25 @@ class TableTests(unittest.TestCase):
         self.assertEqual(self.exp.tracks.query(track_id=split)["frame"].tolist(), [2])
         self.exp.tracks.merge([track, split])
         self.exp.localizations.delete([self.ids[1]])
-        self.assertEqual(self.exp.tracks.query(track_id=track)["frame"].tolist(), [0, 2])
+        self.assertEqual(
+            self.exp.tracks.query(track_id=track)["frame"].tolist(), [0, 2]
+        )
         with self.assertRaises(ValueError):
             self.exp.tracks.add([self.ids[0]])
 
     def test_invalid_edit_is_atomic_and_ids_are_not_reused(self):
         before = self.exp.localizations.query()
         with self.assertRaises(ValueError):
-            self.exp.localizations.add(acquisition_id=["a"], channel=["image"], frame=[100], x=[0], y=[0])
-        np.testing.assert_array_equal(self.exp.localizations.query()["id"], before["id"])
+            self.exp.localizations.add(
+                acquisition_id=["a"], channel=["image"], frame=[100], x=[0], y=[0]
+            )
+        np.testing.assert_array_equal(
+            self.exp.localizations.query()["id"], before["id"]
+        )
         self.exp.localizations.delete(self.ids)
-        added = self.exp.localizations.add(acquisition_id="a", channel="image", frame=0, x=1, y=2)
+        added = self.exp.localizations.add(
+            acquisition_id="a", channel="image", frame=0, x=1, y=2
+        )
         self.assertGreater(int(added[0]), int(self.ids[-1]))
 
 

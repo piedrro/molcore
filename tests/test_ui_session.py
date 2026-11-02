@@ -29,7 +29,9 @@ class SessionTests(unittest.TestCase):
         session = UiSession(original)
         changes = []
         session.results_changed.connect(lambda: changes.append(True))
-        original.localizations.add(acquisition_id="a", channel="image", frame=[0], x=[2], y=[2])
+        original.localizations.add(
+            acquisition_id="a", channel="image", frame=[0], x=[2], y=[2]
+        )
         self.app.processEvents()
         self.assertEqual(changes, [True])
         self.assertTrue(session.dirty)
@@ -54,9 +56,13 @@ class SessionTests(unittest.TestCase):
 
     def test_clone_detaches_results_but_keeps_lazy_sources(self):
         original = dataset()
-        original.localizations.add(acquisition_id="a", channel="image", frame=[0], x=[3], y=[3])
+        original.localizations.add(
+            acquisition_id="a", channel="image", frame=[0], x=[3], y=[3]
+        )
         frozen = clone_dataset(original)
-        self.assertIs(frozen.acquisitions["a"].source, original.acquisitions["a"].source)
+        self.assertIs(
+            frozen.acquisitions["a"].source, original.acquisitions["a"].source
+        )
         frozen.localizations.move(1, x=4, y=4)
         self.assertEqual(original.localizations.query()["x"][0], 3)
         self.assertIs(frozen.localizations.dataset, frozen)
@@ -83,8 +89,12 @@ class SessionTests(unittest.TestCase):
         gate = threading.Event()
         errors, commits = [], []
         session.error.connect(errors.append)
-        session.submit(lambda m, p, c: gate.wait(2), commit=lambda m, r: commits.append(r))
-        model.localizations.add(acquisition_id="a", channel="image", frame=[0], x=[2], y=[2])
+        session.submit(
+            lambda m, p, c: gate.wait(2), commit=lambda m, r: commits.append(r)
+        )
+        model.localizations.add(
+            acquisition_id="a", channel="image", frame=[0], x=[2], y=[2]
+        )
         gate.set()
         self.pump(session)
         self.assertFalse(commits)

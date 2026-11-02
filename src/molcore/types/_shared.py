@@ -85,7 +85,9 @@ class ChannelSpec:
         """Validate the immutable record after construction."""
         if self.frame_start < 0 or self.frame_step < 1:
             raise ValueError("Channel start/step must be nonnegative/positive")
-        if self.emission is not None and (not isinstance(self.emission, str) or not self.emission):
+        if self.emission is not None and (
+            not isinstance(self.emission, str) or not self.emission
+        ):
             raise ValueError("Emission must be a nonempty physical path label or None")
         if self.roi is not None:
             object.__setattr__(self, "roi", tuple(self.roi))
@@ -171,7 +173,11 @@ class Calibration:
         ):
             raise ValueError("Registration must be an invertible 3x3 projective matrix")
         # Immutable backing bytes also prevent callers re-enabling writeability.
-        object.__setattr__(self, "matrix", np.frombuffer(matrix.tobytes(), dtype=matrix.dtype).reshape(3, 3))
+        object.__setattr__(
+            self,
+            "matrix",
+            np.frombuffer(matrix.tobytes(), dtype=matrix.dtype).reshape(3, 3),
+        )
 
 
 @dataclass(frozen=True)
@@ -246,7 +252,11 @@ class Segmentation:
     def __post_init__(self) -> None:
         """Validate the immutable record after construction."""
         self.labels = np.array(self.labels, copy=True)
-        if self.labels.ndim != 2 or self.labels.dtype.kind not in "biu" or np.any(self.labels < 0):
+        if (
+            self.labels.ndim != 2
+            or self.labels.dtype.kind not in "biu"
+            or np.any(self.labels < 0)
+        ):
             raise ValueError("Labels must be a nonnegative integer 2D array")
         self.labels.flags.writeable = False
         self.space = CoordinateSpace(self.space)

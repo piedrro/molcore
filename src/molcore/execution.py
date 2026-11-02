@@ -74,7 +74,9 @@ class ExecutionContext:
         if self.cpu is not None and self.num_cpus is not None:
             raise ValueError("Set num_cpus on the supplied executor, or omit cpu")
         if self.num_cpus is not None and (
-            isinstance(self.num_cpus, bool) or not isinstance(self.num_cpus, int) or self.num_cpus < 1
+            isinstance(self.num_cpus, bool)
+            or not isinstance(self.num_cpus, int)
+            or self.num_cpus < 1
         ):
             raise ValueError("num_cpus must be a positive integer")
 
@@ -119,10 +121,17 @@ class ExecutionContext:
         Returns:
             Validated context containing merged settings.
         """
-        supplied = {"cpu": cpu, "num_cpus": num_cpus, "progress": progress, "cancel_event": cancel_event}
+        supplied = {
+            "cpu": cpu,
+            "num_cpus": num_cpus,
+            "progress": progress,
+            "cancel_event": cancel_event,
+        }
         for key, value in supplied.items():
             if value is not None and getattr(self, key) is not None:
-                raise ValueError(f"{key} was supplied both in the execution context and explicitly")
+                raise ValueError(
+                    f"{key} was supplied both in the execution context and explicitly"
+                )
         return replace(
             self,
             cpu=self.cpu if cpu is None else cpu,

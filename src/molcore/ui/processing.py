@@ -112,7 +112,9 @@ class LocalisationWidget(ToolWidget):
         a, c, cpus = session.acquisition_id, session.channel, session.num_cpus
         frames = (session.camera_frame, session.camera_frame + 1) if preview else None
 
-        def compute(model: str, progress: ProgressCallback | None, cancel: Any) -> DetectionResult:
+        def compute(
+            model: str, progress: ProgressCallback | None, cancel: Any
+        ) -> DetectionResult:
             """Compute a detached result using the current controls.
 
             Args:
@@ -143,10 +145,16 @@ class LocalisationWidget(ToolWidget):
             self.ready(
                 result,
                 f"{len(result.columns['frame'])} candidates; "
-                + ("current-frame preview" if preview else "full-channel detections cached for fitting"),
+                + (
+                    "current-frame preview"
+                    if preview
+                    else "full-channel detections cached for fitting"
+                ),
             )
             if not preview:
-                self.detections, self._detection_token = result, state_token(session.dataset)
+                self.detections, self._detection_token = result, state_token(
+                    session.dataset
+                )
 
         session.submit(compute, completed=complete)
 
@@ -163,7 +171,9 @@ class LocalisationWidget(ToolWidget):
     @logged
     def fit_cached(self) -> None:
         """Fit cached full-channel detections and atomically replace their partition."""
-        if self.detections is None or self._detection_token != state_token(self.session.dataset):
+        if self.detections is None or self._detection_token != state_token(
+            self.session.dataset
+        ):
             raise ValueError("Detect the full channel again before fitting")
         self._fit(self.detections)
 
@@ -181,10 +191,16 @@ class LocalisationWidget(ToolWidget):
         Returns:
             Result retaining the input format or backend-specific representation.
         """
-        settings, camera, session = self.settings_form.value(), self.camera_form.value(), self.session
+        settings, camera, session = (
+            self.settings_form.value(),
+            self.camera_form.value(),
+            self.session,
+        )
         a, c, cpus = session.acquisition_id, session.channel, session.num_cpus
 
-        def compute(model: str, progress: ProgressCallback | None, cancel: Any) -> LocalisationResult:
+        def compute(
+            model: str, progress: ProgressCallback | None, cancel: Any
+        ) -> LocalisationResult:
             """Compute a detached result using the current controls.
 
             Args:
@@ -246,7 +262,9 @@ class UndriftingWidget(ToolWidget):
         session, settings = self.session, self.settings_form.value()
         a, c, cpus = session.acquisition_id, session.channel, session.num_cpus
 
-        def compute(model: str, progress: ProgressCallback | None, cancel: Any) -> DriftResult:
+        def compute(
+            model: str, progress: ProgressCallback | None, cancel: Any
+        ) -> DriftResult:
             """Compute a detached result using the current controls.
 
             Args:
@@ -258,7 +276,13 @@ class UndriftingWidget(ToolWidget):
                 Detached result produced by this background computation.
             """
             return undrifting.estimate_drift(
-                model, a, c, settings=settings, num_cpus=cpus, progress=progress, cancel_event=cancel
+                model,
+                a,
+                c,
+                settings=settings,
+                num_cpus=cpus,
+                progress=progress,
+                cancel_event=cancel,
             )
 
         def complete(result: Any) -> None:
@@ -281,7 +305,9 @@ class UndriftingWidget(ToolWidget):
         """Apply the current non-stale drift preview on the GUI thread."""
         self.require_preview()
         apply_drift(
-            self.session.dataset, {self.preview.acquisition_id: self.preview}, expected=self.preview_token
+            self.session.dataset,
+            {self.preview.acquisition_id: self.preview},
+            expected=self.preview_token,
         )
         self.session.changed()
         self.status.setText("Drift applied")
@@ -306,14 +332,20 @@ class ChannelAlignmentWidget(ToolWidget):
         form = QFormLayout()
         self.target = combo([])
         self.source = combo([])
-        self.apply_all = QCheckBox("Apply optical calibration to all compatible datasets")
+        self.apply_all = QCheckBox(
+            "Apply optical calibration to all compatible datasets"
+        )
         self.apply_all.setChecked(True)
         self.model = combo(["affine", "translation", "homography"])
         self.radius = QDoubleSpinBox()
         self.radius.setRange(0.000001, 1e9)
         self.radius.setDecimals(6)
         self.radius.setValue(5)
-        self.source_ids, self.target_ids, self.name = QLineEdit(), QLineEdit(), QLineEdit()
+        self.source_ids, self.target_ids, self.name = (
+            QLineEdit(),
+            QLineEdit(),
+            QLineEdit(),
+        )
         for label, control in (
             ("Source emission channel", self.source),
             ("Reference channel", self.target),
@@ -326,7 +358,9 @@ class ChannelAlignmentWidget(ToolWidget):
         ):
             form.addRow(label, control)
         self.form.addLayout(form)
-        self.model.setToolTip("Homography uses deterministic RANSAC (1 pixel inlier threshold).")
+        self.model.setToolTip(
+            "Homography uses deterministic RANSAC (1 pixel inlier threshold)."
+        )
         self.target.setToolTip(
             "Optical registration applies to every channel sharing the source emission path, across all excitation frames. ALEX DA/AA share one transform into DD/AD."
         )
@@ -350,8 +384,16 @@ class ChannelAlignmentWidget(ToolWidget):
         self.target.clear()
         if self.session.acquisition_id is not None:
             acquisition = self.session.dataset.acquisitions[self.session.acquisition_id]
-            acceptor = [c for c, spec in acquisition.channel_specs.items() if spec.emission == "A"]
-            donor = [c for c, spec in acquisition.channel_specs.items() if spec.emission == "D"]
+            acceptor = [
+                c
+                for c, spec in acquisition.channel_specs.items()
+                if spec.emission == "A"
+            ]
+            donor = [
+                c
+                for c, spec in acquisition.channel_specs.items()
+                if spec.emission == "D"
+            ]
             self.source.addItems(acceptor or list(acquisition.channels))
             self.target.addItems(donor or list(acquisition.channels))
             if previous_source in (acceptor or list(acquisition.channels)):
@@ -360,8 +402,13 @@ class ChannelAlignmentWidget(ToolWidget):
                 self.source.setCurrentText(self.session.channel)
             if previous:
                 self.target.setCurrentText(previous)
-            if self.target.currentText() == self.source.currentText() and self.target.count() > 1:
-                self.target.setCurrentIndex((self.target.currentIndex() + 1) % self.target.count())
+            if (
+                self.target.currentText() == self.source.currentText()
+                and self.target.count() > 1
+            ):
+                self.target.setCurrentIndex(
+                    (self.target.currentIndex() + 1) % self.target.count()
+                )
 
     @logged
     def estimate(self) -> None:
@@ -374,8 +421,13 @@ class ChannelAlignmentWidget(ToolWidget):
             session.num_cpus,
         )
         options = dict(model=self.model.currentText(), match_radius=self.radius.value())
-        for key, control in (("source_ids", self.source_ids), ("target_ids", self.target_ids)):
-            options[key] = [int(v) for v in control.text().replace(",", " ").split()] or None
+        for key, control in (
+            ("source_ids", self.source_ids),
+            ("target_ids", self.target_ids),
+        ):
+            options[key] = [
+                int(v) for v in control.text().replace(",", " ").split()
+            ] or None
         self._fit_options = dict(
             model=options["model"],
             match_radius=options["match_radius"],
@@ -383,7 +435,9 @@ class ChannelAlignmentWidget(ToolWidget):
         )
         self._experiment_preview_token = experiment_state_token(session.experiment)
 
-        def compute(model: str, progress: ProgressCallback | None, cancel: Any) -> AlignmentResult:
+        def compute(
+            model: str, progress: ProgressCallback | None, cancel: Any
+        ) -> AlignmentResult:
             """Compute a detached result using the current controls.
 
             Args:
@@ -395,7 +449,14 @@ class ChannelAlignmentWidget(ToolWidget):
                 Detached result produced by this background computation.
             """
             return alignment.estimate_alignment(
-                model, a, c, target, **options, num_cpus=cpus, progress=progress, cancel_event=cancel
+                model,
+                a,
+                c,
+                target,
+                **options,
+                num_cpus=cpus,
+                progress=progress,
+                cancel_event=cancel,
             )
 
         session.submit(
@@ -417,16 +478,26 @@ class ChannelAlignmentWidget(ToolWidget):
             .emission
         )
         if self.apply_all.isChecked() and emission is not None:
-            if experiment_state_token(self.session.experiment) != self._experiment_preview_token:
-                raise ValueError("Experiment changed; estimate a fresh optical calibration")
+            if (
+                experiment_state_token(self.session.experiment)
+                != self._experiment_preview_token
+            ):
+                raise ValueError(
+                    "Experiment changed; estimate a fresh optical calibration"
+                )
             staged = clone_dataset(self.session.dataset)
-            result = apply_alignment(staged, self.preview, expected=self.preview_token, **self._fit_options)
+            result = apply_alignment(
+                staged, self.preview, expected=self.preview_token, **self._fit_options
+            )
             self.session.experiment.apply_channel_calibration(
                 staged.calibrations[result.calibration_name], emission=emission
             )
         else:
             apply_alignment(
-                self.session.dataset, self.preview, expected=self.preview_token, **self._fit_options
+                self.session.dataset,
+                self.preview,
+                expected=self.preview_token,
+                **self._fit_options,
             )
         self.session.changed()
         self.status.setText("Calibration applied")
@@ -452,7 +523,9 @@ class SegmentationWidget(ToolWidget):
         self.form.addWidget(self.settings_form)
         self.settings_form.changed.connect(self.invalidate)
         self.button("Choose local model weights…", self.choose_weights)
-        self.form.addWidget(QLabel("GPU uses one worker. Cellpose may download built-in model weights."))
+        self.form.addWidget(
+            QLabel("GPU uses one worker. Cellpose may download built-in model weights.")
+        )
         self.name = QLineEdit()
         self.name.setPlaceholderText("Optional segmentation ID for a single result")
         self.name.textChanged.connect(self.invalidate)
@@ -461,7 +534,9 @@ class SegmentationWidget(ToolWidget):
         self.targets.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.targets.setMaximumHeight(120)
         self.targets.itemSelectionChanged.connect(self.invalidate)
-        self.form.addWidget(QLabel("Batch targets (optional; each records its source frame)"))
+        self.form.addWidget(
+            QLabel("Batch targets (optional; each records its source frame)")
+        )
         self.form.addWidget(self.targets)
         self.mask_preview = MaskPreview()
         self.form.addWidget(self.mask_preview)
@@ -483,14 +558,16 @@ class SegmentationWidget(ToolWidget):
         for a, acquisition in self.session.dataset.acquisitions.items():
             for c, view in acquisition.channels.items():
                 if len(view):
-                    item = QListWidgetItem(f"{a} / {c} (first camera frame {view.source_frames[0]})")
+                    item = QListWidgetItem(
+                        f"{a} / {c} (first camera frame {view.source_frames[0]})"
+                    )
                     item.setData(Qt.UserRole, (a, c, int(view.source_frames[0])))
                     self.targets.addItem(item)
 
     @logged
     def choose_weights(self) -> None:
-        """Choose offline Cellpose 4 weights through the host's native file dialog."""
-        path, _ = QFileDialog.getOpenFileName(self, "Cellpose 4 weights")
+        """Choose offline Cellpose 3 weights through the host's native file dialog."""
+        path, _ = QFileDialog.getOpenFileName(self, "Cellpose 3 weights")
         if path:
             self.settings_form.controls["pretrained_model"].setText(path)
 
@@ -530,7 +607,9 @@ class SegmentationWidget(ToolWidget):
         session, settings = self.session, self.settings_form.value()
         cpus = 1 if settings.gpu else session.num_cpus
 
-        def compute(model: str, progress: ProgressCallback | None, cancel: Any) -> dict[str, Segmentation]:
+        def compute(
+            model: str, progress: ProgressCallback | None, cancel: Any
+        ) -> dict[str, Segmentation]:
             """Compute a detached result using the current controls.
 
             Args:
@@ -574,6 +653,8 @@ class SegmentationWidget(ToolWidget):
     def apply_preview(self) -> None:
         """Apply every mask in a non-stale successful preview atomically."""
         self.require_preview()
-        apply_segmentations(self.session.dataset, self.preview, expected=self.preview_token)
+        apply_segmentations(
+            self.session.dataset, self.preview, expected=self.preview_token
+        )
         self.session.changed()
         self.status.setText("Segmentations applied")

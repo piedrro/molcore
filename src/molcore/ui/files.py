@@ -47,7 +47,9 @@ if TYPE_CHECKING:
 
 
 class _ImageOptions(QDialog):
-    def __init__(self, paths: Sequence[str | Path], parent: QWidget | None = None) -> None:
+    def __init__(
+        self, paths: Sequence[str | Path], parent: QWidget | None = None
+    ) -> None:
         """Initialise the object and validate its configuration.
 
         Args:
@@ -63,7 +65,9 @@ class _ImageOptions(QDialog):
         form = QFormLayout()
         self.mode = combo(["single", "fret", "alex", "custom"])
         self.channel = QLineEdit("image")
-        self.layout = combo(["donor-left", "acceptor-left", "donor-top", "acceptor-top"])
+        self.layout = combo(
+            ["donor-left", "acceptor-left", "donor-top", "acceptor-top"]
+        )
         self.phase = QSpinBox()
         self.phase.setRange(0, 1)
         self.pixel_size = QDoubleSpinBox()
@@ -76,7 +80,11 @@ class _ImageOptions(QDialog):
         self.cache.setValue(256)
         self.dataset = combo([])
         self.dataset.setEditable(True)
-        if len(paths) == 1 and Path(paths[0]).suffix.lower() in (".h5", ".hdf5", ".hdf"):
+        if len(paths) == 1 and Path(paths[0]).suffix.lower() in (
+            ".h5",
+            ".hdf5",
+            ".hdf",
+        ):
             with h5py.File(paths[0], "r") as file:
                 file.visititems(
                     lambda name, obj: (
@@ -88,7 +96,9 @@ class _ImageOptions(QDialog):
         self.hdu = QSpinBox()
         self.hdu.setRange(0, 10000)
         self.specs = QPlainTextEdit()
-        self.specs.setPlaceholderText('{"image": {"roi": [0,100,0,100], "frame_start": 0, "frame_step": 1}}')
+        self.specs.setPlaceholderText(
+            '{"image": {"roi": [0,100,0,100], "frame_start": 0, "frame_step": 1}}'
+        )
         self.specs.setMaximumHeight(85)
         for label, control in (
             ("Mode", self.mode),
@@ -105,7 +115,9 @@ class _ImageOptions(QDialog):
             form.addRow(label, control)
         layout.addLayout(form)
         layout.addWidget(
-            QLabel("Each file becomes an independent acquisition; sequences are created explicitly.")
+            QLabel(
+                "Each file becomes an independent acquisition; sequences are created explicitly."
+            )
         )
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -120,7 +132,11 @@ class _ImageOptions(QDialog):
             Validated settings read from the dialog.
         """
         specs = self.specs.toPlainText().strip()
-        specs = {k: ChannelSpec(**v) for k, v in json.loads(specs).items()} if specs else None
+        specs = (
+            {k: ChannelSpec(**v) for k, v in json.loads(specs).items()}
+            if specs
+            else None
+        )
         if self.mode.currentText() == "custom" and specs is None:
             raise ValueError("Custom mode requires explicit channel specifications")
         return dict(
@@ -149,7 +165,10 @@ class _ImageOptions(QDialog):
 
 class _TableMapping(QDialog):
     def __init__(
-        self, columns: Mapping[str, np.ndarray], path: str | Path, parent: QWidget | None = None
+        self,
+        columns: Mapping[str, np.ndarray],
+        path: str | Path,
+        parent: QWidget | None = None,
     ) -> None:
         """Initialise the object and validate its configuration.
 
@@ -194,7 +213,9 @@ class _TableMapping(QDialog):
         form.addRow("Reuse explicit localization_id anchors", self.reuse)
         layout.addLayout(form)
         layout.addWidget(
-            QLabel("Maps to the selected acquisition/channel. Coordinates must be raw channel coordinates.")
+            QLabel(
+                "Maps to the selected acquisition/channel. Coordinates must be raw channel coordinates."
+            )
         )
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -208,12 +229,18 @@ class _TableMapping(QDialog):
         Returns:
             Computed tuple value.
         """
-        selected = {name: control.currentText() for name, control in self.mapping.items()}
+        selected = {
+            name: control.currentText() for name, control in self.mapping.items()
+        }
         if len(set(selected.values())) != 3:
             raise ValueError("Frame, x and y must use distinct columns")
         renamed = {name: self.columns[source] for name, source in selected.items()}
         renamed.update(
-            {k: v for k, v in self.columns.items() if k not in selected.values() and k not in renamed}
+            {
+                k: v
+                for k, v in self.columns.items()
+                if k not in selected.values() and k not in renamed
+            }
         )
         return renamed, dict(
             timeline=self.timeline.currentText(),
@@ -315,7 +342,9 @@ class FileToolsWidget(ToolWidget):
         def _finish() -> None:
             if experiment_state_token(self.session.experiment) != expected:
                 self.session.dirty = True
-                self.status.setText("New edits remain unsaved; the current experiment was retained")
+                self.status.setText(
+                    "New edits remain unsaved; the current experiment was retained"
+                )
                 return
             callback()
 
@@ -324,7 +353,9 @@ class FileToolsWidget(ToolWidget):
     @logged
     def new_experiment(self) -> None:
         """Replace the session with an empty sequencing experiment."""
-        self._replace_action(lambda: self.session.set_experiment(Experiment(), owns_experiment=True))
+        self._replace_action(
+            lambda: self.session.set_experiment(Experiment(), owns_experiment=True)
+        )
 
     @logged
     def open_experiment(self) -> None:
@@ -343,7 +374,9 @@ class FileToolsWidget(ToolWidget):
                     lambda model, progress, cancel: Experiment.open(
                         path, progress=progress, cancel_event=cancel
                     ),
-                    completed=lambda result: self.session.set_experiment(result, owns_experiment=True),
+                    completed=lambda result: self.session.set_experiment(
+                        result, owns_experiment=True
+                    ),
                     experiment_scope=True,
                 )
 
@@ -366,21 +399,31 @@ class FileToolsWidget(ToolWidget):
         if layout == "directory":
             path = QFileDialog.getExistingDirectory(self, "Save experiment directory")
         else:
-            path, _ = QFileDialog.getSaveFileName(self, "Save MolCore experiment", "", "MolCore (*.h5)")
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Save MolCore experiment", "", "MolCore (*.h5)"
+            )
         if not path:
             return
-        destination = Path(path) / "experiment.h5" if layout == "directory" else Path(path)
+        destination = (
+            Path(path) / "experiment.h5" if layout == "directory" else Path(path)
+        )
         if (
             destination.exists()
             and QMessageBox.question(
-                self, "Replace experiment", f"Replace {destination}?", QMessageBox.Yes | QMessageBox.No
+                self,
+                "Replace experiment",
+                f"Replace {destination}?",
+                QMessageBox.Yes | QMessageBox.No,
             )
             != QMessageBox.Yes
         ):
             return
 
         def compute(
-            model: Experiment, progress: ProgressCallback | None, cancel: Any, publish_guard: Any
+            model: Experiment,
+            progress: ProgressCallback | None,
+            cancel: Any,
+            publish_guard: Any,
         ) -> Experiment:
             """Compute.
 
@@ -415,7 +458,9 @@ class FileToolsWidget(ToolWidget):
             self.status.setText(f"Saved {destination}")
             self._queue_after_save(on_saved, after_save_token)
 
-        self.session.submit(compute, completed=complete, experiment_scope=True, publication=True)
+        self.session.submit(
+            compute, completed=complete, experiment_scope=True, publication=True
+        )
 
     @logged
     def new_dataset(self) -> None:
@@ -435,7 +480,9 @@ class FileToolsWidget(ToolWidget):
         if self.layout_mode.currentText() == "directory":
             path = QFileDialog.getExistingDirectory(self, "Open MolCore dataset")
         else:
-            path, _ = QFileDialog.getOpenFileName(self, "Open MolCore dataset", "", "MolCore (*.h5 *.hdf5)")
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Open MolCore dataset", "", "MolCore (*.h5 *.hdf5)"
+            )
         if not path:
             return
 
@@ -446,7 +493,9 @@ class FileToolsWidget(ToolWidget):
                 Computed tuple[tuple, CoordinateSpace] value.
             """
             self.session.submit(
-                lambda model, progress, cancel: Dataset.open(path, progress=progress, cancel_event=cancel),
+                lambda model, progress, cancel: Dataset.open(
+                    path, progress=progress, cancel_event=cancel
+                ),
                 completed=self._add_opened_dataset,
             )
 
@@ -472,9 +521,13 @@ class FileToolsWidget(ToolWidget):
         if width % 2 != 1:
             raise ValueError("Crop width must be odd")
         if layout == "directory":
-            path = QFileDialog.getExistingDirectory(self, "Save MolCore dataset directory")
+            path = QFileDialog.getExistingDirectory(
+                self, "Save MolCore dataset directory"
+            )
         else:
-            path, _ = QFileDialog.getSaveFileName(self, "Save MolCore dataset", "", "MolCore (*.h5)")
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Save MolCore dataset", "", "MolCore (*.h5)"
+            )
         if not path:
             return
         destination = Path(path) / "dataset.h5" if layout == "directory" else Path(path)
@@ -491,7 +544,10 @@ class FileToolsWidget(ToolWidget):
             return
 
         def compute(
-            model: Dataset, progress: ProgressCallback | None, cancel: Any, publish_guard: Any
+            model: Dataset,
+            progress: ProgressCallback | None,
+            cancel: Any,
+            publish_guard: Any,
         ) -> Dataset:
             """Compute a detached result using the current controls.
 
@@ -535,7 +591,10 @@ class FileToolsWidget(ToolWidget):
         if self.import_into_current.isChecked() and self.session.dataset_id is None:
             raise ValueError("Select a dataset before adding recordings")
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "Import original images", "", "Images (*.tif *.tiff *.fits *.fit *.h5 *.hdf5)"
+            self,
+            "Import original images",
+            "",
+            "Images (*.tif *.tiff *.fits *.fit *.h5 *.hdf5)",
         )
         if not paths:
             return
@@ -545,7 +604,9 @@ class FileToolsWidget(ToolWidget):
         options, source_options = dialog.options(), dialog.source_options()
         into_current = self.import_into_current.isChecked()
         occupied = set(
-            self.session.dataset.acquisitions if into_current else self.session.experiment.datasets
+            self.session.dataset.acquisitions
+            if into_current
+            else self.session.experiment.datasets
         )
         identifiers = []
         for path in paths:
@@ -556,7 +617,9 @@ class FileToolsWidget(ToolWidget):
             identifiers.append(identifier)
             occupied.add(identifier)
 
-        def compute(model: Dataset, progress: ProgressCallback | None, cancel: Any) -> list[Acquisition]:
+        def compute(
+            model: Dataset, progress: ProgressCallback | None, cancel: Any
+        ) -> list[Acquisition]:
             """Compute a detached result using the current controls.
 
             Args:
@@ -569,7 +632,9 @@ class FileToolsWidget(ToolWidget):
             """
             return [
                 files.image_acquisition(
-                    files.read_image(path, **source_options, progress=progress, cancel_event=cancel),
+                    files.read_image(
+                        path, **source_options, progress=progress, cancel_event=cancel
+                    ),
                     id=identifier,
                     **options,
                 )
@@ -586,7 +651,11 @@ class FileToolsWidget(ToolWidget):
             """
             if not into_current:
                 datasets = [
-                    Dataset(id=a.id, name=a.id, metadata={"round_index": len(model.datasets) + i + 1})
+                    Dataset(
+                        id=a.id,
+                        name=a.id,
+                        metadata={"round_index": len(model.datasets) + i + 1},
+                    )
                     for i, a in enumerate(values)
                 ]
                 if any(d.id in model.datasets for d in datasets):
@@ -629,7 +698,11 @@ class FileToolsWidget(ToolWidget):
         choices.addItems(list(self.session.dataset.acquisitions))
         layout.addWidget(QLabel("Select recordings in their acquisition order:"))
         layout.addWidget(choices)
-        name, reference, crossing = QLineEdit(), QLineEdit(), QCheckBox("Allow cross-acquisition tracks")
+        name, reference, crossing = (
+            QLineEdit(),
+            QLineEdit(),
+            QCheckBox("Allow cross-acquisition tracks"),
+        )
         form = QFormLayout()
         form.addRow("Sequence name", name)
         form.addRow("Shared reference (required for crossing tracks)", reference)
@@ -648,7 +721,9 @@ class FileToolsWidget(ToolWidget):
                 reference=reference.text().strip() or None,
             )
             self.session.changed()
-            self.session.select(identifiers[0], self.session.channel, sequence_id=sequence.id)
+            self.session.select(
+                identifiers[0], self.session.channel, sequence_id=sequence.id
+            )
 
     @logged
     def export_dataset_images(self) -> None:
@@ -690,9 +765,15 @@ class FileToolsWidget(ToolWidget):
     @logged
     def export_images(self) -> None:
         """Stream the selected camera/channel movie with explicit coordinate provenance."""
-        path, _ = QFileDialog.getSaveFileName(self, "Export image movie", "", "TIFF (*.tif *.tiff)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export image movie", "", "TIFF (*.tif *.tiff)"
+        )
         if path:
-            a, c, space = self.session.acquisition_id, self.session.channel, self.session.space
+            a, c, space = (
+                self.session.acquisition_id,
+                self.session.channel,
+                self.session.space,
+            )
             original = self.export_source.currentText() == "original camera"
             self.session.submit(
                 lambda model, progress, cancel, publish_guard: files.export_tiff(
@@ -713,7 +794,10 @@ class FileToolsWidget(ToolWidget):
     def import_results(self) -> None:
         """Read and preview explicit table-column and frame mappings before applying."""
         path, _ = QFileDialog.getOpenFileName(
-            self, "Import localizations or tracks", "", "Tables (*.hdf5 *.h5 *.csv *.pos.out)"
+            self,
+            "Import localizations or tracks",
+            "",
+            "Tables (*.hdf5 *.h5 *.csv *.pos.out)",
         )
         if not path:
             return
@@ -734,7 +818,9 @@ class FileToolsWidget(ToolWidget):
                     f"{options}; raw channel coordinates. Apply to import.",
                 )
 
-        def compute(model: Dataset, progress: ProgressCallback | None, cancel: Any) -> Any:
+        def compute(
+            model: Dataset, progress: ProgressCallback | None, cancel: Any
+        ) -> Any:
             """Compute a detached result using the current controls.
 
             Args:
@@ -772,7 +858,9 @@ class FileToolsWidget(ToolWidget):
                 model: Model or fitting method selected by the caller.
             """
             files.import_table(model, a, c, data, **options)
-            model.processing.settings.setdefault("table_import", {}).setdefault(a, {})[c] = {
+            model.processing.settings.setdefault("table_import", {}).setdefault(a, {})[
+                c
+            ] = {
                 "mapping": options,
                 "metadata": metadata,
             }
@@ -785,14 +873,22 @@ class FileToolsWidget(ToolWidget):
     def export_results(self) -> None:
         """Export selected raw-coordinate rows with an explicit camera/channel timeline."""
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export localizations / tracks", "", "Picasso (*.hdf5);;CSV (*.csv);;POS.OUT (*.pos.out)"
+            self,
+            "Export localizations / tracks",
+            "",
+            "Picasso (*.hdf5);;CSV (*.csv);;POS.OUT (*.pos.out)",
         )
         if not path:
             return
         a, c = self.session.acquisition_id, self.session.channel
-        tracks, timeline = self.export_tracks.isChecked(), self.export_timeline.currentText()
+        tracks, timeline = (
+            self.export_tracks.isChecked(),
+            self.export_timeline.currentText(),
+        )
 
-        def compute(model: Dataset, progress: ProgressCallback | None, cancel: Any) -> None:
+        def compute(
+            model: Dataset, progress: ProgressCallback | None, cancel: Any
+        ) -> None:
             """Compute a detached result using the current controls.
 
             Args:
@@ -804,17 +900,25 @@ class FileToolsWidget(ToolWidget):
             rows = (
                 model.tracks.query(space="raw")
                 if tracks
-                else model.localizations.query(acquisition_id=a, channel=c, space="raw").to_columns()
+                else model.localizations.query(
+                    acquisition_id=a, channel=c, space="raw"
+                ).to_columns()
             )
             if tracks:
                 selected = (rows["acquisition_id"] == a) & (rows["channel"] == c)
                 rows = {k: v[selected] for k, v in rows.items()}
             view = model.acquisitions[a].channels[c]
             if timeline == "channel":
-                rows["frame"] = np.array([view.channel_index(int(f)) for f in rows["frame"]], dtype=np.int64)
+                rows["frame"] = np.array(
+                    [view.channel_index(int(f)) for f in rows["frame"]], dtype=np.int64
+                )
             metadata = [
                 {
-                    "Frames": len(view) if timeline == "channel" else model.acquisitions[a].source.shape[0],
+                    "Frames": (
+                        len(view)
+                        if timeline == "channel"
+                        else model.acquisitions[a].source.shape[0]
+                    ),
                     "Height": view.shape[1],
                     "Width": view.shape[2],
                     "Pixelsize": model.acquisitions[a].pixel_size,
@@ -832,7 +936,9 @@ class FileToolsWidget(ToolWidget):
     @logged
     def import_mask(self) -> None:
         """Import a static label TIFF bound to the current frame and coordinate space."""
-        path, _ = QFileDialog.getOpenFileName(self, "Import label mask", "", "TIFF (*.tif *.tiff)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import label mask", "", "TIFF (*.tif *.tiff)"
+        )
         if not path:
             return
         a, c, frame, space = (
@@ -846,7 +952,9 @@ class FileToolsWidget(ToolWidget):
         )
         if ok and identifier:
 
-            def compute(model: Dataset, progress: ProgressCallback | None, cancel: Any) -> Any:
+            def compute(
+                model: Dataset, progress: ProgressCallback | None, cancel: Any
+            ) -> Any:
                 """Compute a detached result using the current controls.
 
                 Args:
@@ -872,7 +980,10 @@ class FileToolsWidget(ToolWidget):
                 return value
 
             self.session.submit(
-                compute, commit=lambda model, value: apply_segmentations(model, {value.id: value})
+                compute,
+                commit=lambda model, value: apply_segmentations(
+                    model, {value.id: value}
+                ),
             )
 
     @logged
@@ -881,13 +992,19 @@ class FileToolsWidget(ToolWidget):
         names = list(self.session.dataset.segmentations)
         if not names:
             raise ValueError("No segmentation masks are available")
-        name, ok = QInputDialog.getItem(self, "Export mask", "Segmentation", names, 0, False)
+        name, ok = QInputDialog.getItem(
+            self, "Export mask", "Segmentation", names, 0, False
+        )
         if not ok:
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Export label mask", "", "TIFF (*.tif)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export label mask", "", "TIFF (*.tif)"
+        )
         if path:
 
-            def compute(model: Dataset, progress: ProgressCallback | None, cancel: Any) -> None:
+            def compute(
+                model: Dataset, progress: ProgressCallback | None, cancel: Any
+            ) -> None:
                 """Compute a detached result using the current controls.
 
                 Args:
@@ -897,7 +1014,9 @@ class FileToolsWidget(ToolWidget):
                 """
                 files.report(progress, cancel)
                 with files.atomic_files([path]) as (temp,):
-                    tifffile.imwrite(temp, model.segmentations[name].labels, photometric="minisblack")
+                    tifffile.imwrite(
+                        temp, model.segmentations[name].labels, photometric="minisblack"
+                    )
                     files.report(progress, cancel, 1, 1, "Publishing mask")
 
             self.session.submit(compute)
@@ -905,7 +1024,9 @@ class FileToolsWidget(ToolWidget):
     @logged
     def import_calibration(self) -> None:
         """Import and select an affine calibration for the selected channel."""
-        path, _ = QFileDialog.getOpenFileName(self, "Import affine matrix", "", "Matrix (*.json *.txt *.npy)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import affine matrix", "", "Matrix (*.json *.txt *.npy)"
+        )
         if not path:
             return
         name, ok = QInputDialog.getText(
@@ -931,12 +1052,16 @@ class FileToolsWidget(ToolWidget):
                 """
                 if name in staged.calibrations:
                     raise ValueError("Calibration name already exists")
-                staged.transforms.add_calibration(Calibration(name, matrix, {"source_path": path}))
+                staged.transforms.add_calibration(
+                    Calibration(name, matrix, {"source_path": path})
+                )
                 staged.transforms.select(a, c, name)
 
             transact(model, apply)
 
-        self.session.submit(lambda model, progress, cancel: files.read_calibration(path), commit=commit)
+        self.session.submit(
+            lambda model, progress, cancel: files.read_calibration(path), commit=commit
+        )
 
     @logged
     def export_calibration(self) -> None:
@@ -944,7 +1069,9 @@ class FileToolsWidget(ToolWidget):
         names = list(self.session.dataset.calibrations)
         if not names:
             raise ValueError("No named calibrations are available")
-        name, ok = QInputDialog.getItem(self, "Export calibration", "Calibration", names, 0, False)
+        name, ok = QInputDialog.getItem(
+            self, "Export calibration", "Calibration", names, 0, False
+        )
         if ok:
             path, _ = QFileDialog.getSaveFileName(
                 self, "Export affine matrix", "", "JSON (*.json);;NumPy (*.npy)"
@@ -959,7 +1086,9 @@ class FileToolsWidget(ToolWidget):
     @logged
     def import_legacy(self) -> None:
         """Preview a restricted .moltrack migration with explicit original-image relinking."""
-        path, _ = QFileDialog.getOpenFileName(self, "Migrate legacy project", "", "MolTrack (*.moltrack)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Migrate legacy project", "", "MolTrack (*.moltrack)"
+        )
         if not path:
             return
 
@@ -989,12 +1118,21 @@ class FileToolsWidget(ToolWidget):
                     dialog.channel.setText(channels[0])
                 if dialog.exec() != QDialog.Accepted:
                     return
-                bindings[name] = (source_path, dialog.options(), dialog.source_options())
+                bindings[name] = (
+                    source_path,
+                    dialog.options(),
+                    dialog.source_options(),
+                )
                 for kind in ("localisation_dict", "tracking_dict"):
                     for channel in project.get(kind, {}).get(name, {}):
                         mapping[name, channel] = channel
             timeline, ok = QInputDialog.getItem(
-                self, "Legacy frame mapping", "Table frame convention", ["channel", "camera"], 0, False
+                self,
+                "Legacy frame mapping",
+                "Table frame convention",
+                ["channel", "camera"],
+                0,
+                False,
             )
             if not ok:
                 return
@@ -1014,7 +1152,12 @@ class FileToolsWidget(ToolWidget):
                 """
                 acquisitions = {
                     name: files.image_acquisition(
-                        files.read_image(path, **source_options, progress=progress, cancel_event=cancel),
+                        files.read_image(
+                            path,
+                            **source_options,
+                            progress=progress,
+                            cancel_event=cancel,
+                        ),
                         id=name,
                         **options,
                     )
@@ -1037,13 +1180,17 @@ class FileToolsWidget(ToolWidget):
                     lambda: self.session.submit(
                         compute,
                         completed=lambda value: self.ready(
-                            value, "\n".join(value[1]) or "Migration staged; apply to replace the session"
+                            value,
+                            "\n".join(value[1])
+                            or "Migration staged; apply to replace the session",
                         ),
                     )
                 ),
             )
 
-        self.session.submit(lambda model, progress, cancel: read_moltrack(path), completed=decoded)
+        self.session.submit(
+            lambda model, progress, cancel: read_moltrack(path), completed=decoded
+        )
 
     def _legacy_results_only(self, project: Any) -> None:
         """Legacy results only.
@@ -1053,7 +1200,10 @@ class FileToolsWidget(ToolWidget):
         """
         targets = [
             (dataset, channel, key, value[key])
-            for kind, key in (("localisation_dict", "localisations"), ("tracking_dict", "tracks"))
+            for kind, key in (
+                ("localisation_dict", "localisations"),
+                ("tracking_dict", "tracks"),
+            )
             for dataset, channels in project.get(kind, {}).items()
             for channel, value in channels.items()
             if key in value
@@ -1093,7 +1243,9 @@ class FileToolsWidget(ToolWidget):
     def apply_legacy_preview(self) -> None:
         """Replace the current session with a successfully staged legacy migration."""
         self.require_preview()
-        if not isinstance(self.preview, tuple) or not isinstance(self.preview[0], Dataset):
+        if not isinstance(self.preview, tuple) or not isinstance(
+            self.preview[0], Dataset
+        ):
             raise ValueError("Preview a complete legacy project migration first")
         model = self.preview[0]
         self._replace_action(lambda: self.session.set_dataset(model, owns_dataset=True))

@@ -9,7 +9,12 @@ from molcore.clustering import cluster_localizations
 from molcore.colocalisation import colocalise
 from molcore.filtering import filter_results
 from molcore.rendering import render_localizations
-from molcore.types.analysis import ClusteringSettings, ColocalisationSettings, FilterSettings, RenderSettings
+from molcore.types.analysis import (
+    ClusteringSettings,
+    ColocalisationSettings,
+    FilterSettings,
+    RenderSettings,
+)
 
 
 class AnalysisTests(unittest.TestCase):
@@ -35,7 +40,9 @@ class AnalysisTests(unittest.TestCase):
         )
 
     def test_inclusive_filter_detached_and_finite(self):
-        result = filter_results(self.model, "a", "a", settings=FilterSettings("photons", 1.0, 2.0))
+        result = filter_results(
+            self.model, "a", "a", settings=FilterSettings("photons", 1.0, 2.0)
+        )
         np.testing.assert_array_equal(result.selected_ids, self.ids[:2])
         self.assertEqual(len(self.model.localizations), 5)
         result.columns["x"][:] = 0
@@ -44,7 +51,10 @@ class AnalysisTests(unittest.TestCase):
     def test_track_aggregation(self):
         track = self.model.tracks.add(self.ids[:2])
         result = filter_results(
-            self.model, "a", "a", settings=FilterSettings("photons", 1.5, 1.5, target="tracks")
+            self.model,
+            "a",
+            "a",
+            settings=FilterSettings("photons", 1.5, 1.5, target="tracks"),
         )
         np.testing.assert_array_equal(result.selected_ids, [track])
 
@@ -52,7 +62,9 @@ class AnalysisTests(unittest.TestCase):
         model = Dataset()
         ids = []
         for acquisition, photons in (("first", 1.0), ("second", 9.0)):
-            model.add_acquisition(Acquisition(ArraySource(np.zeros((1, 4, 4))), id=acquisition))
+            model.add_acquisition(
+                Acquisition(ArraySource(np.zeros((1, 4, 4))), id=acquisition)
+            )
             ids.extend(
                 model.localizations.add(
                     acquisition_id=acquisition,
@@ -63,16 +75,26 @@ class AnalysisTests(unittest.TestCase):
                     photons=[photons],
                 )
             )
-        model.add_sequence(["first", "second"], id="seq", allow_cross_boundary_tracks=True, reference="r")
+        model.add_sequence(
+            ["first", "second"],
+            id="seq",
+            allow_cross_boundary_tracks=True,
+            reference="r",
+        )
         track = model.tracks.add(ids, sequence_id="seq")
         result = filter_results(
-            model, "first", "image", settings=FilterSettings("photons", 5.0, 5.0, target="tracks")
+            model,
+            "first",
+            "image",
+            settings=FilterSettings("photons", 5.0, 5.0, target="tracks"),
         )
         np.testing.assert_array_equal(result.selected_ids, [track])
         self.assertEqual(len(result.columns["id"]), 2)
 
     def test_mutual_matching_inclusive_euclidean(self):
-        result = colocalise(self.model, "a", "a", "b", settings=ColocalisationSettings(radius=0.9))
+        result = colocalise(
+            self.model, "a", "a", "b", settings=ColocalisationSettings(radius=0.9)
+        )
         np.testing.assert_array_equal(result.columns["source_id"], self.ids[1:2])
         np.testing.assert_array_equal(result.columns["target_id"], self.other[:1])
         self.assertEqual(result.unmatched_source, 2)
@@ -89,8 +111,12 @@ class AnalysisTests(unittest.TestCase):
         ids = model.localizations.add(
             acquisition_id="a", channel="a", frame=[0, 0], x=[0.0, 2.0], y=[1.0, 1.0]
         )
-        model.localizations.add(acquisition_id="a", channel="b", frame=[0], x=[1.0], y=[1.0])
-        result = colocalise(model, "a", "a", "b", settings=ColocalisationSettings(radius=1.0))
+        model.localizations.add(
+            acquisition_id="a", channel="b", frame=[0], x=[1.0], y=[1.0]
+        )
+        result = colocalise(
+            model, "a", "a", "b", settings=ColocalisationSettings(radius=1.0)
+        )
         np.testing.assert_array_equal(result.columns["source_id"], ids[:1])
 
     def test_dbscan_noise_and_ids(self):
@@ -126,8 +152,12 @@ class AnalysisTests(unittest.TestCase):
         from concurrent.futures import CancelledError
 
         self.model.localizations.delete(self.ids)
-        self.assertEqual(len(cluster_localizations(self.model, "a", "a").columns["id"]), 0)
-        self.assertEqual(len(colocalise(self.model, "a", "a", "b").columns["source_id"]), 0)
+        self.assertEqual(
+            len(cluster_localizations(self.model, "a", "a").columns["id"]), 0
+        )
+        self.assertEqual(
+            len(colocalise(self.model, "a", "a", "b").columns["source_id"]), 0
+        )
         self.assertEqual(render_localizations(self.model, "a", "a").count, 0)
         cancel = threading.Event()
         cancel.set()
@@ -140,7 +170,10 @@ class AnalysisTests(unittest.TestCase):
             Acquisition(
                 ArraySource(np.zeros((1, 12, 12))),
                 id="a",
-                channel_specs={"a": ChannelSpec((0, 12, 0, 6)), "b": ChannelSpec((0, 12, 6, 12))},
+                channel_specs={
+                    "a": ChannelSpec((0, 12, 0, 6)),
+                    "b": ChannelSpec((0, 12, 6, 12)),
+                },
             )
         )
         with self.assertRaises(ValueError):
@@ -148,7 +181,9 @@ class AnalysisTests(unittest.TestCase):
 
     def test_precision_blur_requires_uncertainty_measurements(self):
         with self.assertRaisesRegex(ValueError, "lpx"):
-            render_localizations(self.model, "a", "a", settings=RenderSettings(blur_method="gaussian"))
+            render_localizations(
+                self.model, "a", "a", settings=RenderSettings(blur_method="gaussian")
+            )
 
 
 if __name__ == "__main__":

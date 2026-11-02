@@ -11,7 +11,13 @@ import numpy as np
 import tifffile
 
 from molcore import Acquisition, ArraySource, ChannelSpec, Dataset
-from molcore.files import export_tiff, import_table, read_calibration, read_table, write_table
+from molcore.files import (
+    export_tiff,
+    import_table,
+    read_calibration,
+    read_table,
+    write_table,
+)
 from molcore.legacy import read_moltrack
 
 
@@ -25,7 +31,10 @@ class FileTests(unittest.TestCase):
             Acquisition(
                 ArraySource(np.arange(5 * 6 * 8).reshape(5, 6, 8).astype("uint16")),
                 id="a",
-                channel_specs={"DD": ChannelSpec(excitation="D"), "AA": ChannelSpec(excitation="A")},
+                channel_specs={
+                    "DD": ChannelSpec(excitation="D"),
+                    "AA": ChannelSpec(excitation="A"),
+                },
                 excitation_sequence=("D", "A"),
                 phase=1,
             )
@@ -33,7 +42,9 @@ class FileTests(unittest.TestCase):
 
     def test_pos_out_one_based_channel_frame_import(self):
         path = self.root / "locs.pos.out"
-        path.write_text("FRAME\tXCENTER\tYCENTER\tBRIGHTNESS\n1\t3\t4\t100\n2\t4\t4\t200\n")
+        path.write_text(
+            "FRAME\tXCENTER\tYCENTER\tBRIGHTNESS\n1\t3\t4\t100\n2\t4\t4\t200\n"
+        )
         data = read_table(path)
         import_table(self.model, "a", "DD", data, timeline="channel", frame_base=1)
         rows = self.model.localizations.query()
@@ -68,7 +79,9 @@ class FileTests(unittest.TestCase):
     def test_tiff_stream_and_cancel_preserve_destination(self):
         path = self.root / "movie.tif"
         export_tiff(self.model, "a", "DD", path)
-        np.testing.assert_array_equal(tifffile.imread(path), self.model.acquisitions["a"].channels["DD"][:])
+        np.testing.assert_array_equal(
+            tifffile.imread(path), self.model.acquisitions["a"].channels["DD"][:]
+        )
         previous = path.read_bytes()
         cancel = threading.Event()
         cancel.set()
@@ -86,13 +99,17 @@ class FileTests(unittest.TestCase):
             cancel.set()
 
         with self.assertRaises(CancelledError):
-            self.model.save(path, image_policy="full", progress=progress, cancel_event=cancel)
+            self.model.save(
+                path, image_policy="full", progress=progress, cancel_event=cancel
+            )
         self.assertEqual(path.read_bytes(), previous)
 
     def test_read_projective_reject_singular_and_unsafe_pickle(self):
         path = self.root / "matrix.txt"
         path.write_text("[[1,0,0],[0,1,0],[0.1,0,1]]")
-        np.testing.assert_array_equal(read_calibration(path), [[1, 0, 0], [0, 1, 0], [0.1, 0, 1]])
+        np.testing.assert_array_equal(
+            read_calibration(path), [[1, 0, 0], [0, 1, 0], [0.1, 0, 1]]
+        )
         path.write_text("[[1,0,0],[0,1,0],[0,0,0]]")
         with self.assertRaisesRegex(ValueError, "invertible|projective"):
             read_calibration(path)

@@ -3,7 +3,7 @@
 Shared, GUI-independent data foundations for napari-moltrack and napari-molseeq.
 MolCore stores images, localizations, tracks, photon sequences, observations, segmentations,
 calibrations and processing provenance. Processing modules provide
-Picasso localisation and drift estimation, affine channel alignment, and Cellpose 4
+Picasso localisation and drift estimation, affine channel alignment, and Cellpose 3
 segmentation. Shared Trackpy linking, aperture photometry, multichannel traces and trajectory statistics
 are available as headless processors; presentation remains in the consuming applications.
 
@@ -238,7 +238,7 @@ results. Processing parameters, camera settings and backend versions persist in
 the dataset. Core model imports remain independent of Picasso, Qt and napari.
 The processing backend currently targets the verified Picasso 0.11 API series.
 
-## Cellpose 4 segmentation
+## Cellpose 3 segmentation
 
 `molcore.cellpose.segment()` segments one model-bound 2D source frame and returns
 the existing `Segmentation` type. It stores the exact source pixels, instance
@@ -253,7 +253,7 @@ from molcore.types import CellposeSettings
 def segment_cells(dataset):
     return segment(
         dataset, "recording", "image", segmentation_id="cells",
-        settings=CellposeSettings(pretrained_model="cpsam_v2", min_size=15),
+        settings=CellposeSettings(pretrained_model="cyto3", min_size=15),
         num_cpus=1,
         progress=lambda update: print(update.percent, update.description),
     )
@@ -274,18 +274,14 @@ exactly one worker; unavailable hardware raises an error rather than silently
 switching to CPU. Progress is stage-based, and cancellation is cooperative at
 backend checkpoints rather than interrupting native inference kernels.
 
-Supported built-in names are `cpsam_v2` (default), `cpsam`, `cpdino`, and
-`cpdino-vitb`. Existing local Cellpose 4 weight paths support offline use.
+Supported built-in names are `cyto3` (default), `cyto2`, `cyto`, and
+`nuclei`. Existing local Cellpose 3 weight paths support offline use.
 Invalid names/paths are rejected before Cellpose can silently substitute a model.
-Built-in weights are downloaded by Cellpose on first use. DINO additionally
-requires the upstream `dinov3` package:
+Built-in weights are downloaded by Cellpose on first use. The segmentation
+extra requires Cellpose 3.0.x; SAM/DINO models from Cellpose 4 are unsupported.
 
-```bash
-uv pip install git+https://github.com/facebookresearch/dinov3
-```
-
-See the [official Cellpose model documentation](https://cellpose.readthedocs.io/en/latest/models.html).
-Cellpose 3/Omnipose checkpoints, training and 3D segmentation are outside this
+See the [official Cellpose 3 model documentation](https://cellpose.readthedocs.io/en/v3.0.9/models.html).
+Cellpose 4/Omnipose checkpoints, training and 3D segmentation are outside this
 module's scope. Tests exercise real Cellpose interfaces and preprocessing/mask
 construction with controlled network outputs; pretrained weights and GPU
 inference are not downloaded or exercised automatically.

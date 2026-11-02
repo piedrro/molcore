@@ -45,12 +45,16 @@ class SourceTests(unittest.TestCase):
             movie = np.arange(4 * 5 * 5, dtype=np.uint16).reshape(4, 5, 5)
             tiff = Path(tmp) / "movie.tif"
             hdf5 = Path(tmp) / "movie.h5"
-            tifffile.imwrite(tiff, movie, compression="deflate", photometric="minisblack")
+            tifffile.imwrite(
+                tiff, movie, compression="deflate", photometric="minisblack"
+            )
             with h5py.File(hdf5, "w") as file:
                 file.create_dataset("frames", data=movie, chunks=(1, 5, 5))
             sources = [TiffSource(tiff), HDF5Source(hdf5, "frames")]
             for source in sources:
-                np.testing.assert_array_equal(source[::-2, 1:3, 2:4], movie[::-2, 1:3, 2:4])
+                np.testing.assert_array_equal(
+                    source[::-2, 1:3, 2:4], movie[::-2, 1:3, 2:4]
+                )
                 with multiprocessing.get_context("spawn").Pool(1) as pool:
                     self.assertEqual(pool.apply(read_worker, (source,)), 56)
 
@@ -90,5 +94,7 @@ from molcore import Dataset
 import molcore.cellpose
 Dataset()
 """
-        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True
+        )
         self.assertEqual(result.returncode, 0, result.stderr)

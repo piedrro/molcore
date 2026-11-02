@@ -39,12 +39,19 @@ def _photon_rows(model: Dataset, acquisition_id: str) -> dict[str, np.ndarray]:
     infos = [
         model.acquisitions[acquisition_id]
         .channels[str(channel)]
-        .frame_info(model.acquisitions[acquisition_id].channels[str(channel)].channel_index(int(frame)))
+        .frame_info(
+            model.acquisitions[acquisition_id]
+            .channels[str(channel)]
+            .channel_index(int(frame))
+        )
         for channel, frame in zip(rows["channel"], rows["frame"], strict=True)
     ]
-    rows["channel_frame"] = np.array([info.channel_frame for info in infos], dtype=np.int64)
+    rows["channel_frame"] = np.array(
+        [info.channel_frame for info in infos], dtype=np.int64
+    )
     rows["cycle_index"] = np.array(
-        [info.cycle_index if info.cycle_index is not None else -1 for info in infos], dtype=np.int64
+        [info.cycle_index if info.cycle_index is not None else -1 for info in infos],
+        dtype=np.int64,
     )
     return rows
 
@@ -60,12 +67,19 @@ class TraceViewerWidget(AnalysisTool):
             parent: Optional Qt parent controlling widget lifetime.
         """
         super().__init__(session, parent)
-        self.source = self.field("Trace data", combo(["Photon sequences", "Observations"]))
+        self.source = self.field(
+            "Trace data", combo(["Photon sequences", "Observations"])
+        )
         self.run_id, self.molecule, self.metric = combo([]), combo([]), combo([])
         self.channels = combo(["All"])
         self.xaxis = combo(["Frame", "Time (s)"])
         self.background = combo(
-            ["Stored corrected intensity", "Raw signal sum", "Local background", "Global background"]
+            [
+                "Stored corrected intensity",
+                "Raw signal sum",
+                "Local background",
+                "Global background",
+            ]
         )
         self.normalise = QCheckBox()
         for label, control in (
@@ -78,7 +92,11 @@ class TraceViewerWidget(AnalysisTool):
             ("Normalise display (0–1)", self.normalise),
         ):
             self.fields.addRow(label, control)
-            signal = control.toggled if isinstance(control, QCheckBox) else control.currentIndexChanged
+            signal = (
+                control.toggled
+                if isinstance(control, QCheckBox)
+                else control.currentIndexChanged
+            )
             signal.connect(lambda *_: self.invoke(self.redraw))
         self.run_id.currentIndexChanged.connect(self.refresh_molecules)
         self.button("Load measurement traces", self.compute)
@@ -92,7 +110,9 @@ class TraceViewerWidget(AnalysisTool):
         a, c, space = session.acquisition_id, session.channel, session.space
         source = self.source.currentText()
 
-        def compute(model: Dataset, progress: ProgressCallback | None, cancel: Any) -> AnalysisResult:
+        def compute(
+            model: Dataset, progress: ProgressCallback | None, cancel: Any
+        ) -> AnalysisResult:
             """Compute a detached result using the current controls.
 
             Args:
@@ -118,12 +138,19 @@ class TraceViewerWidget(AnalysisTool):
             Args:
                 result: Detached computation result to inspect or apply.
             """
-            self.ready(result, f"{len(result.columns['id'])} samples; stored measurements unchanged")
+            self.ready(
+                result,
+                f"{len(result.columns['id'])} samples; stored measurements unchanged",
+            )
             rows = result.columns
             refresh_combo(self.run_id, np.unique(rows.get("run_id", np.array([""]))))
             refresh_combo(
                 self.metric,
-                [k for k in numeric_metrics(rows) if k not in ("frame", "track_id", "localization_id")],
+                [
+                    k
+                    for k in numeric_metrics(rows)
+                    if k not in ("frame", "track_id", "localization_id")
+                ],
             )
             if "intensity" in rows:
                 self.metric.setCurrentText("intensity")
@@ -142,14 +169,21 @@ class TraceViewerWidget(AnalysisTool):
         if self.preview is None:
             return
         rows = self.preview.columns
-        mask = rows.get("run_id", np.full(len(rows["id"]), "")) == self.run_id.currentText()
+        mask = (
+            rows.get("run_id", np.full(len(rows["id"]), ""))
+            == self.run_id.currentText()
+        )
         refresh_combo(self.molecule, np.unique(rows["molecule_id"][mask]))
         self.invoke(self.redraw)
 
     @logged
     def redraw(self) -> None:
         """Redraw the selected detached measurements without changing source data."""
-        if self.preview is None or not self.molecule.currentText() or not self.metric.currentText():
+        if (
+            self.preview is None
+            or not self.molecule.currentText()
+            or not self.metric.currentText()
+        ):
             return
         self.require_preview()
         self.plot.clear()
@@ -169,13 +203,19 @@ class TraceViewerWidget(AnalysisTool):
                 required = ["signal_sum"] + (
                     [
                         "signal_count",
-                        "local_background_mean" if mode == "Local background" else "global_background_mean",
+                        (
+                            "local_background_mean"
+                            if mode == "Local background"
+                            else "global_background_mean"
+                        ),
                     ]
                     if mode != "Raw signal sum"
                     else []
                 )
                 if any(k not in selected for k in required):
-                    raise ValueError("Selected observations lack the requested background measurements")
+                    raise ValueError(
+                        "Selected observations lack the requested background measurements"
+                    )
                 y = selected["signal_sum"].astype(float).copy()
                 if mode != "Raw signal sum":
                     y -= selected[required[-1]] * selected["signal_count"]
@@ -187,7 +227,8 @@ class TraceViewerWidget(AnalysisTool):
         for acquisition in np.unique(selected["acquisition_id"]):
             for channel in np.unique(selected["channel"]):
                 indexes = np.flatnonzero(
-                    (selected["acquisition_id"] == acquisition) & (selected["channel"] == channel)
+                    (selected["acquisition_id"] == acquisition)
+                    & (selected["channel"] == channel)
                 )
                 indexes = indexes[np.argsort(selected[xkey][indexes], kind="stable")]
                 if not len(indexes):
@@ -202,8 +243,17 @@ class TraceViewerWidget(AnalysisTool):
                 # Split curves at unmeasured logical frames, retaining sparse-frame provenance.
                 frames = selected.get("channel_frame", selected["frame"])[indexes]
                 breaks = np.flatnonzero(np.diff(frames) > 1) + 1
-                px, py = np.insert(x.astype(float), breaks, np.nan), np.insert(values, breaks, np.nan)
-                self.plot.plot(px, py, pen=pg.intColor(color), symbol="o", symbolSize=4, connect="finite")
+                px, py = np.insert(x.astype(float), breaks, np.nan), np.insert(
+                    values, breaks, np.nan
+                )
+                self.plot.plot(
+                    px,
+                    py,
+                    pen=pg.intColor(color),
+                    symbol="o",
+                    symbolSize=4,
+                    connect="finite",
+                )
                 y[indexes] = values
                 color += 1
         selected["display_value"] = y
@@ -211,7 +261,8 @@ class TraceViewerWidget(AnalysisTool):
         self.plot.setLabel("bottom", self.xaxis.currentText())
         units = (
             np.unique(selected["unit"])
-            if "unit" in selected and self.metric.currentText() in ("intensity", "photons")
+            if "unit" in selected
+            and self.metric.currentText() in ("intensity", "photons")
             else []
         )
         suffix = (
@@ -229,5 +280,9 @@ class TraceViewerWidget(AnalysisTool):
             raise ValueError("Select a measured trace")
         rows = self._columns
         tracks = np.unique(rows["track_id"][rows["track_id"] != 0])
-        ids = tracks if len(tracks) else np.unique(rows["localization_id"][rows["localization_id"] != 0])
+        ids = (
+            tracks
+            if len(tracks)
+            else np.unique(rows["localization_id"][rows["localization_id"] != 0])
+        )
         self.request_selection(ids, "tracks" if len(tracks) else "localizations")

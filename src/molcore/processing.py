@@ -90,12 +90,18 @@ def apply_localisation(
         Result containing the stable IDs allocated by the model.
     """
     if result.frame_range is not None:
-        raise ValueError("Subset processing is a preview and cannot replace a partition")
+        raise ValueError(
+            "Subset processing is a preview and cannot replace a partition"
+        )
     if result.failed_fits and not len(result.columns["frame"]):
-        raise ValueError("No localisation fits converged; active results were preserved")
+        raise ValueError(
+            "No localisation fits converged; active results were preserved"
+        )
     camera = result.camera if camera is None else camera
     if camera is None:
-        raise ValueError("Localisation results require the camera calibration used during fitting")
+        raise ValueError(
+            "Localisation results require the camera calibration used during fitting"
+        )
 
     def commit(model: Dataset) -> Any:
         """Commit.
@@ -106,7 +112,9 @@ def apply_localisation(
         Returns:
             Result returned after updating the staged model.
         """
-        ids = model.localizations.replace(result.acquisition_id, result.channel, **result.columns)
+        ids = model.localizations.replace(
+            result.acquisition_id, result.channel, **result.columns
+        )
         record(
             model,
             "localisation",
@@ -122,12 +130,17 @@ def apply_localisation(
         )
         return replace(result, localization_ids=ids)
 
-    return transact(dataset, commit, expected=result.expected if expected is None else expected)
+    return transact(
+        dataset, commit, expected=result.expected if expected is None else expected
+    )
 
 
 @logged
 def apply_drift(
-    dataset: Dataset, results: Mapping[str, DriftResult], *, expected: FreshnessToken | None = None
+    dataset: Dataset,
+    results: Mapping[str, DriftResult],
+    *,
+    expected: FreshnessToken | None = None,
 ) -> dict[str, DriftResult]:
     """Apply one or more drift results atomically.
 
@@ -230,21 +243,31 @@ def apply_alignment(
                     .channel_specs[result.source_channel]
                     .emission,
                     "source_shape": list(
-                        staged.acquisitions[result.acquisition_id].channels[result.source_channel].shape[1:]
+                        staged.acquisitions[result.acquisition_id]
+                        .channels[result.source_channel]
+                        .shape[1:]
                     ),
                     "source_roi": list(
-                        staged.acquisitions[result.acquisition_id].channels[result.source_channel].roi
+                        staged.acquisitions[result.acquisition_id]
+                        .channels[result.source_channel]
+                        .roi
                     ),
                     "target_emission": staged.acquisitions[result.acquisition_id]
                     .channel_specs[result.target_channel]
                     .emission,
                     "target_shape": list(
-                        staged.acquisitions[result.acquisition_id].channels[result.target_channel].shape[1:]
+                        staged.acquisitions[result.acquisition_id]
+                        .channels[result.target_channel]
+                        .shape[1:]
                     ),
                     "target_roi": list(
-                        staged.acquisitions[result.acquisition_id].channels[result.target_channel].roi
+                        staged.acquisitions[result.acquisition_id]
+                        .channels[result.target_channel]
+                        .roi
                     ),
-                    "pixel_size_nm": staged.acquisitions[result.acquisition_id].pixel_size,
+                    "pixel_size_nm": staged.acquisitions[
+                        result.acquisition_id
+                    ].pixel_size,
                 },
             )
         )
@@ -264,12 +287,17 @@ def apply_alignment(
         )
         return replace(result, calibration_name=name)
 
-    return transact(dataset, commit, expected=result.expected if expected is None else expected)
+    return transact(
+        dataset, commit, expected=result.expected if expected is None else expected
+    )
 
 
 @logged
 def apply_segmentations(
-    dataset: Dataset, results: Mapping[str, Segmentation], *, expected: FreshnessToken | None = None
+    dataset: Dataset,
+    results: Mapping[str, Segmentation],
+    *,
+    expected: FreshnessToken | None = None,
 ) -> dict[str, Segmentation]:
     """Validate and store every mask before exposing any part of a batch.
 
@@ -300,14 +328,18 @@ def apply_segmentations(
             if key != value.id:
                 raise ValueError("Segmentation ID does not match its result key")
             model.add_segmentation(deepcopy(value))
-        cellpose_values = [v for v in results.values() if v.metadata.get("algorithm") == "cellpose"]
+        cellpose_values = [
+            v for v in results.values() if v.metadata.get("algorithm") == "cellpose"
+        ]
         if cellpose_values:
             model.processing.settings["cellpose"] = {
                 **previous,
                 **{v.id: deepcopy(v.metadata) for v in cellpose_values},
             }
             for package in ("cellpose", "torch"):
-                model.processing.software[package] = cellpose_values[0].metadata[f"{package}_version"]
+                model.processing.software[package] = cellpose_values[0].metadata[
+                    f"{package}_version"
+                ]
         return {key: model.segmentations[key] for key in results}
 
     return transact(dataset, commit, expected=expected)
@@ -318,7 +350,9 @@ def _apply(result: Any, dataset: Dataset) -> Any:
     raise TypeError(f"No result handler registered for {type(result).__name__}")
 
 
-def register_result_handler[T](result_type: type[T], handler: Callable[[T, Dataset], T]) -> None:
+def register_result_handler[T](
+    result_type: type[T], handler: Callable[[T, Dataset], T]
+) -> None:
     """Register application of an extension's detached result type.
 
     Args:
@@ -339,7 +373,9 @@ def apply_result[T](dataset: Dataset, result: T) -> T:
         Applied result, preserving its concrete type.
     """
     return transact(
-        dataset, lambda staged: _apply(result, staged), expected=getattr(result, "expected", None)
+        dataset,
+        lambda staged: _apply(result, staged),
+        expected=getattr(result, "expected", None),
     )
 
 
@@ -370,15 +406,29 @@ def apply_results(dataset: Dataset, results: Iterable[Any]) -> tuple[Any, ...]:
     return transact(dataset, commit)
 
 
-_apply.register(LocalisationResult, lambda result, dataset: apply_localisation(dataset, result))
+_apply.register(
+    LocalisationResult, lambda result, dataset: apply_localisation(dataset, result)
+)
 _apply.register(
     DriftResult,
-    lambda result, dataset: apply_drift(dataset, {result.acquisition_id: result})[result.acquisition_id],
+    lambda result, dataset: apply_drift(dataset, {result.acquisition_id: result})[
+        result.acquisition_id
+    ],
 )
-_apply.register(AlignmentResult, lambda result, dataset: apply_alignment(dataset, result))
-_apply.register(TrackingResult, lambda result, dataset: apply_tracking(dataset, result))
-_apply.register(PhotometryResult, lambda result, dataset: apply_photometry(dataset, result))
-_apply.register(PhotonSequenceResult, lambda result, dataset: apply_photon_sequences(dataset, result))
 _apply.register(
-    Segmentation, lambda result, dataset: apply_segmentations(dataset, {result.id: result})[result.id]
+    AlignmentResult, lambda result, dataset: apply_alignment(dataset, result)
+)
+_apply.register(TrackingResult, lambda result, dataset: apply_tracking(dataset, result))
+_apply.register(
+    PhotometryResult, lambda result, dataset: apply_photometry(dataset, result)
+)
+_apply.register(
+    PhotonSequenceResult,
+    lambda result, dataset: apply_photon_sequences(dataset, result),
+)
+_apply.register(
+    Segmentation,
+    lambda result, dataset: apply_segmentations(dataset, {result.id: result})[
+        result.id
+    ],
 )

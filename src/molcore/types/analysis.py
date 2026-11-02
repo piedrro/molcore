@@ -77,7 +77,13 @@ class RenderSettings:
         """Validate the immutable record after construction."""
         if not np.isfinite(self.oversampling) or self.oversampling <= 0:
             raise ValueError("Oversampling must be finite and positive")
-        if self.blur_method not in ("none", "smooth", "convolve", "gaussian", "gaussian_iso"):
+        if self.blur_method not in (
+            "none",
+            "smooth",
+            "convolve",
+            "gaussian",
+            "gaussian_iso",
+        ):
             raise ValueError("Unknown Picasso blur method")
         if not np.isfinite(self.min_blur_width) or self.min_blur_width < 0:
             raise ValueError("Minimum blur width must be finite and nonnegative")

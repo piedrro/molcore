@@ -31,9 +31,13 @@ def to_records(columns: Mapping[str, np.ndarray]) -> np.ndarray:
     """
     arrays = {k: np.asarray(v) for k, v in columns.items()}
     lengths = {len(v) for v in arrays.values()}
-    if len(lengths) > 1 or any(v.ndim != 1 or v.dtype.kind == "O" for v in arrays.values()):
+    if len(lengths) > 1 or any(
+        v.ndim != 1 or v.dtype.kind == "O" for v in arrays.values()
+    ):
         raise ValueError("Expected equally sized, typed 1D columns")
-    result = np.empty(next(iter(lengths), 0), dtype=[(k, v.dtype) for k, v in arrays.items()])
+    result = np.empty(
+        next(iter(lengths), 0), dtype=[(k, v.dtype) for k, v in arrays.items()]
+    )
     for name, values in arrays.items():
         result[name] = values
     return result
@@ -55,7 +59,9 @@ def from_records(records: np.ndarray) -> dict[str, np.ndarray]:
 
 
 @logged
-def write_picasso(path: str | Path, columns: Mapping[str, np.ndarray], metadata: list[dict]) -> None:
+def write_picasso(
+    path: str | Path, columns: Mapping[str, np.ndarray], metadata: list[dict]
+) -> None:
     """Write Picasso's locs dataset and companion YAML metadata documents.
 
     Args:
@@ -72,7 +78,9 @@ def write_picasso(path: str | Path, columns: Mapping[str, np.ndarray], metadata:
     converted = {}
     for name, values in columns.items():
         values = np.asarray(values)
-        converted[name] = np.char.encode(values, "utf-8") if values.dtype.kind == "U" else values
+        converted[name] = (
+            np.char.encode(values, "utf-8") if values.dtype.kind == "U" else values
+        )
     records = to_records(converted)
     text = yaml.safe_dump_all(metadata, allow_unicode=True, sort_keys=False)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,7 +106,11 @@ def read_picasso(path: str | Path) -> tuple[dict[str, np.ndarray], list[dict]]:
         if values.dtype.kind == "S":
             result[name] = np.char.decode(values, "utf-8")
     yaml_path = path.with_suffix(".yaml")
-    metadata = list(yaml.safe_load_all(yaml_path.read_text(encoding="utf-8"))) if yaml_path.exists() else []
+    metadata = (
+        list(yaml.safe_load_all(yaml_path.read_text(encoding="utf-8")))
+        if yaml_path.exists()
+        else []
+    )
     return result, metadata
 
 
@@ -113,14 +125,18 @@ def _timeline(rows: dict[str, np.ndarray], frame_column: str | None) -> np.ndarr
         Computed NumPy array value.
     """
     if frame_column == "frame" and len(np.unique(rows.get("acquisition_id", []))) > 1:
-        raise ValueError("Multiple acquisitions require an explicit sequence_frame timeline")
+        raise ValueError(
+            "Multiple acquisitions require an explicit sequence_frame timeline"
+        )
     if frame_column not in rows:
         raise ValueError(f"Missing timeline column: {frame_column}")
     return rows[frame_column]
 
 
 @logged
-def napari_points(rows: Mapping[str, np.ndarray], *, frame_column: str = "frame") -> np.ndarray:
+def napari_points(
+    rows: Mapping[str, np.ndarray], *, frame_column: str = "frame"
+) -> np.ndarray:
     """Convert a localization subset into napari (time, y, x) points.
 
     Args:
@@ -130,11 +146,15 @@ def napari_points(rows: Mapping[str, np.ndarray], *, frame_column: str = "frame"
     Returns:
         Floating-point array of shape (n, 3).
     """
-    return np.column_stack([_timeline(rows, frame_column), rows["y"], rows["x"]]).astype(float)
+    return np.column_stack(
+        [_timeline(rows, frame_column), rows["y"], rows["x"]]
+    ).astype(float)
 
 
 @logged
-def napari_tracks(rows: Mapping[str, np.ndarray], *, frame_column: str = "frame") -> np.ndarray:
+def napari_tracks(
+    rows: Mapping[str, np.ndarray], *, frame_column: str = "frame"
+) -> np.ndarray:
     """Convert joined track rows into napari (track_id, time, y, x) data.
 
     Args:

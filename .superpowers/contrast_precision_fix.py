@@ -1,9 +1,10 @@
 from pathlib import Path
-p=Path('src/molcore/contrast.py')
-s=p.read_text()
-start=s.index("        # NumPy's linear interpolation")
-end=s.index('    lower, upper = float(lower), float(upper)',start)
-s=s[:start]+'''        values.sort()
+
+p = Path("src/molcore/contrast.py")
+s = p.read_text()
+start = s.index("        # NumPy's linear interpolation")
+end = s.index("    lower, upper = float(lower), float(upper)", start)
+s = s[:start] + """        values.sort()
         limits = []
         for percentile in settings.percentiles:
             rank = (len(values) - 1) * (percentile / 100.)
@@ -22,5 +23,5 @@ s=s[:start]+'''        values.sort()
                 value = b - (b - a) * (1. - fraction)
             limits.append(value)
         lower, upper = limits
-'''+s[end:]
+""" + s[end:]
 p.write_text(s)

@@ -34,7 +34,8 @@ def _summary(value: Any) -> str:
             type(value).__name__
             + "("
             + ", ".join(
-                f"{field.name}={_summary(getattr(value, field.name))}" for field in fields(value)[:15]
+                f"{field.name}={_summary(getattr(value, field.name))}"
+                for field in fields(value)[:15]
             )
             + ")"
         )
@@ -113,7 +114,9 @@ def logged[**P, R](function: Callable[P, R]) -> Callable[P, R]:
         if isinstance(error, (CancelledError, GeneratorExit)):
             logger.debug("%s cancelled after %.3fs", name, perf_counter() - start)
         else:
-            logger.debug("%s failed after %.3fs", name, perf_counter() - start, exc_info=True)
+            logger.debug(
+                "%s failed after %.3fs", name, perf_counter() - start, exc_info=True
+            )
 
     if inspect.isgeneratorfunction(function):
 

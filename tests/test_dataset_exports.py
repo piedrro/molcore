@@ -18,10 +18,15 @@ class DatasetExportTests(unittest.TestCase):
         from molcore.exports import export_dataset_images
 
         dataset = Dataset()
-        dataset.add_acquisition(image_acquisition(ArraySource(np.ones((3, 4, 4))), id="movie"))
+        dataset.add_acquisition(
+            image_acquisition(ArraySource(np.ones((3, 4, 4))), id="movie")
+        )
         with TemporaryDirectory() as directory:
             paths = export_dataset_images(dataset, directory)
-            expected = {path: path.read_bytes() for path in (*paths, Path(directory) / "manifest.json")}
+            expected = {
+                path: path.read_bytes()
+                for path in (*paths, Path(directory) / "manifest.json")
+            }
             cancel = threading.Event()
 
             def progress(update):
@@ -29,7 +34,9 @@ class DatasetExportTests(unittest.TestCase):
                     cancel.set()
 
             with self.assertRaises(CancelledError):
-                export_dataset_images(dataset, directory, progress=progress, cancel_event=cancel)
+                export_dataset_images(
+                    dataset, directory, progress=progress, cancel_event=cancel
+                )
             self.assertEqual({path: path.read_bytes() for path in expected}, expected)
 
     def test_export_bakes_both_alex_acceptor_channels_only_in_output(self):
@@ -40,7 +47,9 @@ class DatasetExportTests(unittest.TestCase):
         pixels[:, 5, 12 + 6] = 100
         original = pixels.copy()
         dataset = Dataset(id="round-1")
-        dataset.add_acquisition(image_acquisition(ArraySource(pixels), id="movie", mode="alex"))
+        dataset.add_acquisition(
+            image_acquisition(ArraySource(pixels), id="movie", mode="alex")
+        )
         dataset.transforms.add_calibration(
             Calibration("optics", np.array([[1, 0, -2], [0, 1, 0], [0, 0, 1]]))
         )

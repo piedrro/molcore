@@ -88,7 +88,9 @@ class CpuTests(unittest.TestCase):
 
         with CpuExecutor(num_cpus=1, max_pending=2) as cpu:
             with self.assertRaises(CancelledError):
-                cpu.map(cpu_wait, jobs(), total=100, progress=progress, cancel_event=stop)
+                cpu.map(
+                    cpu_wait, jobs(), total=100, progress=progress, cancel_event=stop
+                )
         self.assertLessEqual(len(consumed), 2)
 
     def test_configuration_empty_jobs_and_pre_cancelled_jobs(self):

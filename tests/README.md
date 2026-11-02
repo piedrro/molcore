@@ -17,7 +17,7 @@ standard runtime dependencies to exercise every case. The suite covers:
 - Real Picasso detection, Gaussian LQ/MLE, RCC/AIM drift and multi-acquisition
   undrifting on synthetic data; model-based affine alignment and preservation of
   active results after stale inputs, cancellation or optimizer failure.
-- Cellpose 4 constructor/eval compatibility, real preprocessing/mask construction
+- Cellpose 3 constructor/eval compatibility, real preprocessing/mask construction
   with controlled network outputs, real spawned invalid-checkpoint failure,
   inference atomicity, previews, source/target staleness and segmentation persistence.
 

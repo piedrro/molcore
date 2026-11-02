@@ -78,13 +78,21 @@ def colocalise(
     if channel == target_channel:
         raise ValueError("Select two different channels")
     source_view, source = partition(dataset, acquisition_id, channel, space, source_ids)
-    target_view, target = partition(dataset, acquisition_id, target_channel, space, target_ids)
+    target_view, target = partition(
+        dataset, acquisition_id, target_channel, space, target_ids
+    )
     if space == "raw" and source_view.roi != target_view.roi:
         raise ValueError("Raw channel ROIs differ; use a common registered reference")
     xy = np.column_stack((source["x"], source["y"]))
     uv = np.column_stack((target["x"], target["y"]))
-    left, right = np.flatnonzero(np.isfinite(xy).all(axis=1)), np.flatnonzero(np.isfinite(uv).all(axis=1))
-    a, b, distances = np.array([], dtype=int), np.array([], dtype=int), np.array([], dtype=float)
+    left, right = np.flatnonzero(np.isfinite(xy).all(axis=1)), np.flatnonzero(
+        np.isfinite(uv).all(axis=1)
+    )
+    a, b, distances = (
+        np.array([], dtype=int),
+        np.array([], dtype=int),
+        np.array([], dtype=float),
+    )
     if len(left) and len(right):
         distances, nearest = _nearest(xy[left], uv[right])
         _, reverse = _nearest(uv[right], xy[left])

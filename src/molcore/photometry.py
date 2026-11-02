@@ -108,7 +108,11 @@ def _job(payload: tuple, reporter: WorkerProgress) -> list[dict]:
     image, requests, neighbours, settings = payload
     image = np.asarray(image, dtype=np.float64)
     finite = np.isfinite(image)
-    radius = settings.spot_size // 2 if settings.shape == ApertureShape.SQUARE else settings.spot_size / 2
+    radius = (
+        settings.spot_size // 2
+        if settings.shape == ApertureShape.SQUARE
+        else settings.spot_size / 2
+    )
     exclusion = np.zeros(image.shape, dtype=bool)
     if settings.exclude_neighbours:
         for x, y in neighbours:
@@ -125,7 +129,9 @@ def _job(payload: tuple, reporter: WorkerProgress) -> list[dict]:
         outer = radius + settings.buffer + settings.background_width
         region, ring = _region(image.shape, x, y, outer, settings.shape)
         cx, cy = int(np.floor(x + 0.5)), int(np.floor(y + 0.5))
-        yy, xx = np.ogrid[region[0].start : region[0].stop, region[1].start : region[1].stop]
+        yy, xx = np.ogrid[
+            region[0].start : region[0].stop, region[1].start : region[1].stop
+        ]
         distance = (
             np.maximum(abs(xx - cx), abs(yy - cy))
             if settings.shape == ApertureShape.SQUARE
@@ -147,7 +153,11 @@ def _job(payload: tuple, reporter: WorkerProgress) -> list[dict]:
             global_background_count=global_values.size,
         )
         chosen = summaries[
-            "local_background" if settings.background == BackgroundMethod.LOCAL else "global_background"
+            (
+                "local_background"
+                if settings.background == BackgroundMethod.LOCAL
+                else "global_background"
+            )
         ]
         row["intensity"] = summaries["signal"]["sum"] - chosen["mean"] * signal.size
         output.append(row)
@@ -183,7 +193,10 @@ def _columns(rows: list[dict]) -> dict[str, np.ndarray]:
     }
     for prefix in ("signal", "local_background", "global_background"):
         dtypes.update({f"{prefix}_{name}": float for name in _METRICS})
-    return {name: np.asarray([row[name] for row in rows], dtype=dtype) for name, dtype in dtypes.items()}
+    return {
+        name: np.asarray([row[name] for row in rows], dtype=dtype)
+        for name, dtype in dtypes.items()
+    }
 
 
 def _extract(
@@ -247,7 +260,11 @@ def _extract(
         selected_acquisitions = set(rows["acquisition_id"].tolist())
         expected = dependency_token(
             dataset,
-            ((a, c) for a in selected_acquisitions for c in dataset.acquisitions[a].channels),
+            (
+                (a, c)
+                for a in selected_acquisitions
+                for c in dataset.acquisitions[a].channels
+            ),
             components={"localizations", "tracks", "transforms", "segmentations"},
         )
         initial.validate(dataset)
@@ -265,7 +282,11 @@ def _extract(
             reference[:2] -= transforms._displacement(a, np.array([anchor_frame]))[0]
         for channel in channels if channels is not None else [source]:
             view = dataset.acquisitions[a].channels[channel]
-            frames = view.source_frames if mode == TraceMode.STATIONARY else np.array([anchor_frame])
+            frames = (
+                view.source_frames
+                if mode == TraceMode.STATIONARY
+                else np.array([anchor_frame])
+            )
             frames = frames[np.isin(frames, view.source_frames)]
             if frame_range is not None:
                 frames = frames[(frames >= frame_range[0]) & (frames < frame_range[1])]
@@ -287,8 +308,12 @@ def _extract(
                         "channel": channel,
                         "frame": int(frame),
                         "channel_frame": view.channel_index(int(frame)),
-                        "cycle_index": info.cycle_index if info.cycle_index is not None else -1,
-                        "timestamp": info.timestamp if info.timestamp is not None else np.nan,
+                        "cycle_index": (
+                            info.cycle_index if info.cycle_index is not None else -1
+                        ),
+                        "timestamp": (
+                            info.timestamp if info.timestamp is not None else np.nan
+                        ),
                         "localization_id": lid,
                         "track_id": tid,
                         "x": float(target[0]),
@@ -317,7 +342,13 @@ def _extract(
             yield view[view.channel_index(frame)], group, neighbours, settings
 
     with executor(cpu, num_cpus) as runner:
-        chunks = runner.map(_job, jobs(), total=len(requests), progress=progress, cancel_event=cancel_event)
+        chunks = runner.map(
+            _job,
+            jobs(),
+            total=len(requests),
+            progress=progress,
+            cancel_event=cancel_event,
+        )
     if cancel_event is not None and cancel_event.is_set():
         raise CancelledError("Photometry cancelled")
     columns = _columns([row for chunk in chunks for row in chunk])
@@ -366,7 +397,10 @@ def apply_photometry(
             from_columns(
                 result.columns,
                 run_id=result.run_id,
-                metadata={"settings": asdict(result.settings), "mode": str(result.mode)},
+                metadata={
+                    "settings": asdict(result.settings),
+                    "mode": str(result.mode),
+                },
                 depends_on_localizations=result.settings.exclude_neighbours,
             ),
             result.settings,
@@ -402,7 +436,9 @@ def apply_photometry(
         }
         return replace(result, observation_ids=ids)
 
-    return transact(dataset, commit, expected=result.expected if expected is None else expected)
+    return transact(
+        dataset, commit, expected=result.expected if expected is None else expected
+    )
 
 
 @logged

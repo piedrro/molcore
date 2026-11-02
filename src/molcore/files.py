@@ -27,7 +27,13 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike
 
-    from .types import CancelEvent, CoordinateSpace, Dataset, ImageSource, ProgressCallback
+    from .types import (
+        CancelEvent,
+        CoordinateSpace,
+        Dataset,
+        ImageSource,
+        ProgressCallback,
+    )
 
 
 @logged
@@ -57,7 +63,9 @@ def report(
 
 @contextmanager
 @logged
-def atomic_files(paths: Sequence[str | Path], *, publish_guard: Any = None) -> Iterator[Any]:
+def atomic_files(
+    paths: Sequence[str | Path], *, publish_guard: Any = None
+) -> Iterator[Any]:
     """Stage related output files beside their destinations and roll back failures.
 
     Args:
@@ -74,14 +82,18 @@ def atomic_files(paths: Sequence[str | Path], *, publish_guard: Any = None) -> I
     try:
         for path in paths:
             path.parent.mkdir(parents=True, exist_ok=True)
-            fd, temp = tempfile.mkstemp(prefix=".molcore-", suffix=path.suffix, dir=path.parent)
+            fd, temp = tempfile.mkstemp(
+                prefix=".molcore-", suffix=path.suffix, dir=path.parent
+            )
             os.close(fd)
             temps.append(Path(temp))
         yield temps
         with publish_guard() if publish_guard is not None else nullcontext():
             for path, temp in zip(paths, temps, strict=True):
                 if path.exists():
-                    fd, backup = tempfile.mkstemp(prefix=".molcore-backup-", dir=path.parent)
+                    fd, backup = tempfile.mkstemp(
+                        prefix=".molcore-backup-", dir=path.parent
+                    )
                     os.close(fd)
                     backup = Path(backup)
                     backup.unlink()
@@ -146,7 +158,13 @@ def read_image(
 
         pixels = np.empty(source.shape, source.dtype)
         for frame in range(len(source)):
-            report(progress, cancel_event, frame, max(1, len(source)), "Loading image into RAM")
+            report(
+                progress,
+                cancel_event,
+                frame,
+                max(1, len(source)),
+                "Loading image into RAM",
+            )
             pixels[frame] = source[frame]
         source = ArraySource(pixels)
     elif memory != "lazy":
@@ -188,10 +206,17 @@ def image_acquisition(
         if mode in ("fret", "alex"):
             y, x = source.shape[1:]
             horizontal = layout.endswith("left")
-            if layout not in ("donor-left", "acceptor-left", "donor-top", "acceptor-top"):
+            if layout not in (
+                "donor-left",
+                "acceptor-left",
+                "donor-top",
+                "acceptor-top",
+            ):
                 raise ValueError("Unknown donor/acceptor layout")
             if (x if horizontal else y) % 2:
-                raise ValueError("Split dimension must be even; supply explicit custom ROIs otherwise")
+                raise ValueError(
+                    "Split dimension must be even; supply explicit custom ROIs otherwise"
+                )
             rois = (
                 [(0, y, 0, x // 2), (0, y, x // 2, x)]
                 if horizontal
@@ -202,7 +227,9 @@ def image_acquisition(
             if mode == "fret":
                 channel_specs = {
                     name: ChannelSpec(roi, emission=em)
-                    for name, roi, em in zip(("donor", "acceptor"), rois, ("D", "A"), strict=True)
+                    for name, roi, em in zip(
+                        ("donor", "acceptor"), rois, ("D", "A"), strict=True
+                    )
                 }
             else:
                 channel_specs = {
@@ -218,7 +245,10 @@ def image_acquisition(
         excitation_sequence=excitation,
         phase=phase,
         pixel_size=pixel_size,
-        metadata={"source_path": getattr(source, "path", None), "channel_layout": layout},
+        metadata={
+            "source_path": getattr(source, "path", None),
+            "channel_layout": layout,
+        },
     )
 
 
@@ -249,8 +279,16 @@ def export_tiff(
         publish_guard: Optional context factory validating live inputs before publishing output.
     """
     acquisition = dataset.acquisitions[acquisition_id]
-    source = acquisition.source if original else dataset.transforms.view(acquisition_id, channel, space=space)
-    frames = np.arange(len(source)) if original else acquisition.channels[channel].source_frames
+    source = (
+        acquisition.source
+        if original
+        else dataset.transforms.view(acquisition_id, channel, space=space)
+    )
+    frames = (
+        np.arange(len(source))
+        if original
+        else acquisition.channels[channel].source_frames
+    )
     if not len(source):
         raise ValueError("Cannot export an empty image stack")
     metadata = {
@@ -263,7 +301,9 @@ def export_tiff(
     if acquisition.timestamps is not None:
         metadata["timestamps"] = acquisition.timestamps[frames].tolist()
     path = Path(path)
-    with atomic_files([path, path.with_suffix(path.suffix + ".yaml")], publish_guard=publish_guard) as (
+    with atomic_files(
+        [path, path.with_suffix(path.suffix + ".yaml")], publish_guard=publish_guard
+    ) as (
         temp,
         info,
     ):
@@ -271,7 +311,9 @@ def export_tiff(
             temp, bigtiff=np.prod(source.shape) * source.dtype.itemsize >= 2**32
         ) as writer:
             for index in range(len(source)):
-                report(progress, cancel_event, index, len(source), "Exporting TIFF frames")
+                report(
+                    progress, cancel_event, index, len(source), "Exporting TIFF frames"
+                )
                 writer.write(
                     source[index],
                     photometric="minisblack",
@@ -308,7 +350,9 @@ def read_table(path: str | Path) -> dict[str, np.ndarray]:
     if path.suffix.lower() in (".h5", ".hdf5"):
         return read_picasso(path)[0]
     with path.open(encoding="utf-8-sig", newline="") as stream:
-        reader = csv.DictReader(stream, delimiter="\t" if path.name.lower().endswith(".pos.out") else ",")
+        reader = csv.DictReader(
+            stream, delimiter="\t" if path.name.lower().endswith(".pos.out") else ","
+        )
         names = reader.fieldnames
         if not names or len(set(names)) != len(names):
             raise ValueError("Table requires distinct named columns")
@@ -331,7 +375,10 @@ def read_table(path: str | Path) -> dict[str, np.ndarray]:
 
 @logged
 def write_table(
-    path: str | Path, columns: Mapping[str, np.ndarray], *, metadata: Mapping[str, Any] | None = None
+    path: str | Path,
+    columns: Mapping[str, np.ndarray],
+    *,
+    metadata: Mapping[str, Any] | None = None,
 ) -> None:
     """Write typed columns as CSV, POS.OUT or Picasso with atomic publication.
 
@@ -350,9 +397,13 @@ def write_table(
             os.replace(data.with_suffix(".yaml"), info)
         return
     pos = path.name.lower().endswith(".pos.out")
-    required = {"frame", "x", "y", "photons", "bg", "sx", "sy"} if pos else {"frame", "x", "y"}
+    required = (
+        {"frame", "x", "y", "photons", "bg", "sx", "sy"} if pos else {"frame", "x", "y"}
+    )
     if not required <= columns.keys():
-        raise ValueError(f"Missing format-required measurements: {sorted(required - columns.keys())}")
+        raise ValueError(
+            f"Missing format-required measurements: {sorted(required - columns.keys())}"
+        )
     converted = dict(columns)
     if pos:
         converted["frame"] = np.asarray(columns["frame"]) + 1
@@ -398,7 +449,11 @@ def import_table(
         raise ValueError("Import requires frame/x/y and a zero/one frame base")
     columns = {k: np.asarray(v).copy() for k, v in columns.items()}
     frames = np.asarray(columns["frame"], dtype=float) - frame_base
-    if not np.isfinite(frames).all() or np.any(frames < 0) or np.any(frames != np.floor(frames)):
+    if (
+        not np.isfinite(frames).all()
+        or np.any(frames < 0)
+        or np.any(frames != np.floor(frames))
+    ):
         raise ValueError("Frames must be nonnegative integers after base conversion")
     frames = frames.astype(np.int64)
     acquisition = dataset.acquisitions[acquisition_id]
@@ -433,7 +488,9 @@ def import_table(
         """
         if reuse_ids:
             if not tracks or "localization_id" not in columns:
-                raise ValueError("Reusing tracks requires explicit localization_id anchors")
+                raise ValueError(
+                    "Reusing tracks requires explicit localization_id anchors"
+                )
             ids = np.asarray(columns["localization_id"])
             for index, identifier in enumerate(ids):
                 row = model.localizations.query(ids=[identifier], space="raw")
@@ -447,7 +504,9 @@ def import_table(
                         ("y", columns["y"][index]),
                     )
                 ):
-                    raise ValueError("Localization anchor conflicts with imported measurements")
+                    raise ValueError(
+                        "Localization anchor conflicts with imported measurements"
+                    )
         else:
             data = {
                 k: v
@@ -470,10 +529,15 @@ def import_table(
             }
             if "id" in columns:
                 data["source_localization_id"] = columns["id"]
-            ids = model.localizations.add(acquisition_id=acquisition_id, channel=channel, **data)
+            ids = model.localizations.add(
+                acquisition_id=acquisition_id, channel=channel, **data
+            )
         if tracks:
             for identifier in np.unique(group):
-                model.tracks.add(ids[group == identifier], metadata={"source_track_id": str(identifier)})
+                model.tracks.add(
+                    ids[group == identifier],
+                    metadata={"source_track_id": str(identifier)},
+                )
         return ids
 
     return transact(dataset, commit)

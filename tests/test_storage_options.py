@@ -15,8 +15,12 @@ from molcore import Acquisition, ArraySource, Dataset, PhotonSequence, storage
 class StorageOptionsTests(unittest.TestCase):
     def model(self):
         model = Dataset()
-        model.add_acquisition(Acquisition(ArraySource(np.ones((2, 9, 9), dtype=np.uint16)), id="a"))
-        ids = model.localizations.add(acquisition_id="a", channel="image", frame=[0, 1], x=[4, 4], y=[4, 4])
+        model.add_acquisition(
+            Acquisition(ArraySource(np.ones((2, 9, 9), dtype=np.uint16)), id="a")
+        )
+        ids = model.localizations.add(
+            acquisition_id="a", channel="image", frame=[0, 1], x=[4, 4], y=[4, 4]
+        )
         model.tracks.add(ids[:1])
         model.photon_sequences.add(
             PhotonSequence(
@@ -31,14 +35,18 @@ class StorageOptionsTests(unittest.TestCase):
         return model
 
     def test_all_combinations_and_full_images(self):
-        self.assertTrue(hasattr(storage, "SaveOptions"), "Composable SaveOptions is missing")
+        self.assertTrue(
+            hasattr(storage, "SaveOptions"), "Composable SaveOptions is missing"
+        )
         with tempfile.TemporaryDirectory() as directory:
             for originals in ("none", "full"):
                 for flags in itertools.product((False, True), repeat=3):
                     kinds = frozenset(
                         k
                         for k, selected in zip(
-                            ("localization", "track", "photon_sequence"), flags, strict=True
+                            ("localization", "track", "photon_sequence"),
+                            flags,
+                            strict=True,
                         )
                         if selected
                     )
@@ -46,17 +54,25 @@ class StorageOptionsTests(unittest.TestCase):
                     storage.save_dataset(
                         self.model(),
                         path,
-                        options=storage.SaveOptions(originals=originals, crops=kinds, crop_width=3),
+                        options=storage.SaveOptions(
+                            originals=originals, crops=kinds, crop_width=3
+                        ),
                     )
                     with h5py.File(path) as file:
-                        self.assertEqual("images" in file["acquisitions/0"], originals == "full")
+                        self.assertEqual(
+                            "images" in file["acquisitions/0"], originals == "full"
+                        )
                         self.assertEqual("crops" in file, flags[0] or flags[1])
                         self.assertEqual("photon_crops" in file, flags[2])
                         if flags[0] or flags[1]:
-                            self.assertEqual(len(file["crops/ids"]), 2 if flags[0] else 1)
+                            self.assertEqual(
+                                len(file["crops/ids"]), 2 if flags[0] else 1
+                            )
 
     def test_registered_source_and_unknown_reader(self):
-        self.assertTrue(hasattr(storage, "register_image_source"), "Source registration is missing")
+        self.assertTrue(
+            hasattr(storage, "register_image_source"), "Source registration is missing"
+        )
 
         class CustomSource(ArraySource):
             pass
@@ -69,7 +85,9 @@ class StorageOptionsTests(unittest.TestCase):
             source.path = descriptor["path"]
             return source
 
-        storage.register_image_source("test.custom", CustomSource, writer=writer, reader=reader)
+        storage.register_image_source(
+            "test.custom", CustomSource, writer=writer, reader=reader
+        )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "pixels.npy"
             pixels = np.ones((2, 9, 9), dtype=np.uint16)
@@ -80,10 +98,15 @@ class StorageOptionsTests(unittest.TestCase):
             model.add_acquisition(Acquisition(source, id="a"))
             target = Path(directory) / "snapshot"
             storage.save_dataset(
-                model, target, layout="directory", options=storage.SaveOptions(originals="external")
+                model,
+                target,
+                layout="directory",
+                options=storage.SaveOptions(originals="external"),
             )
             with storage.open_dataset(target) as loaded:
-                np.testing.assert_array_equal(loaded.acquisitions["a"].source[0], pixels[0])
+                np.testing.assert_array_equal(
+                    loaded.acquisitions["a"].source[0], pixels[0]
+                )
             np.save(path, pixels.astype(np.float32))
             with self.assertRaisesRegex(ValueError, "geometry/dtype changed"):
                 storage.open_dataset(target)
@@ -104,9 +127,18 @@ class StorageOptionsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "snapshot.h5"
             with self.assertRaises(ValueError):
-                storage.save_dataset(self.model(), path, options=storage.SaveOptions(), image_policy="full")
+                storage.save_dataset(
+                    self.model(),
+                    path,
+                    options=storage.SaveOptions(),
+                    image_policy="full",
+                )
             with self.assertRaises(ValueError):
-                storage.save_dataset(self.model(), path, options=storage.SaveOptions(originals="external"))
+                storage.save_dataset(
+                    self.model(),
+                    path,
+                    options=storage.SaveOptions(originals="external"),
+                )
 
     def test_explicit_none_omits_legacy_directory_references(self):
         import tifffile
@@ -119,9 +151,13 @@ class StorageOptionsTests(unittest.TestCase):
             model = Dataset()
             model.add_acquisition(Acquisition(TiffSource(source), id="a"))
             target = Path(directory) / "snapshot"
-            storage.save_dataset(model, target, layout="directory", options=storage.SaveOptions())
+            storage.save_dataset(
+                model, target, layout="directory", options=storage.SaveOptions()
+            )
             with h5py.File(target / "dataset.h5") as file:
-                self.assertNotIn("external", json.loads(file["acquisitions/0"].attrs["info"]))
+                self.assertNotIn(
+                    "external", json.loads(file["acquisitions/0"].attrs["info"])
+                )
 
     def test_explicit_external_rejects_sources_without_descriptors(self):
         with tempfile.TemporaryDirectory() as directory:

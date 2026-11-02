@@ -54,9 +54,9 @@ def cluster_localizations(
     valid = np.isfinite(xy).all(axis=1)
     labels = np.full(len(xy), -1, dtype=np.int64)
     if valid.any():
-        labels[valid] = DBSCAN(eps=settings.radius, min_samples=settings.min_samples, n_jobs=1).fit_predict(
-            xy[valid]
-        )
+        labels[valid] = DBSCAN(
+            eps=settings.radius, min_samples=settings.min_samples, n_jobs=1
+        ).fit_predict(xy[valid])
     clusters = np.unique(labels[labels >= 0])
     centroids = {
         "cluster": clusters,
@@ -66,4 +66,6 @@ def cluster_localizations(
     }
     rows["cluster"] = labels
     finish(dataset, expected, progress, cancel_event)
-    return ClusteringResult(acquisition_id, channel, space, settings, rows, expected, centroids)
+    return ClusteringResult(
+        acquisition_id, channel, space, settings, rows, expected, centroids
+    )

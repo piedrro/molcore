@@ -28,7 +28,9 @@ def backend_version() -> str:
     except PackageNotFoundError as exc:
         raise ImportError("Picasso is missing; install molcore[localisation]") from exc
     if tuple(int(part) for part in installed.split(".")[:2]) != (0, 11):
-        raise ImportError(f"MolCore processing supports Picasso >=0.11,<0.12; found {installed}")
+        raise ImportError(
+            f"MolCore processing supports Picasso >=0.11,<0.12; found {installed}"
+        )
     return installed
 
 
@@ -47,7 +49,9 @@ def snapshot(dataset: Dataset, acquisition_id: str) -> DependencyToken:
 
 
 @logged
-def check_snapshot(dataset: Dataset, acquisition_id: str, expected: DependencyToken) -> None:
+def check_snapshot(
+    dataset: Dataset, acquisition_id: str, expected: DependencyToken
+) -> None:
     """Check snapshot.
 
     Args:
@@ -80,7 +84,9 @@ def executor(cpu: CpuExecutor | None, num_cpus: int | None) -> Iterator[Any]:
 
 
 @logged
-def record(dataset: Dataset, stage: Any, acquisition_id: str, channel: str, values: Any) -> None:
+def record(
+    dataset: Dataset, stage: Any, acquisition_id: str, channel: str, values: Any
+) -> None:
     """Record.
 
     Args:
@@ -90,4 +96,6 @@ def record(dataset: Dataset, stage: Any, acquisition_id: str, channel: str, valu
         channel: Logical source channel name.
         values: Input values to validate, convert or display.
     """
-    dataset.processing.settings.setdefault(stage, {}).setdefault(acquisition_id, {})[channel] = values
+    dataset.processing.settings.setdefault(stage, {}).setdefault(acquisition_id, {})[
+        channel
+    ] = values

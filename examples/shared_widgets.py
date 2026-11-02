@@ -39,7 +39,10 @@ def demo_dataset() -> Dataset:
             id="demo",
             pixel_size=100.0,
             timestamps=np.arange(frames) * 0.05,
-            channel_specs={"donor": ChannelSpec((0, 31, 0, 31)), "acceptor": ChannelSpec((0, 31, 31, 62))},
+            channel_specs={
+                "donor": ChannelSpec((0, 31, 0, 31)),
+                "acceptor": ChannelSpec((0, 31, 31, 62)),
+            },
         )
     )
     ids = model.localizations.add(
@@ -76,7 +79,9 @@ def demo_dataset() -> Dataset:
             run_id="demo",
             unit=PhotonUnit.IMAGE_INTENSITY,
             method="synthetic",
-            positions=np.column_stack((10 + 0.15 * np.arange(frames), np.full(frames, 14.0))),
+            positions=np.column_stack(
+                (10 + 0.15 * np.arange(frames), np.full(frames, 14.0))
+            ),
             measurements=dict(
                 signal_sum=np.linspace(120, 200, frames),
                 signal_count=np.ones(frames),

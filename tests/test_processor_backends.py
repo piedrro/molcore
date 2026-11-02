@@ -7,7 +7,15 @@ from unittest.mock import patch
 
 import numpy as np
 
-from molcore import Acquisition, ArraySource, Dataset, Segmentation, cellpose, localisation, tracking
+from molcore import (
+    Acquisition,
+    ArraySource,
+    Dataset,
+    Segmentation,
+    cellpose,
+    localisation,
+    tracking,
+)
 from molcore.backends import BackendRegistry
 from molcore.execution import ExecutionContext
 from molcore.types import CameraSettings, LocalisationSettings, TrackingSettings
@@ -77,7 +85,9 @@ class SegmentBackend:
     version = "segment-custom-1"
 
     def compute(self, payload, reporter):
-        request, frame, identifier, image, path, settings, model_ref, model_stat = payload
+        request, frame, identifier, image, path, settings, model_ref, model_stat = (
+            payload
+        )
         reporter.check_cancelled()
         return Segmentation(
             identifier,
@@ -101,7 +111,11 @@ class ProcessorBackendTests(unittest.TestCase):
         software = self.model.processing.software.copy()
         registry = BackendRegistry()
         registry.register("localise", "custom", LocalBackend())
-        with patch.object(localisation, "backend_version", side_effect=AssertionError("builtin dependency")):
+        with patch.object(
+            localisation,
+            "backend_version",
+            side_effect=AssertionError("builtin dependency"),
+        ):
             result = localisation.localise(
                 self.model,
                 "a",
@@ -135,14 +149,23 @@ class ProcessorBackendTests(unittest.TestCase):
 
         cloned = clone_dataset(self.model)
         result = localisation.fit(
-            cloned, detected, camera=self.camera, context=self.execution, backend=LocalBackend(), apply=False
+            cloned,
+            detected,
+            camera=self.camera,
+            context=self.execution,
+            backend=LocalBackend(),
+            apply=False,
         )
         self.assertEqual(result.columns["frame"].tolist(), [0, 1, 2])
 
     def test_tracking_custom_backend_works_without_builtin_version(self):
         software = self.model.processing.software.copy()
-        self.model.localizations.add(acquisition_id="a", channel="image", frame=[0, 1, 2], x=4, y=4)
-        with patch.object(tracking, "version", side_effect=AssertionError("builtin dependency")):
+        self.model.localizations.add(
+            acquisition_id="a", channel="image", frame=[0, 1, 2], x=4, y=4
+        )
+        with patch.object(
+            tracking, "version", side_effect=AssertionError("builtin dependency")
+        ):
             result = tracking.track(
                 self.model,
                 "a",
@@ -157,8 +180,14 @@ class ProcessorBackendTests(unittest.TestCase):
 
     def test_custom_segmentation_bypasses_model_resolution(self):
         with (
-            patch.object(cellpose, "_backend_version", side_effect=AssertionError("builtin dependency")),
-            patch.object(cellpose, "_resolve_model", side_effect=AssertionError("builtin model")),
+            patch.object(
+                cellpose,
+                "_backend_version",
+                side_effect=AssertionError("builtin dependency"),
+            ),
+            patch.object(
+                cellpose, "_resolve_model", side_effect=AssertionError("builtin model")
+            ),
         ):
             result = cellpose.segment(
                 self.model,
@@ -170,19 +199,34 @@ class ProcessorBackendTests(unittest.TestCase):
             )
         self.assertEqual(result.id, "custom")
         self.assertIsNotNone(result.expected)
-        np.testing.assert_array_equal(self.model.segmentations["custom"].labels, result.labels)
+        np.testing.assert_array_equal(
+            self.model.segmentations["custom"].labels, result.labels
+        )
 
     def test_cancelled_context_stops_before_backend_resolution(self):
         event = threading.Event()
         event.set()
-        with patch.object(localisation, "backend_version", side_effect=AssertionError("builtin dependency")):
+        with patch.object(
+            localisation,
+            "backend_version",
+            side_effect=AssertionError("builtin dependency"),
+        ):
             with self.assertRaises(CancelledError):
                 localisation.localise(
-                    self.model, "a", "image", camera=self.camera, context=ExecutionContext(cancel_event=event)
+                    self.model,
+                    "a",
+                    "image",
+                    camera=self.camera,
+                    context=ExecutionContext(cancel_event=event),
                 )
 
     def test_context_conflict_rejected(self):
         with self.assertRaises(ValueError):
             tracking.track(
-                self.model, "a", "image", context=self.execution, num_cpus=2, backend=TrackBackend()
+                self.model,
+                "a",
+                "image",
+                context=self.execution,
+                num_cpus=2,
+                backend=TrackBackend(),
             )

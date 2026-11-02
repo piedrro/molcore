@@ -10,7 +10,12 @@ import numpy as np
 
 from ._logging import logged
 from ._processing import executor
-from .backends import BackendRegistry, ProcessorBackend, missing_backend, resolve_backend
+from .backends import (
+    BackendRegistry,
+    ProcessorBackend,
+    missing_backend,
+    resolve_backend,
+)
 from .cpu import CpuExecutor
 from .execution import ExecutionContext
 from .revisions import FreshnessToken
@@ -78,7 +83,9 @@ def _job(payload: tuple, reporter: WorkerProgress) -> tuple[np.ndarray, ...]:
                 reporter.check_cancelled()
                 indices = np.flatnonzero(frames == frame)
                 frame_ids[frame] = subset["id"][indices]
-                yield frame, np.column_stack([subset["x"][indices], subset["y"][indices]])
+                yield frame, np.column_stack(
+                    [subset["x"][indices], subset["y"][indices]]
+                )
 
         trajectories = {}
         for frame, particles in tp.link_iter(
@@ -91,7 +98,9 @@ def _job(payload: tuple, reporter: WorkerProgress) -> tuple[np.ndarray, ...]:
             for particle, lid in zip(particles, frame_ids.pop(frame), strict=True):
                 trajectories.setdefault(int(particle), []).append(lid)
             reporter.report(
-                group_index + (frame - first + 1) / (last - first + 1), len(groups), "Linking camera frames"
+                group_index + (frame - first + 1) / (last - first + 1),
+                len(groups),
+                "Linking camera frames",
             )
         output.extend(
             np.asarray(members, dtype=np.uint64)
@@ -142,7 +151,9 @@ def track(
     """
     options = (
         (context or ExecutionContext())
-        .resolve(cpu=cpu, num_cpus=num_cpus, progress=progress, cancel_event=cancel_event)
+        .resolve(
+            cpu=cpu, num_cpus=num_cpus, progress=progress, cancel_event=cancel_event
+        )
         .kwargs()
     )
     cpu, num_cpus, progress, cancel_event = (
@@ -159,15 +170,22 @@ def track(
     ).to_columns()
     labels = np.ones(len(rows["id"]), dtype=np.int64)
     if segmentation_id is not None:
-        raw = dataset.localizations.query(acquisition_id=acquisition_id, channel=channel, space="raw")
+        raw = dataset.localizations.query(
+            acquisition_id=acquisition_id, channel=channel, space="raw"
+        )
         labels = dataset.segmentation_labels(segmentation_id, raw)
     from importlib.metadata import PackageNotFoundError
 
     try:
-        installed = version("trackpy") if selected_backend is None else selected_backend.version
+        installed = (
+            version("trackpy") if selected_backend is None else selected_backend.version
+        )
     except PackageNotFoundError as exc:
         raise missing_backend("trackpy") from exc
-    if selected_backend is None and tuple(int(p) for p in installed.split(".")[:2]) != (0, 7):
+    if selected_backend is None and tuple(int(p) for p in installed.split(".")[:2]) != (
+        0,
+        7,
+    ):
         raise ImportError(f"MolCore supports Trackpy >=0.7,<0.8; found {installed}")
     with executor(cpu, num_cpus) as runner:
         output = runner.map(
@@ -178,7 +196,13 @@ def track(
         )
     expected.validate(dataset)
     result = TrackingResult(
-        acquisition_id, channel, output[0], settings, expected, installed, segmentation_id
+        acquisition_id,
+        channel,
+        output[0],
+        settings,
+        expected,
+        installed,
+        segmentation_id,
     )
     return apply_tracking(dataset, result) if apply else result
 
@@ -212,15 +236,20 @@ def apply_tracking(
             result.channel,
             list(result.memberships),
             segmentation_id=result.segmentation_id,
-            metadata={"settings": asdict(result.settings), "backend": result.backend_version},
+            metadata={
+                "settings": asdict(result.settings),
+                "backend": result.backend_version,
+            },
         )
-        model.processing.settings.setdefault("tracking", {}).setdefault(result.acquisition_id, {})[
-            result.channel
-        ] = {
+        model.processing.settings.setdefault("tracking", {}).setdefault(
+            result.acquisition_id, {}
+        )[result.channel] = {
             "settings": asdict(result.settings),
             "segmentation_id": result.segmentation_id,
             "backend": result.backend_version,
         }
         return replace(result, track_ids=ids)
 
-    return transact(dataset, commit, expected=result.expected if expected is None else expected)
+    return transact(
+        dataset, commit, expected=result.expected if expected is None else expected
+    )

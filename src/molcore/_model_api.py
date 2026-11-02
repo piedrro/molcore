@@ -37,12 +37,16 @@ class DatasetServices:
 
         return unsubscribe
 
-    def _record_change(self, components: frozenset[str], partitions: frozenset[tuple[str, str]]) -> ChangeSet:
+    def _record_change(
+        self, components: frozenset[str], partitions: frozenset[tuple[str, str]]
+    ) -> ChangeSet:
         self.revision += 1
         for component in components:
             for acquisition, channel in partitions:
                 key = component, acquisition, channel
-                self._partition_revisions[key] = self._partition_revisions.get(key, 0) + 1
+                self._partition_revisions[key] = (
+                    self._partition_revisions.get(key, 0) + 1
+                )
         return ChangeSet(self.revision, components, partitions)
 
     def _publish_change(self, change: ChangeSet) -> None:
@@ -53,7 +57,8 @@ class DatasetServices:
                 callback(change)
             except Exception:
                 logger.exception(
-                    "Model change subscriber failed after revision %s committed", change.revision
+                    "Model change subscriber failed after revision %s committed",
+                    change.revision,
                 )
 
     def snapshot(self) -> Self:
@@ -72,7 +77,12 @@ class DatasetServices:
         acquisition_id: str | None = None,
         channel: str | None = None,
         *,
-        components: Iterable[str] = ("localizations", "tracks", "transforms", "segmentations"),
+        components: Iterable[str] = (
+            "localizations",
+            "tracks",
+            "transforms",
+            "segmentations",
+        ),
     ) -> DependencyToken:
         """Capture only revisions relevant to a scientific operation.
 
@@ -95,7 +105,9 @@ class DatasetServices:
             selected = []
             for key, acquisition in acquisitions.items():
                 channels = (
-                    acquisition.channels if channel is None else {channel: acquisition.channels[channel]}
+                    acquisition.channels
+                    if channel is None
+                    else {channel: acquisition.channels[channel]}
                 )
                 selected.extend((key, c) for c in channels)
             return dependency_token(self, selected, components=components)
@@ -127,7 +139,9 @@ class DatasetServices:
         return apply_results(self, results)
 
     @model_mutated
-    def update_metadata(self, values: Mapping[str, Any], *, replace: bool = False) -> None:
+    def update_metadata(
+        self, values: Mapping[str, Any], *, replace: bool = False
+    ) -> None:
         """Validate and copy JSON metadata before publishing one change.
 
         Args:
@@ -180,7 +194,10 @@ class DatasetServices:
         for key, sequence in self.sequences.items():
             if acquisition_id in sequence.offsets:
                 sequences[key] = AcquisitionSequence(
-                    [replacement if a.id == acquisition_id else a for a in sequence.acquisitions],
+                    [
+                        replacement if a.id == acquisition_id else a
+                        for a in sequence.acquisitions
+                    ],
                     id=key,
                     allow_cross_boundary_tracks=sequence.allow_cross_boundary_tracks,
                     reference=sequence.reference,
@@ -189,7 +206,9 @@ class DatasetServices:
         self._sequences.update(sequences)
         self.observations._invalidate_partition(acquisition_id)
         self.photon_sequences._invalidate(acquisition_id=acquisition_id)
-        self.crops.invalidate(self.localizations.query(acquisition_id=acquisition_id, space="raw")["id"])
+        self.crops.invalidate(
+            self.localizations.query(acquisition_id=acquisition_id, space="raw")["id"]
+        )
 
     @model_mutated
     def remove_segmentation(self, segmentation_id: str) -> None:

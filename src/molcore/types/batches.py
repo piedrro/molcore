@@ -57,7 +57,9 @@ class LocalizationBatch(Mapping[str, np.ndarray]):
         for name, values in columns.items():
             array = np.asarray(values)
             if array.ndim != 1 or array.dtype.hasobject:
-                raise ValueError("Batch columns must be one-dimensional non-object arrays")
+                raise ValueError(
+                    "Batch columns must be one-dimensional non-object arrays"
+                )
             # A bytes backing buffer prevents callers from re-enabling writes.
             prepared[name] = np.frombuffer(array.tobytes(), dtype=array.dtype)
         if len({len(value) for value in prepared.values()}) > 1:
@@ -68,7 +70,9 @@ class LocalizationBatch(Mapping[str, np.ndarray]):
         resolved = {}
         for name, value in prepared.items():
             default_unit = (
-                "pixel" if name in {"x", "y"} else "frame" if name in {"frame", "sequence_frame"} else None
+                "pixel"
+                if name in {"x", "y"}
+                else "frame" if name in {"frame", "sequence_frame"} else None
             )
             spec = declared.get(name, ColumnSchema(value.dtype, default_unit))
             if np.dtype(spec.dtype) != value.dtype:
@@ -128,7 +132,9 @@ class LocalizationBatch(Mapping[str, np.ndarray]):
         Returns:
             NumPy structured array with one record per localization.
         """
-        result = np.empty(self.n_rows, dtype=[(name, values.dtype) for name, values in self.items()])
+        result = np.empty(
+            self.n_rows, dtype=[(name, values.dtype) for name, values in self.items()]
+        )
         for name, values in self.items():
             result[name] = values
         return result

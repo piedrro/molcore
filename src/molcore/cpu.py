@@ -7,7 +7,12 @@ import os
 import queue
 import time
 from collections.abc import Callable, Iterable, Sized
-from concurrent.futures import FIRST_COMPLETED, CancelledError, ProcessPoolExecutor, wait
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    CancelledError,
+    ProcessPoolExecutor,
+    wait,
+)
 from typing import TYPE_CHECKING, Any
 
 from ._logging import logged
@@ -31,7 +36,12 @@ def _initialize(events: Any, stop: Any) -> None:
     """
     global _EVENTS, _STOP
     _EVENTS, _STOP = events, stop
-    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMBA_NUM_THREADS"):
+    for name in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMBA_NUM_THREADS",
+    ):
         os.environ[name] = "1"
     os.environ["MPLBACKEND"] = "Agg"
 
@@ -77,7 +87,9 @@ class WorkerProgress:
             self._last = now
 
 
-def _execute(function: Callable[..., Any], payload: tuple, run_id: str, job_id: int) -> Any:
+def _execute(
+    function: Callable[..., Any], payload: tuple, run_id: str, job_id: int
+) -> Any:
     """Execute.
 
     Args:
@@ -112,7 +124,9 @@ class CpuExecutor:
         A single configured CPU still runs in a spawned child process.
     """
 
-    def __init__(self, num_cpus: int | None = None, *, max_pending: int | None = None) -> None:
+    def __init__(
+        self, num_cpus: int | None = None, *, max_pending: int | None = None
+    ) -> None:
         """Initialise the object and validate its configuration.
 
         Args:
@@ -126,7 +140,9 @@ class CpuExecutor:
         self.num_cpus = default if num_cpus is None else num_cpus
         for value in (self.num_cpus, max_pending if max_pending is not None else 1):
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-                raise ValueError("CPU count and pending limit must be positive integers")
+                raise ValueError(
+                    "CPU count and pending limit must be positive integers"
+                )
         if os.name == "nt" and self.num_cpus > 61:
             raise ValueError("Windows ProcessPoolExecutor supports at most 61 CPUs")
         self.max_pending = max_pending or 2 * self.num_cpus
@@ -216,14 +232,20 @@ class CpuExecutor:
                     try:
                         payload = next(iterator)
                     except StopIteration as exc:
-                        raise ValueError("Job iterable contains fewer jobs than total") from exc
-                    future = self._pool.submit(_execute, function, payload, run_id, submitted)
+                        raise ValueError(
+                            "Job iterable contains fewer jobs than total"
+                        ) from exc
+                    future = self._pool.submit(
+                        _execute, function, payload, run_id, submitted
+                    )
                     pending[future] = submitted
                     submitted += 1
                 completed, _ = wait(pending, timeout=0.03, return_when=FIRST_COMPLETED)
                 while True:
                     try:
-                        event_run, index, fraction, description = self._events.get_nowait()
+                        event_run, index, fraction, description = (
+                            self._events.get_nowait()
+                        )
                     except queue.Empty:
                         break
                     if event_run == run_id:

@@ -26,7 +26,9 @@ class DatasetUiTests(unittest.TestCase):
         experiment = Experiment()
         for name, dx in (("first", 0), ("second", 2)):
             dataset = Dataset(id=name)
-            dataset.add_acquisition(Acquisition(ArraySource(np.zeros((2, 20, 20))), id="movie"))
+            dataset.add_acquisition(
+                Acquisition(ArraySource(np.zeros((2, 20, 20))), id="movie")
+            )
             dataset.localizations.add(
                 acquisition_id="movie",
                 channel="image",
@@ -42,7 +44,9 @@ class DatasetUiTests(unittest.TestCase):
         self.assertEqual(session.dataset_id, "first")
         session.select_dataset("second")
         session.dataset.localizations.move(1, x=10, y=10)
-        self.assertEqual(session.experiment.datasets["first"].localizations.query()["x"][0], 4)
+        self.assertEqual(
+            session.experiment.datasets["first"].localizations.query()["x"][0], 4
+        )
         self.assertEqual(session.acquisition_id, "movie")
         session.shutdown()
 
@@ -54,7 +58,9 @@ class DatasetUiTests(unittest.TestCase):
         for name in ("first", "second"):
             dataset = Dataset(id=name)
             dataset.add_acquisition(
-                image_acquisition(ArraySource(np.zeros((4, 20, 40))), id="movie", mode="alex")
+                image_acquisition(
+                    ArraySource(np.zeros((4, 20, 40))), id="movie", mode="alex"
+                )
             )
             for channel, dx in (("DA", 2), ("DD", 0)):
                 dataset.localizations.add(
@@ -68,7 +74,8 @@ class DatasetUiTests(unittest.TestCase):
         session = UiSession(experiment)
         widget = ChannelAlignmentWidget(session)
         self.assertTrue(
-            hasattr(widget, "source"), "Optical source must be selectable independently of displayed channel"
+            hasattr(widget, "source"),
+            "Optical source must be selectable independently of displayed channel",
         )
         self.assertEqual(widget.source.currentText(), "DA")
         self.assertEqual(widget.target.currentText(), "DD")
@@ -83,7 +90,9 @@ class DatasetUiTests(unittest.TestCase):
         self.assertIsNotNone(widget.preview, widget.status.text())
         widget.apply_preview()
         for dataset in experiment.datasets.values():
-            self.assertAlmostEqual(dataset.transforms.matrix("movie", "AA", 1)[0, 2], -2)
+            self.assertAlmostEqual(
+                dataset.transforms.matrix("movie", "AA", 1)[0, 2], -2
+            )
         widget.close()
         session.shutdown()
 
@@ -94,7 +103,9 @@ class DatasetUiTests(unittest.TestCase):
         widget = FileToolsWidget(session)
         widget.import_into_current.setChecked(True)
         with (
-            patch("molcore.ui.files.QFileDialog.getOpenFileNames", return_value=([], "")),
+            patch(
+                "molcore.ui.files.QFileDialog.getOpenFileNames", return_value=([], "")
+            ),
             self.assertRaisesRegex(ValueError, "Select a dataset"),
         ):
             widget.import_images()
@@ -107,22 +118,35 @@ class DatasetUiTests(unittest.TestCase):
         for operation in ("export", "save"):
             with self.subTest(operation=operation), TemporaryDirectory() as directory:
                 session = self.make_session()
-                path = Path(directory) / ("manifest.json" if operation == "export" else "experiment.h5")
+                path = Path(directory) / (
+                    "manifest.json" if operation == "export" else "experiment.h5"
+                )
                 path.write_bytes(b"previous output")
                 gate = threading.Event()
                 errors = []
                 session.error.connect(errors.append)
 
                 def compute(
-                    model, progress, cancel, publish_guard, gate=gate, operation=operation, path=path
+                    model,
+                    progress,
+                    cancel,
+                    publish_guard,
+                    gate=gate,
+                    operation=operation,
+                    path=path,
                 ):
                     gate.wait(3)
                     if operation == "export":
                         export_dataset_images(
-                            model.datasets["first"], directory, experiment=model, publish_guard=publish_guard
+                            model.datasets["first"],
+                            directory,
+                            experiment=model,
+                            publish_guard=publish_guard,
                         )
                     else:
-                        model.save(path, image_policy="full", publish_guard=publish_guard)
+                        model.save(
+                            path, image_policy="full", publish_guard=publish_guard
+                        )
 
                 session.submit(compute, experiment_scope=True, publication=True)
                 session.dataset.localizations.move(1, x=9, y=9)

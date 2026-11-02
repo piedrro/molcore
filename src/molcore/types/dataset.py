@@ -49,7 +49,11 @@ class Dataset(DatasetServices):
     """
 
     def __init__(
-        self, *, id: str | None = None, name: str | None = None, metadata: dict[str, Any] | None = None
+        self,
+        *,
+        id: str | None = None,
+        name: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """Initialise the object and validate its configuration.
 
@@ -84,7 +88,15 @@ class Dataset(DatasetServices):
         self.observations = ObservationTable(self)
         self.photon_sequences = PhotonSequenceStore(self)
         self.processing = ProcessingMetadata(software={"molcore": "0.1.0"})
-        for package in ("numpy", "h5py", "tifffile", "picassosr", "torch", "trackpy", "cellpose"):
+        for package in (
+            "numpy",
+            "h5py",
+            "tifffile",
+            "picassosr",
+            "torch",
+            "trackpy",
+            "cellpose",
+        ):
             try:
                 self.processing.software[package] = version(package)
             except PackageNotFoundError:
@@ -141,9 +153,12 @@ class Dataset(DatasetServices):
             tracks = [
                 t
                 for t, members in model.tracks._members.items()
-                if np.intersect1d(ids, members).size or model.tracks.metadata[t]["sequence_id"] in sequences
+                if np.intersect1d(ids, members).size
+                or model.tracks.metadata[t]["sequence_id"] in sequences
             ]
-            masks = [k for k, s in model.segmentations.items() if s.acquisition_id == id]
+            masks = [
+                k for k, s in model.segmentations.items() if s.acquisition_id == id
+            ]
             observations = model.observations
             rows = observations._data
             dependent = (
@@ -151,12 +166,17 @@ class Dataset(DatasetServices):
                 or tracks
                 or sequences
                 or masks
-                or any(s.acquisition_id == id for s in model.photon_sequences.query(include_stale=True))
+                or any(
+                    s.acquisition_id == id
+                    for s in model.photon_sequences.query(include_stale=True)
+                )
                 or np.any(rows.get("acquisition_id", np.array([])) == id)
                 or id in model.transforms._drift
                 or any(a == id for a, _ in model.transforms._selected)
                 or any(
-                    id in values for values in model.processing.settings.values() if isinstance(values, dict)
+                    id in values
+                    for values in model.processing.settings.values()
+                    if isinstance(values, dict)
                 )
                 or any(
                     id in run.get("acquisitions", [])
@@ -165,7 +185,9 @@ class Dataset(DatasetServices):
             )
             if dependent and not cascade:
                 raise ValueError("Acquisition has dependent state; pass cascade=True")
-            for sequence in model.photon_sequences.query(acquisition_id=id, include_stale=True):
+            for sequence in model.photon_sequences.query(
+                acquisition_id=id, include_stale=True
+            ):
                 model.photon_sequences.remove(sequence.id)
             if rows:
                 keep = (
@@ -183,7 +205,9 @@ class Dataset(DatasetServices):
                 del model._sequences[key]
             for key in masks:
                 del model._segmentations[key]
-            model.transforms._selected = {k: v for k, v in model.transforms._selected.items() if k[0] != id}
+            model.transforms._selected = {
+                k: v for k, v in model.transforms._selected.items() if k[0] != id
+            }
             model.transforms._drift.pop(id, None)
             model.transforms.revision += 1
             for stage, values in model.processing.settings.items():
@@ -264,7 +288,9 @@ class Dataset(DatasetServices):
         self.observations._invalidate_partition(segmentation.acquisition_id)
 
     @logged
-    def segmentation_labels(self, segmentation_id: str, rows: dict[str, np.ndarray]) -> np.ndarray:
+    def segmentation_labels(
+        self, segmentation_id: str, rows: dict[str, np.ndarray]
+    ) -> np.ndarray:
         """Find object labels at effective localization coordinates.
 
         Args:
@@ -304,7 +330,9 @@ class Dataset(DatasetServices):
             self.localizations.query(ids=ids, space="raw")["acquisition_id"]
         )
         tracks = [
-            track for track, members in self.tracks._members.items() if np.intersect1d(members, ids).size
+            track
+            for track, members in self.tracks._members.items()
+            if np.intersect1d(members, ids).size
         ]
         self.observations._invalidate(ids=ids, tracks=tracks)
         self.crops.invalidate(ids)

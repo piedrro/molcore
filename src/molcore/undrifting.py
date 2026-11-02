@@ -38,10 +38,14 @@ class _AimProgress:
             *args: Additional positional values supplied by the caller.
             **kwargs: Additional named options for this operation.
         """
-        self.reporter.report((self.phase + min(1.0, value / self.segments)) / 2, 1, self.description)
+        self.reporter.report(
+            (self.phase + min(1.0, value / self.segments)) / 2, 1, self.description
+        )
 
     @logged
-    def zero_progress(self, description: str | None = None, *args: Any, **kwargs: Any) -> None:
+    def zero_progress(
+        self, description: str | None = None, *args: Any, **kwargs: Any
+    ) -> None:
         """Zero progress.
 
         Args:
@@ -173,7 +177,9 @@ def _job(payload: tuple, reporter: WorkerProgress) -> Any:
     return values
 
 
-def _prepare(dataset: Dataset, acquisition_id: str, channel: str, settings: DriftSettings) -> tuple:
+def _prepare(
+    dataset: Dataset, acquisition_id: str, channel: str, settings: DriftSettings
+) -> tuple:
     """Prepare.
 
     Args:
@@ -188,9 +194,13 @@ def _prepare(dataset: Dataset, acquisition_id: str, channel: str, settings: Drif
     expected = snapshot(dataset, acquisition_id)
     acquisition = dataset.acquisitions[acquisition_id]
     view = acquisition.channels[channel]
-    rows = dataset.localizations.query(acquisition_id=acquisition_id, channel=channel, space="registered")
+    rows = dataset.localizations.query(
+        acquisition_id=acquisition_id, channel=channel, space="registered"
+    )
     if len(rows["frame"]) == 0:
-        raise ValueError("Drift estimation requires localizations in the selected channel")
+        raise ValueError(
+            "Drift estimation requires localizations in the selected channel"
+        )
     logical_frames = np.searchsorted(view.source_frames, rows["frame"])
     start, last = int(logical_frames.min()), int(logical_frames.max())
     n_frames = last - start + 1
@@ -201,15 +211,20 @@ def _prepare(dataset: Dataset, acquisition_id: str, channel: str, settings: Drif
         else np.ceil(n_frames / settings.segment_frames)
     )
     if segments < 4:
-        raise ValueError("Drift estimation requires at least four populated temporal segments")
+        raise ValueError(
+            "Drift estimation requires at least four populated temporal segments"
+        )
     groups = (logical_frames - start) // settings.segment_frames
     if len(np.unique(groups)) < 4:
-        raise ValueError("Drift estimation requires localizations in at least four segments")
+        raise ValueError(
+            "Drift estimation requires localizations in at least four segments"
+        )
     if settings.method == "rcc":
         bounds = np.linspace(0, n_frames - 1, segments + 1, dtype=np.uint32)
         times = logical_frames - start
         if any(
-            not np.any((times >= lo) & (times < hi)) for lo, hi in zip(bounds[:-1], bounds[1:], strict=True)
+            not np.any((times >= lo) & (times < hi))
+            for lo, hi in zip(bounds[:-1], bounds[1:], strict=True)
         ):
             raise ValueError("Each RCC rendering segment must contain localizations")
     x, y = rows["x"].copy(), rows["y"].copy()
@@ -224,7 +239,11 @@ def _prepare(dataset: Dataset, acquisition_id: str, channel: str, settings: Drif
             "Pixelsize": acquisition.pixel_size or 1.0,
         }
     ]
-    return expected, (columns, info, settings), view.source_frames[start : last + 1].copy()
+    return (
+        expected,
+        (columns, info, settings),
+        view.source_frames[start : last + 1].copy(),
+    )
 
 
 def _many(
@@ -260,15 +279,25 @@ def _many(
     }
     with executor(cpu, num_cpus) as runner:
         values = runner.map(
-            _job, [value[1] for value in prepared.values()], progress=progress, cancel_event=cancel_event
+            _job,
+            [value[1] for value in prepared.values()],
+            progress=progress,
+            cancel_event=cancel_event,
         )
     for acquisition_id, (expected, _, _) in prepared.items():
         check_snapshot(dataset, acquisition_id, expected)
     results = {}
-    for (acquisition_id, (_, _, sampled_frames)), displacement in zip(prepared.items(), values, strict=True):
-        frames = np.arange(int(sampled_frames[0]), int(sampled_frames[-1]) + 1, dtype=np.int64)
+    for (acquisition_id, (_, _, sampled_frames)), displacement in zip(
+        prepared.items(), values, strict=True
+    ):
+        frames = np.arange(
+            int(sampled_frames[0]), int(sampled_frames[-1]) + 1, dtype=np.int64
+        )
         interpolated = np.column_stack(
-            [np.interp(frames, sampled_frames, displacement[:, axis]) for axis in (0, 1)]
+            [
+                np.interp(frames, sampled_frames, displacement[:, axis])
+                for axis in (0, 1)
+            ]
         )
         results[acquisition_id] = DriftResult(
             acquisition_id,

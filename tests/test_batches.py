@@ -11,7 +11,9 @@ class BatchTests(unittest.TestCase):
     def setUp(self):
         self.dataset = Dataset(id="round")
         for name in ("a", "b"):
-            self.dataset.add_acquisition(Acquisition(ArraySource(np.zeros((3, 4, 4))), id=name))
+            self.dataset.add_acquisition(
+                Acquisition(ArraySource(np.zeros((3, 4, 4))), id=name)
+            )
         self.ids = self.dataset.localizations.add(
             acquisition_id=["a", "b"],
             channel="image",

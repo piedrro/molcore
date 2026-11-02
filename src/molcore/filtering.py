@@ -45,7 +45,9 @@ def filter_results(
     expected, space = start(dataset, space, progress, cancel_event)
     partition(dataset, acquisition_id, channel, space)
     if settings.target == "tracks":
-        rows = dataset.tracks.query(acquisition_id=acquisition_id, channel=channel, space=space)
+        rows = dataset.tracks.query(
+            acquisition_id=acquisition_id, channel=channel, space=space
+        )
         rows = dataset.tracks.query(track_id=np.unique(rows["track_id"]), space=space)
     else:
         _, rows = partition(dataset, acquisition_id, channel, space)
@@ -57,12 +59,22 @@ def filter_results(
         reduced = []
         for track in ids:
             members = values[(rows["track_id"] == track) & np.isfinite(values)]
-            reduced.append(getattr(np, settings.aggregation)(members) if len(members) else np.nan)
+            reduced.append(
+                getattr(np, settings.aggregation)(members) if len(members) else np.nan
+            )
         values = np.asarray(reduced)
-        ids = ids[np.isfinite(values) & (values >= settings.minimum) & (values <= settings.maximum)]
+        ids = ids[
+            np.isfinite(values)
+            & (values >= settings.minimum)
+            & (values <= settings.maximum)
+        ]
         mask = np.isin(rows["track_id"], ids)
     else:
-        mask = np.isfinite(values) & (values >= settings.minimum) & (values <= settings.maximum)
+        mask = (
+            np.isfinite(values)
+            & (values >= settings.minimum)
+            & (values <= settings.maximum)
+        )
         ids = rows["id"][mask]
     finish(dataset, expected, progress, cancel_event)
     return FilterResult(

@@ -20,7 +20,9 @@ class LibraryContractTests(unittest.TestCase):
                 if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
                 args = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
-                args += [a for a in (node.args.vararg, node.args.kwarg) if a is not None]
+                args += [
+                    a for a in (node.args.vararg, node.args.kwarg) if a is not None
+                ]
                 if node.returns is None or any(
                     a.annotation is None for a in args if a.arg not in ("self", "cls")
                 ):
@@ -35,7 +37,11 @@ class LibraryContractTests(unittest.TestCase):
                 if not isinstance(node, ast.FunctionDef) or node.name.startswith("_"):
                     continue
                 doc = ast.get_docstring(node) or ""
-                args = [a for a in node.args.args + node.args.kwonlyargs if a.arg not in ("self", "cls")]
+                args = [
+                    a
+                    for a in node.args.args + node.args.kwonlyargs
+                    if a.arg not in ("self", "cls")
+                ]
                 if (
                     not doc
                     or (args and "Args:" not in doc)

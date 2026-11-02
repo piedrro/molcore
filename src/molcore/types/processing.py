@@ -15,21 +15,20 @@ from ._shared import CoordinateSpace
 
 @dataclass(frozen=True)
 class CellposeSettings:
-    """Cellpose 4 inference parameters for static two-dimensional images.
+    """Cellpose 3 inference parameters for static two-dimensional images.
 
     Attributes:
-        pretrained_model: Built-in model name or path to Cellpose 4 weights.
-        diameter: Optional object diameter in pixels; None keeps native scaling.
+        pretrained_model: Built-in model name or path to Cellpose 3 weights.
+        diameter: Optional object diameter in pixels; None uses the model's training diameter.
         normalize: Apply Cellpose's image normalization.
         flow_threshold: Maximum flow error accepted during mask construction.
         cellprob_threshold: Cell-probability threshold used to construct masks.
         min_size: Minimum object area in pixels; zero disables size filtering.
         batch_size: Network image-tile batch size, separate from process count.
         gpu: Explicitly request CUDA or MPS execution in one worker.
-        use_bfloat16: Use reduced-precision model weights instead of float32.
     """
 
-    pretrained_model: str | Path = "cpsam_v2"
+    pretrained_model: str | Path = "cyto3"
     diameter: float | None = None
     normalize: bool = True
     flow_threshold: float = 0.4
@@ -37,22 +36,29 @@ class CellposeSettings:
     min_size: int = 15
     batch_size: int = 8
     gpu: bool = False
-    use_bfloat16: bool = False
 
     def __post_init__(self) -> None:
         """Validate the immutable record after construction."""
-        if not isinstance(self.pretrained_model, (str, Path)) or not str(self.pretrained_model).strip():
-            raise ValueError("Specify a Cellpose 4 model name or weight path")
+        if (
+            not isinstance(self.pretrained_model, (str, Path))
+            or not str(self.pretrained_model).strip()
+        ):
+            raise ValueError("Specify a Cellpose 3 model name or weight path")
         object.__setattr__(self, "pretrained_model", str(self.pretrained_model))
-        if self.diameter is not None and (not np.isfinite(self.diameter) or self.diameter <= 0):
+        if self.diameter is not None and (
+            not np.isfinite(self.diameter) or self.diameter <= 0
+        ):
             raise ValueError("Diameter must be finite and positive")
-        if not np.isfinite([self.flow_threshold, self.cellprob_threshold]).all() or self.flow_threshold < 0:
+        if (
+            not np.isfinite([self.flow_threshold, self.cellprob_threshold]).all()
+            or self.flow_threshold < 0
+        ):
             raise ValueError("Invalid Cellpose thresholds")
         for name, minimum in (("min_size", 0), ("batch_size", 1)):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
                 raise ValueError(f"{name} must be an integer >= {minimum}")
-        for name in ("normalize", "gpu", "use_bfloat16"):
+        for name in ("normalize", "gpu"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"{name} must be a boolean")
 
@@ -160,7 +166,9 @@ class CameraSettings:
             not np.isfinite([self.baseline, self.sensitivity, self.gain]).all()
             or min(self.sensitivity, self.gain) <= 0
         ):
-            raise ValueError("Camera settings must be finite with positive sensitivity and gain")
+            raise ValueError(
+                "Camera settings must be finite with positive sensitivity and gain"
+            )
 
 
 @dataclass(frozen=True)
@@ -325,8 +333,12 @@ class AlignmentResult:
     matrix: np.ndarray
     reference_matrix: np.ndarray
     residuals: np.ndarray
-    source_ids: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.uint64))
-    target_ids: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.uint64))
+    source_ids: np.ndarray = field(
+        default_factory=lambda: np.array([], dtype=np.uint64)
+    )
+    target_ids: np.ndarray = field(
+        default_factory=lambda: np.array([], dtype=np.uint64)
+    )
     calibration_name: str | None = None
     inliers: np.ndarray = field(default_factory=lambda: np.array([], dtype=bool))
     expected: FreshnessToken | None = None

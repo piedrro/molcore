@@ -34,7 +34,10 @@ class AnalysisWidgetTests(unittest.TestCase):
         model = Dataset()
         model.add_acquisition(
             Acquisition(
-                ArraySource(np.ones((3, 11, 11))), id="a", timestamps=[0.0, 0.1, 0.3], pixel_size=100.0
+                ArraySource(np.ones((3, 11, 11))),
+                id="a",
+                timestamps=[0.0, 0.1, 0.3],
+                pixel_size=100.0,
             )
         )
         self.ids = model.localizations.add(
@@ -132,7 +135,9 @@ class AnalysisWidgetTests(unittest.TestCase):
         from molcore.ui._common import SelectionPanel
 
         model = self.session.dataset
-        model.transforms.add_calibration(Calibration("shift", [[1, 0, 2], [0, 1, 1], [0, 0, 1]]))
+        model.transforms.add_calibration(
+            Calibration("shift", [[1, 0, 2], [0, 1, 1], [0, 0, 1]])
+        )
         model.transforms.select("a", "image", "shift")
         model.transforms.set_drift("a", [[1, 0], [1, 0], [1, 0]])
         widget = LocalisationRenderWidget(self.session)
@@ -167,7 +172,9 @@ class AnalysisWidgetTests(unittest.TestCase):
 
         model = self.session.dataset
         model.tracks.add(self.ids)
-        model.transforms.add_calibration(Calibration("shift", [[1, 0, 2], [0, 1, 1], [0, 0, 1]]))
+        model.transforms.add_calibration(
+            Calibration("shift", [[1, 0, 2], [0, 1, 1], [0, 0, 1]])
+        )
         model.transforms.select("a", "image", "shift")
         model.transforms.set_drift("a", [[1, 0], [1, 0], [1, 0]])
         widget = FileToolsWidget(self.session)
@@ -175,7 +182,10 @@ class AnalysisWidgetTests(unittest.TestCase):
             for tracks in (False, True):
                 widget.export_tracks.setChecked(tracks)
                 path = Path(directory) / f"rows-{tracks}.csv"
-                with patch("qtpy.QtWidgets.QFileDialog.getSaveFileName", return_value=(str(path), "")):
+                with patch(
+                    "qtpy.QtWidgets.QFileDialog.getSaveFileName",
+                    return_value=(str(path), ""),
+                ):
                     widget.export_results()
                     self.pump()
                 rows = read_table(path)
@@ -184,7 +194,9 @@ class AnalysisWidgetTests(unittest.TestCase):
                 restored = clone_dataset(model)
                 restored.localizations.delete(self.ids)
                 import_table(restored, "a", "image", rows, tracks=tracks)
-                np.testing.assert_allclose(restored.localizations.query()["x"], [5.0, 5.1, 5.2])
+                np.testing.assert_allclose(
+                    restored.localizations.query()["x"], [5.0, 5.1, 5.2]
+                )
         widget.close()
 
     def test_photometry_preview_corrects_image_and_aperture_together(self):
@@ -197,13 +209,17 @@ class AnalysisWidgetTests(unittest.TestCase):
         movie[0, 4, 4] = 50
         model.add_acquisition(Acquisition(ArraySource(movie), id="a"))
         model.localizations.add(acquisition_id="a", channel="image", frame=0, x=4, y=4)
-        model.transforms.add_calibration(Calibration("shift", [[1, 0, 2], [0, 1, 1], [0, 0, 1]]))
+        model.transforms.add_calibration(
+            Calibration("shift", [[1, 0, 2], [0, 1, 1], [0, 0, 1]])
+        )
         model.transforms.select("a", "image", "shift")
         model.transforms.set_drift("a", [[1, 0]])
         self.session.set_dataset(model)
         widget = PhotometryWidget(self.session)
         widget.preview_masks()
-        image = next(item for item in widget.plot.items() if isinstance(item, pg.ImageItem)).image
+        image = next(
+            item for item in widget.plot.items() if isinstance(item, pg.ImageItem)
+        ).image
         self.assertEqual(image[5, 5], 50)
         aperture = widget.plot.listDataItems()[0]
         self.assertEqual(np.mean(aperture.xData), 5)
@@ -234,8 +250,12 @@ class AnalysisWidgetTests(unittest.TestCase):
         widget.normalise.setChecked(True)
         widget.redraw()
         np.testing.assert_allclose(widget._columns["display_value"], [0.0, 0.5, 1.0])
-        np.testing.assert_allclose(model.observations.query()["intensity"], [2.0, 4.0, 6.0])
-        np.testing.assert_allclose(widget.plot.listDataItems()[0].xData, [0.0, 0.1, 0.3])
+        np.testing.assert_allclose(
+            model.observations.query()["intensity"], [2.0, 4.0, 6.0]
+        )
+        np.testing.assert_allclose(
+            widget.plot.listDataItems()[0].xData, [0.0, 0.1, 0.3]
+        )
         widget.close()
 
     def test_trajectory_views_use_real_timing(self):
@@ -301,7 +321,9 @@ class AnalysisWidgetTests(unittest.TestCase):
                 channel_specs={"donor": ChannelSpec(), "acceptor": ChannelSpec()},
             )
         )
-        ids = model.localizations.add(acquisition_id="a", channel="donor", frame=[0], x=[2.0], y=[2.0])
+        ids = model.localizations.add(
+            acquisition_id="a", channel="donor", frame=[0], x=[2.0], y=[2.0]
+        )
         model.observations.add(
             molecule_id=["seed"],
             acquisition_id="a",
@@ -340,8 +362,12 @@ class AnalysisWidgetTests(unittest.TestCase):
             localization_id=self.ids,
             intensity=np.array([1.0, 2.0, 3.0]),
         )
-        result = PhotometryResult(rows, PhotometrySettings(), TraceMode.LOCALIZATIONS, "test-run", ())
-        with patch("molcore.photometry.measure_localizations", return_value=result) as function:
+        result = PhotometryResult(
+            rows, PhotometrySettings(), TraceMode.LOCALIZATIONS, "test-run", ()
+        )
+        with patch(
+            "molcore.photometry.measure_localizations", return_value=result
+        ) as function:
             widget.compute()
             self.pump()
             self.assertFalse(function.call_args.kwargs["apply"])
@@ -366,7 +392,10 @@ class AnalysisWidgetTests(unittest.TestCase):
         self.assertIsNotNone(widget.preview, widget.status.text())
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "density.tif"
-            with patch("qtpy.QtWidgets.QFileDialog.getSaveFileName", return_value=(str(path), "")):
+            with patch(
+                "qtpy.QtWidgets.QFileDialog.getSaveFileName",
+                return_value=(str(path), ""),
+            ):
                 widget.export_image()
             self.assertEqual(tifffile.imread(path).shape, (4, 6))
             metadata = json.loads(path.with_suffix(".json").read_text())
@@ -426,7 +455,9 @@ class AnalysisWidgetTests(unittest.TestCase):
 
         from molcore.photometry import stationary_traces
 
-        preview = stationary_traces(self.session.dataset, self.ids[:1], cpu=InlineCpu(), apply=False)
+        preview = stationary_traces(
+            self.session.dataset, self.ids[:1], cpu=InlineCpu(), apply=False
+        )
         widget = PhotometryWidget(self.session)
         widget.mode.setCurrentText("stationary")
         with patch("molcore.photometry.stationary_traces", return_value=preview):
@@ -443,7 +474,8 @@ class AnalysisWidgetTests(unittest.TestCase):
         viewer.background.setCurrentText("Raw signal sum")
         viewer.redraw()
         np.testing.assert_allclose(
-            viewer._columns["display_value"], preview.sequences[0].measurements["signal_sum"]
+            viewer._columns["display_value"],
+            preview.sequences[0].measurements["signal_sum"],
         )
         viewer.close()
         widget.close()

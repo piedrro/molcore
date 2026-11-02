@@ -11,7 +11,12 @@ from ._processing import backend_version, check_snapshot, executor
 from .backends import BackendRegistry, ProcessorBackend, resolve_backend
 from .execution import ExecutionContext
 from .types.dataset import Dataset
-from .types.processing import CameraSettings, DetectionResult, LocalisationResult, LocalisationSettings
+from .types.processing import (
+    CameraSettings,
+    DetectionResult,
+    LocalisationResult,
+    LocalisationSettings,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -31,8 +36,21 @@ def _empty(fitted: bool = False) -> dict[str, np.ndarray]:
     """
     names = ["x", "y", "net_gradient"]
     if fitted:
-        names += ["photons", "bg", "sx", "sy", "lpx", "lpy", "ellipticity", "fit_state", "iterations"]
-    return {"frame": np.array([], dtype=np.uint64), **{k: np.array([], dtype=float) for k in names}}
+        names += [
+            "photons",
+            "bg",
+            "sx",
+            "sy",
+            "lpx",
+            "lpy",
+            "ellipticity",
+            "fit_state",
+            "iterations",
+        ]
+    return {
+        "frame": np.array([], dtype=np.uint64),
+        **{k: np.array([], dtype=float) for k in names},
+    }
 
 
 @logged
@@ -56,12 +74,21 @@ def _job(payload: tuple, reporter: WorkerProgress) -> tuple:
     chunks, failed_fits = [], 0
     for index, (image, camera_frame) in enumerate(zip(images, frames, strict=True)):
         reporter.report(
-            index, len(frames), "Detecting localisations" if candidates is None else "Extracting spots"
+            index,
+            len(frames),
+            "Detecting localisations" if candidates is None else "Extracting spots",
         )
         if candidates is None:
-            y, x, gradient = localize.identify_in_frame(image, settings.min_net_gradient, settings.box_size)
+            y, x, gradient = localize.identify_in_frame(
+                image, settings.min_net_gradient, settings.box_size
+            )
             found = pd.DataFrame(
-                {"frame": np.zeros(len(x), dtype=np.uint32), "x": x, "y": y, "net_gradient": gradient}
+                {
+                    "frame": np.zeros(len(x), dtype=np.uint32),
+                    "x": x,
+                    "y": y,
+                    "net_gradient": gradient,
+                }
             )
         else:
             selected = candidates["frame"] == camera_frame
@@ -72,7 +99,11 @@ def _job(payload: tuple, reporter: WorkerProgress) -> tuple:
                 image[None],
                 found,
                 settings.box_size,
-                {"Baseline": camera.baseline, "Sensitivity": camera.sensitivity, "Gain": camera.gain},
+                {
+                    "Baseline": camera.baseline,
+                    "Sensitivity": camera.sensitivity,
+                    "Gain": camera.gain,
+                },
             )
             initial = seeds.initial_parameters_gauss(spots, settings.box_size)
 
@@ -84,7 +115,11 @@ def _job(payload: tuple, reporter: WorkerProgress) -> tuple:
                     index: Zero-based item or logical-channel frame index.
                     spots: Spots used by this operation.
                 """
-                reporter.report(index + 0.2 + 0.7 * count / len(spots), len(frames), "Fitting localisations")
+                reporter.report(
+                    index + 0.2 + 0.7 * count / len(spots),
+                    len(frames),
+                    "Fitting localisations",
+                )
 
             theta, chi_square, states, iterations = gaussfit.fit_spots(
                 gaussfit.ELLIPTIC,
@@ -106,10 +141,12 @@ def _job(payload: tuple, reporter: WorkerProgress) -> tuple:
             )
             found["fit_state"] = states
             found["iterations"] = iterations
-            valid = (states == 0) & np.isfinite(found[["x", "y", "photons", "sx", "sy"]]).all(
-                axis=1
+            valid = (states == 0) & np.isfinite(
+                found[["x", "y", "photons", "sx", "sy"]]
+            ).all(axis=1).to_numpy()
+            valid &= (
+                (found["photons"] >= 0) & (found["sx"] > 0) & (found["sy"] > 0)
             ).to_numpy()
-            valid &= ((found["photons"] >= 0) & (found["sx"] > 0) & (found["sy"] > 0)).to_numpy()
             failed_fits += int((~valid).sum())
             found = found.loc[valid]
         if len(found):
@@ -132,7 +169,9 @@ def _combine(chunks: tuple[int, ...] | str, fitting: bool) -> dict[str, np.ndarr
     chunks = [chunk for chunk in chunks if len(chunk["frame"])]
     if not chunks:
         return _empty(fitting)
-    return {name: np.concatenate([chunk[name] for chunk in chunks]) for name in chunks[0]}
+    return {
+        name: np.concatenate([chunk[name] for chunk in chunks]) for name in chunks[0]
+    }
 
 
 @logged
@@ -177,19 +216,25 @@ def _run(
     """
     options = (
         (context or ExecutionContext())
-        .resolve(cpu=cpu, num_cpus=num_cpus, progress=progress, cancel_event=cancel_event)
+        .resolve(
+            cpu=cpu, num_cpus=num_cpus, progress=progress, cancel_event=cancel_event
+        )
         .kwargs()
     )
     cpu, num_cpus, progress, cancel_event = (
         options[k] for k in ("cpu", "num_cpus", "progress", "cancel_event")
     )
     selected_backend = resolve_backend("localise", backend, registry=registry)
-    installed = backend_version() if selected_backend is None else selected_backend.version
+    installed = (
+        backend_version() if selected_backend is None else selected_backend.version
+    )
     if frame_range is not None and apply:
         raise ValueError("Subset processing is a preview; pass apply=False")
     acquisition = dataset.acquisitions[acquisition_id]
     view = acquisition.channels[channel]
-    token = hash((id(acquisition.source), channel, view.roi, view.source_frames.tobytes()))
+    token = hash(
+        (id(acquisition.source), channel, view.roi, view.source_frames.tobytes())
+    )
     if detections is not None and detections.source_token != token:
         raise ValueError("Detection image source/channel changed; detect again")
     if detections is not None and detections.expected is not None:
@@ -197,7 +242,9 @@ def _run(
 
         validate_expected(dataset, detections.expected)
     expected = dataset.dependencies(
-        acquisition_id, channel, components={"localizations", "tracks"} if fitting else ()
+        acquisition_id,
+        channel,
+        components={"localizations", "tracks"} if fitting else (),
     )
     indices = np.arange(len(view))
     if frame_range is not None:
@@ -210,7 +257,9 @@ def _run(
         if not {"frame", "x", "y", "net_gradient"} <= candidates.keys():
             raise ValueError("Detection result is missing required columns")
         if not np.isin(candidates["frame"], view.source_frames[indices]).all():
-            raise ValueError("Detection frames do not belong to the selected channel/range")
+            raise ValueError(
+                "Detection frames do not belong to the selected channel/range"
+            )
         half = settings.box_size // 2
         if (
             not np.isfinite(candidates["x"]).all()
@@ -222,7 +271,9 @@ def _run(
                 | (candidates["y"] >= view.shape[1] - half)
             )
         ):
-            raise ValueError("Detection positions must have a complete fit box inside the channel")
+            raise ValueError(
+                "Detection positions must have a complete fit box inside the channel"
+            )
 
     def jobs() -> Iterator[Any]:
         """Jobs.
@@ -236,7 +287,10 @@ def _run(
             subset = (
                 None
                 if candidates is None
-                else {k: v[np.isin(candidates["frame"], frames)].copy() for k, v in candidates.items()}
+                else {
+                    k: v[np.isin(candidates["frame"], frames)].copy()
+                    for k, v in candidates.items()
+                }
             )
             yield view[selected], frames, settings, camera, subset, fitting
 
@@ -253,9 +307,13 @@ def _run(
     result = _combine([columns for columns, _ in chunks], fitting)
     failed_fits = sum(count for _, count in chunks)
     if not fitting:
-        return DetectionResult(acquisition_id, str(channel), result, settings, token, frame_range, expected)
+        return DetectionResult(
+            acquisition_id, str(channel), result, settings, token, frame_range, expected
+        )
     if apply and failed_fits and len(result["frame"]) == 0:
-        raise ValueError("No localisation fits converged; active results were preserved")
+        raise ValueError(
+            "No localisation fits converged; active results were preserved"
+        )
     fitted = LocalisationResult(
         acquisition_id,
         str(channel),

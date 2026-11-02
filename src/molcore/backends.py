@@ -43,7 +43,9 @@ def _validate(backend: ProcessorBackend) -> None:
     if not callable(getattr(backend, "compute", None)) or not isinstance(
         getattr(backend, "version", None), str
     ):
-        raise TypeError("A backend must expose compute(payload, reporter) and a string version")
+        raise TypeError(
+            "A backend must expose compute(payload, reporter) and a string version"
+        )
 
 
 class BackendRegistry:
@@ -57,7 +59,12 @@ class BackendRegistry:
         self._backends: dict[tuple[Operation, str], ProcessorBackend] = {}
 
     def register(
-        self, operation: Operation, name: str, backend: ProcessorBackend, *, replace: bool = False
+        self,
+        operation: Operation,
+        name: str,
+        backend: ProcessorBackend,
+        *,
+        replace: bool = False,
     ) -> None:
         """Register one worker; duplicate registration requires explicit replacement.
 

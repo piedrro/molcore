@@ -79,7 +79,10 @@ def molseeq_example() -> Dataset:
 
 if __name__ == "__main__":
     with TemporaryDirectory() as directory:
-        for name, dataset in (("tracking", moltrack_example()), ("alex", molseeq_example())):
+        for name, dataset in (
+            ("tracking", moltrack_example()),
+            ("alex", molseeq_example()),
+        ):
             path = Path(directory) / f"{name}.h5"
             dataset.save(path, image_policy="full")
             with Dataset.open(path) as restored:

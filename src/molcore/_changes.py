@@ -19,17 +19,27 @@ def versions(dataset: Any) -> dict[str, Any]:
     """
     result = {
         name: getattr(dataset, name).revision
-        for name in ("localizations", "tracks", "observations", "photon_sequences", "transforms")
+        for name in (
+            "localizations",
+            "tracks",
+            "observations",
+            "photon_sequences",
+            "transforms",
+        )
     }
     result["calibrations"] = tuple((k, id(v)) for k, v in dataset.calibrations.items())
     result["acquisitions"] = tuple((k, id(v)) for k, v in dataset.acquisitions.items())
     result["sequences"] = tuple(dataset.sequences)
-    result["segmentations"] = tuple((k, id(v)) for k, v in dataset.segmentations.items())
+    result["segmentations"] = tuple(
+        (k, id(v)) for k, v in dataset.segmentations.items()
+    )
     result["metadata"] = dataset._metadata_revision
     return result
 
 
-def partitions(dataset: Any, function: Any, args: tuple, kwargs: dict) -> set[tuple[str, str]]:
+def partitions(
+    dataset: Any, function: Any, args: tuple, kwargs: dict
+) -> set[tuple[str, str]]:
     """Resolve the mutation's input identifiers before deletion or replacement.
 
     Args:
@@ -61,12 +71,18 @@ def partitions(dataset: Any, function: Any, args: tuple, kwargs: dict) -> set[tu
             return {(sequence.acquisition_id, sequence.channel)}
     if args[0] is dataset.transforms and "calibration" in values:
         name = values["calibration"].name
-        return {key for key, selected in dataset.transforms._selected.items() if selected == name}
+        return {
+            key
+            for key, selected in dataset.transforms._selected.items()
+            if selected == name
+        }
     acquisition = values.get("acquisition_id")
     for key in ("acquisition", "segmentation", "sequence"):
         item = values.get(key)
         if item is not None:
-            acquisition = getattr(item, "acquisition_id", getattr(item, "id", acquisition))
+            acquisition = getattr(
+                item, "acquisition_id", getattr(item, "id", acquisition)
+            )
     if acquisition is not None:
         acquisitions = set(np.atleast_1d(acquisition).tolist())
         channel = values.get("channel")
@@ -81,10 +97,14 @@ def partitions(dataset: Any, function: Any, args: tuple, kwargs: dict) -> set[tu
             for c in dataset.acquisitions[a].channels
             if channels is None or c in channels
         }
-    ids = values.get("localization_ids", values.get("localization_id", values.get("ids")))
+    ids = values.get(
+        "localization_ids", values.get("localization_id", values.get("ids"))
+    )
     track_ids = values.get("track_ids", values.get("track_id"))
     if track_ids is not None:
-        members = [dataset.tracks._members.get(int(i), []) for i in np.atleast_1d(track_ids)]
+        members = [
+            dataset.tracks._members.get(int(i), []) for i in np.atleast_1d(track_ids)
+        ]
         ids = np.concatenate(members) if members else []
     if ids is not None and args[0] is not dataset.observations:
         data = dataset.localizations._data
@@ -92,7 +112,9 @@ def partitions(dataset: Any, function: Any, args: tuple, kwargs: dict) -> set[tu
             selected = np.isin(data["id"], ids)
             return set(
                 zip(
-                    data["acquisition_id"][selected].tolist(), data["channel"][selected].tolist(), strict=True
+                    data["acquisition_id"][selected].tolist(),
+                    data["channel"][selected].tolist(),
+                    strict=True,
                 )
             )
     return {(a, c) for a, value in dataset.acquisitions.items() for c in value.channels}

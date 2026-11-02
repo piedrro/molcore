@@ -6,11 +6,21 @@ from typing import TYPE_CHECKING
 
 from qtpy.QtWidgets import QScrollArea, QTabWidget, QVBoxLayout, QWidget
 
-from .analysis import ClusteringWidget, ColocalisationWidget, LocalisationRenderWidget, ResultsFilterWidget
+from .analysis import (
+    ClusteringWidget,
+    ColocalisationWidget,
+    LocalisationRenderWidget,
+    ResultsFilterWidget,
+)
 from .dataset_alignment import DatasetAlignmentWidget
 from .dynamics import PhotometryWidget, TrackingWidget, TrajectoryStatisticsWidget
 from .files import FileToolsWidget
-from .processing import ChannelAlignmentWidget, LocalisationWidget, SegmentationWidget, UndriftingWidget
+from .processing import (
+    ChannelAlignmentWidget,
+    LocalisationWidget,
+    SegmentationWidget,
+    UndriftingWidget,
+)
 from .traces import TraceViewerWidget
 
 if TYPE_CHECKING:

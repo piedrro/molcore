@@ -1,9 +1,8 @@
-"""Cellpose 4 inference using MolCore acquisitions, CPU tools and segmentations."""
+"""Cellpose 3 inference using MolCore acquisitions, CPU tools and segmentations."""
 
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from importlib.metadata import PackageNotFoundError, version
@@ -35,7 +34,7 @@ if TYPE_CHECKING:
     from .cpu import WorkerProgress
     from .types import CancelEvent
 
-_BUILTIN_MODELS = frozenset({"cpsam_v2", "cpsam", "cpdino", "cpdino-vitb"})
+_BUILTIN_MODELS = frozenset({"cyto3", "cyto2", "cyto", "nuclei"})
 _MODEL_CACHE = {}
 
 
@@ -49,9 +48,11 @@ def _backend_version() -> str:
         installed = version("cellpose")
     except PackageNotFoundError as exc:
         raise ImportError("Cellpose is missing; install molcore[segmentation]") from exc
-    major, minor = (int(part) for part in installed.split(".")[:2])
-    if major != 4 or minor < 2:
-        raise ImportError(f"MolCore segmentation requires Cellpose >=4.2,<5; found {installed}")
+    major = int(installed.split(".")[0])
+    if major != 3 or int(installed.split(".")[1]) != 0:
+        raise ImportError(
+            f"MolCore segmentation requires Cellpose >=3.0,<3.1; found {installed}"
+        )
     return installed
 
 
@@ -70,7 +71,9 @@ def _resolve_model(settings: CellposeSettings) -> tuple:
         stat = candidate.stat()
         return str(candidate), (stat.st_size, stat.st_mtime_ns)
     if settings.pretrained_model not in _BUILTIN_MODELS:
-        raise ValueError("Choose a Cellpose 4 SAM/DINO model name or an existing local weight file")
+        raise ValueError(
+            "Choose a Cellpose 3 cyto3/cyto2/cyto/nuclei model or an existing local weight file"
+        )
     return settings.pretrained_model, None
 
 
@@ -84,7 +87,11 @@ def _fingerprint(image: np.ndarray) -> tuple[tuple[int, ...], str, bytes]:
         Computed str value.
     """
     image = np.ascontiguousarray(image)
-    return image.shape, image.dtype.str, hashlib.blake2b(image.view(np.uint8), digest_size=16).digest()
+    return (
+        image.shape,
+        image.dtype.str,
+        hashlib.blake2b(image.view(np.uint8), digest_size=16).digest(),
+    )
 
 
 def _target_token(segmentation: Segmentation) -> tuple | None:
@@ -107,7 +114,11 @@ def _target_token(segmentation: Segmentation) -> tuple | None:
         segmentation.source_path,
         segmentation.mask_path,
         _fingerprint(segmentation.labels),
-        None if segmentation.source_image is None else _fingerprint(segmentation.source_image),
+        (
+            None
+            if segmentation.source_image is None
+            else _fingerprint(segmentation.source_image)
+        ),
         _json(segmentation.metadata),
     )
 
@@ -127,9 +138,15 @@ def _source(dataset: Dataset, request: SegmentationRequest, frame: int | None) -
     if request.space == CoordinateSpace.RAW:
         image = view[view.channel_index(frame)]
     else:
-        image = dataset.transforms.image(request.acquisition_id, request.channel, frame, space=request.space)
+        image = dataset.transforms.image(
+            request.acquisition_id, request.channel, frame, space=request.space
+        )
     image = np.array(image, copy=True)
-    if image.ndim != 2 or image.dtype.kind not in "biuf" or not np.isfinite(image).all():
+    if (
+        image.ndim != 2
+        or image.dtype.kind not in "biuf"
+        or not np.isfinite(image).all()
+    ):
         raise ValueError("Cellpose source must be a finite, real-valued 2D image")
     return image
 
@@ -158,22 +175,24 @@ def _load_model(model_ref: Any, model_stat: Any, settings: CellposeSettings) -> 
             raise RuntimeError("GPU requested, but CUDA and MPS are unavailable")
     else:
         device = torch.device("cpu")
-    key = model_ref, model_stat, str(device), settings.use_bfloat16
+    key = model_ref, model_stat, str(device)
     if key not in _MODEL_CACHE:
-        is_dino = model_ref in {"cpdino", "cpdino-vitb"}
-        if model_stat is not None:
-            try:
-                is_dino = models.get_backbone(model_ref).startswith("dino")
-            except Exception as exc:
-                raise ValueError(f"Cannot read Cellpose 4 checkpoint: {model_ref}") from exc
-        if is_dino and importlib.util.find_spec("dinov3") is None:
-            raise ImportError(
-                "DINO models require the upstream dinov3 package: pip install git+https://github.com/facebookresearch/dinov3"
-            )
         _MODEL_CACHE.clear()  # Bound network memory to one model per worker.
-        _MODEL_CACHE[key] = models.CellposeModel(
-            gpu=settings.gpu, device=device, pretrained_model=model_ref, use_bfloat16=settings.use_bfloat16
+        options = (
+            {"model_type": model_ref}
+            if model_stat is None
+            else {"pretrained_model": model_ref}
         )
+        try:
+            _MODEL_CACHE[key] = models.CellposeModel(
+                gpu=settings.gpu, device=device, **options
+            )
+        except Exception as exc:
+            if model_stat is not None:
+                raise ValueError(
+                    f"Cannot read Cellpose 3 checkpoint: {model_ref}"
+                ) from exc
+            raise
     return _MODEL_CACHE[key]
 
 
@@ -193,7 +212,9 @@ class _Progress:
         Args:
             value: Value supplied by the caller or connected control.
         """
-        self.reporter.report(0.2 + 0.7 * min(1.0, max(0.0, value / 100)), 1, "Cellpose inference")
+        self.reporter.report(
+            0.2 + 0.7 * min(1.0, max(0.0, value / 100)), 1, "Cellpose inference"
+        )
 
 
 @logged
@@ -207,7 +228,16 @@ def _job(payload: tuple, reporter: WorkerProgress) -> Any:
     Returns:
         Result retaining the input format or backend-specific representation.
     """
-    request, frame, segmentation_id, image, source_path, settings, model_ref, model_stat = payload
+    (
+        request,
+        frame,
+        segmentation_id,
+        image,
+        source_path,
+        settings,
+        model_ref,
+        model_stat,
+    ) = payload
     reporter.report(0.05, 1, "Loading Cellpose model")
     model = _load_model(model_ref, model_stat, settings)
     reporter.report(0.2, 1, "Cellpose inference")
@@ -217,6 +247,7 @@ def _job(payload: tuple, reporter: WorkerProgress) -> Any:
     output = model.eval(
         np.array(source, dtype=np.float32, copy=True),
         batch_size=settings.batch_size,
+        channels=None,
         channel_axis=None,
         normalize=settings.normalize,
         diameter=settings.diameter,
@@ -230,8 +261,14 @@ def _job(payload: tuple, reporter: WorkerProgress) -> Any:
     if not isinstance(output, (tuple, list)) or not output:
         raise ValueError("Cellpose returned an invalid inference result")
     labels = np.asarray(output[0])
-    if labels.shape != source.shape or labels.dtype.kind not in "biu" or np.any(labels < 0):
-        raise ValueError("Cellpose must return nonnegative integer labels matching the source image")
+    if (
+        labels.shape != source.shape
+        or labels.dtype.kind not in "biu"
+        or np.any(labels < 0)
+    ):
+        raise ValueError(
+            "Cellpose must return nonnegative integer labels matching the source image"
+        )
     import torch
 
     result = Segmentation(
@@ -276,7 +313,7 @@ def segment_many(
     Args:
         dataset: Dataset supplying images and receiving segmentations.
         requests: Channel/camera-frame bindings and optional result identifiers.
-        settings: Cellpose 4 parameters; default model is cpsam_v2 on CPU.
+        settings: Cellpose 3 parameters; default model is cyto3 on CPU.
         apply: Store successful results; False returns detached previews.
         num_cpus: Worker count, defaulting to one to bound network memory.
         cpu: Optional reusable executor; configure its CPU count on construction.
@@ -289,7 +326,7 @@ def segment_many(
     Raises:
         StaleResultError: Inputs or target segmentations changed during inference.
         ValueError: Settings, model selection, masks or result bindings are invalid.
-        ImportError: The requested Cellpose/DINO backend is unavailable.
+        ImportError: The requested Cellpose backend is unavailable.
 
     Notes:
         Built-in weights download through Cellpose on first use. Local weight
@@ -298,7 +335,9 @@ def segment_many(
     """
     options = (
         (context or ExecutionContext())
-        .resolve(cpu=cpu, num_cpus=num_cpus, progress=progress, cancel_event=cancel_event)
+        .resolve(
+            cpu=cpu, num_cpus=num_cpus, progress=progress, cancel_event=cancel_event
+        )
         .kwargs()
     )
     cpu, num_cpus, progress, cancel_event = (
@@ -308,8 +347,14 @@ def segment_many(
     if selected_backend is None:
         _backend_version()
     settings = settings or CellposeSettings()
-    model_ref, model_stat = _resolve_model(settings) if selected_backend is None else (None, None)
-    configured = getattr(cpu, "num_cpus", 1) if cpu is not None else (num_cpus if num_cpus is not None else 1)
+    model_ref, model_stat = (
+        _resolve_model(settings) if selected_backend is None else (None, None)
+    )
+    configured = (
+        getattr(cpu, "num_cpus", 1)
+        if cpu is not None
+        else (num_cpus if num_cpus is not None else 1)
+    )
     if settings.gpu and configured != 1:
         raise ValueError("GPU Cellpose inference requires exactly one worker")
     requests = tuple(requests)
@@ -323,14 +368,19 @@ def segment_many(
             raise ValueError("Cannot segment an empty channel")
         frame = int(view.source_frames[0]) if request.frame is None else request.frame
         view.channel_index(frame)
-        identifier = request.segmentation_id or f"{request.acquisition_id}:{request.channel}:cellpose:{frame}"
+        identifier = (
+            request.segmentation_id
+            or f"{request.acquisition_id}:{request.channel}:cellpose:{frame}"
+        )
         if identifier in seen:
             raise ValueError("Batch segmentation IDs must be unique")
         seen.add(identifier)
         source = acquisition.source
         while isinstance(source, CachedSource):
             source = source.source
-        source_path = getattr(source, "path", None) or acquisition.metadata.get("source_path")
+        source_path = getattr(source, "path", None) or acquisition.metadata.get(
+            "source_path"
+        )
         prepared.append(
             (
                 request,
@@ -352,7 +402,9 @@ def segment_many(
         for request, frame, identifier, source_path, _, fingerprint, _ in prepared:
             image = _source(dataset, request, frame)
             if _fingerprint(image) != fingerprint:
-                raise StaleResultError("Segmentation source pixels changed before inference")
+                raise StaleResultError(
+                    "Segmentation source pixels changed before inference"
+                )
             yield request, frame, identifier, image, source_path, settings, model_ref, model_stat
 
     with executor(cpu, (configured if cpu is None else num_cpus)) as runner:
@@ -368,13 +420,17 @@ def segment_many(
     for request, frame, identifier, _, expected, fingerprint, target in prepared:
         check_snapshot(dataset, request.acquisition_id, expected)
         if _fingerprint(_source(dataset, request, frame)) != fingerprint:
-            raise StaleResultError("Segmentation source pixels changed during inference")
+            raise StaleResultError(
+                "Segmentation source pixels changed during inference"
+            )
         if apply and _target_token(dataset.segmentations.get(identifier)) != target:
             raise StaleResultError("Target segmentation changed during inference")
     for value, entry in zip(values, prepared, strict=True):
         value.expected = entry[4]
         if selected_backend is not None:
-            value.metadata.update({"algorithm": "external", "backend": selected_backend.version})
+            value.metadata.update(
+                {"algorithm": "external", "backend": selected_backend.version}
+            )
     results = {value.id: value for value in values}
     if apply and results:
         from .processing import apply_segmentations
@@ -402,7 +458,7 @@ def segment(
     backend: ProcessorBackend | str | None = None,
     registry: BackendRegistry | None = None,
 ) -> Segmentation:
-    """Segment one MolCore channel frame with the Cellpose 4 backend.
+    """Segment one MolCore channel frame with the Cellpose 3 backend.
 
     Args:
         dataset: Dataset containing the source acquisition.
@@ -421,7 +477,9 @@ def segment(
     Returns:
         Existing MolCore Segmentation type with source image and provenance.
     """
-    request = SegmentationRequest(acquisition_id, channel, frame, segmentation_id, space)
+    request = SegmentationRequest(
+        acquisition_id, channel, frame, segmentation_id, space
+    )
     results = segment_many(
         dataset,
         [request],

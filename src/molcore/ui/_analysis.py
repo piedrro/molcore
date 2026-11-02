@@ -9,7 +9,13 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pyqtgraph as pg
 from qtpy.QtCore import Signal
-from qtpy.QtWidgets import QFileDialog, QFormLayout, QLineEdit, QTableWidget, QTableWidgetItem
+from qtpy.QtWidgets import (
+    QFileDialog,
+    QFormLayout,
+    QLineEdit,
+    QTableWidget,
+    QTableWidgetItem,
+)
 
 from .._logging import logged
 from ._common import ToolWidget
@@ -154,7 +160,9 @@ class AnalysisTool(ToolWidget):
         for col, name in enumerate(names):
             for row, value in enumerate(columns[name][:500]):
                 self.table.setItem(row, col, QTableWidgetItem(str(value)))
-        self.table.setToolTip(f"Showing up to 500 of {count} rows; export includes all rows")
+        self.table.setToolTip(
+            f"Showing up to 500 of {count} rows; export includes all rows"
+        )
 
     @logged
     def export_csv(self) -> None:
@@ -162,7 +170,9 @@ class AnalysisTool(ToolWidget):
         self.require_preview()
         if self._columns is None:
             raise ValueError("Compute a result first")
-        path, _ = QFileDialog.getSaveFileName(self, "Export all result rows", "", "CSV (*.csv)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export all result rows", "", "CSV (*.csv)"
+        )
         if path:
             export_columns(path, self._columns)
 
@@ -180,15 +190,21 @@ class AnalysisTool(ToolWidget):
             if entity == "tracks"
             else model.localizations.query(ids=ids, space="raw")
         )
-        for acquisition, channel in sorted(set(zip(rows["acquisition_id"], rows["channel"], strict=True))):
-            mask = (rows["acquisition_id"] == acquisition) & (rows["channel"] == channel)
+        for acquisition, channel in sorted(
+            set(zip(rows["acquisition_id"], rows["channel"], strict=True))
+        ):
+            mask = (rows["acquisition_id"] == acquisition) & (
+                rows["channel"] == channel
+            )
             self.selection_requested.emit(
                 dict(
                     acquisition_id=acquisition,
                     channel=channel,
                     space=self.session.space,
                     entity=entity,
-                    ids=np.unique(rows["track_id" if entity == "tracks" else "id"][mask]),
+                    ids=np.unique(
+                        rows["track_id" if entity == "tracks" else "id"][mask]
+                    ),
                 )
             )
 
@@ -204,8 +220,12 @@ class AnalysisTool(ToolWidget):
         values = np.asarray(values)
         values = values[np.isfinite(values)]
         if len(values):
-            counts, edges = np.histogram(values, bins=min(40, max(1, int(np.sqrt(len(values))))))
-            self.plot.plot(edges, counts, stepMode="center", fillLevel=0, brush=(70, 130, 200, 90))
+            counts, edges = np.histogram(
+                values, bins=min(40, max(1, int(np.sqrt(len(values)))))
+            )
+            self.plot.plot(
+                edges, counts, stepMode="center", fillLevel=0, brush=(70, 130, 200, 90)
+            )
         self.plot.setLabel("bottom", label)
         self.plot.setLabel("left", "Count")
 
@@ -220,7 +240,11 @@ def numeric_metrics(rows: dict[str, np.ndarray]) -> list[str]:
     Returns:
         Computed list[str] value.
     """
-    return [k for k, v in rows.items() if v.dtype.kind in "iuf" and k not in ("id", "track_id")]
+    return [
+        k
+        for k, v in rows.items()
+        if v.dtype.kind in "iuf" and k not in ("id", "track_id")
+    ]
 
 
 @logged
@@ -243,7 +267,9 @@ def refresh_combo(control: QWidget, values: Any) -> None:
 
 
 @logged
-def partition_rows(session: UiSession, *, tracks: bool = False) -> dict[str, np.ndarray]:
+def partition_rows(
+    session: UiSession, *, tracks: bool = False
+) -> dict[str, np.ndarray]:
     """Partition rows.
 
     Args:
@@ -256,7 +282,11 @@ def partition_rows(session: UiSession, *, tracks: bool = False) -> dict[str, np.
     if session.acquisition_id is None:
         return {}
     table = session.dataset.tracks if tracks else session.dataset.localizations
-    return table.query(acquisition_id=session.acquisition_id, channel=session.channel, space=session.space)
+    return table.query(
+        acquisition_id=session.acquisition_id,
+        channel=session.channel,
+        space=session.space,
+    )
 
 
 class IdTool(AnalysisTool):
@@ -281,7 +311,9 @@ class IdTool(AnalysisTool):
             Computed NumPy array value.
         """
         rows = partition_rows(self.session, tracks=tracks)
-        available = np.unique(rows.get("track_id" if tracks else "id", np.array([], dtype=np.uint64)))
+        available = np.unique(
+            rows.get("track_id" if tracks else "id", np.array([], dtype=np.uint64))
+        )
         selected = identifiers(self.ids.text())
         if selected is not None and not np.isin(selected, available).all():
             raise ValueError("IDs must belong to the selected acquisition/channel")
@@ -302,5 +334,9 @@ def settings_metadata(result: Any) -> dict[str, Any]:
         acquisition_id=result.acquisition_id,
         channel=result.channel,
         space=str(result.space),
-        settings=asdict(result.settings) if is_dataclass(result.settings) else result.settings,
+        settings=(
+            asdict(result.settings)
+            if is_dataclass(result.settings)
+            else result.settings
+        ),
     )

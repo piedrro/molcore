@@ -40,7 +40,9 @@ def partition(
         Computed tuple[ChannelView, dict[str, NumPy array]] value.
     """
     view = dataset.acquisitions[acquisition_id].channels[channel]
-    rows = dataset.localizations.query(acquisition_id=acquisition_id, channel=channel, space=space, ids=ids)
+    rows = dataset.localizations.query(
+        acquisition_id=acquisition_id, channel=channel, space=space, ids=ids
+    )
     order = np.argsort(rows["id"], kind="stable")
     return view, {key: values[order] for key, values in rows.items()}
 

@@ -64,7 +64,13 @@ def model_mutated[**P, R](function: Callable[P, R]) -> Callable[P, R]:
             # Temporary validation tables must not publish changes to their owner.
             if receiver is not owner and not any(
                 receiver is getattr(owner, name)
-                for name in ("localizations", "tracks", "observations", "photon_sequences", "transforms")
+                for name in (
+                    "localizations",
+                    "tracks",
+                    "observations",
+                    "photon_sequences",
+                    "transforms",
+                )
             ):
                 return function(*args, **kwargs)
             outer = owner._mutation_depth == 0
@@ -79,7 +85,9 @@ def model_mutated[**P, R](function: Callable[P, R]) -> Callable[P, R]:
                     after = versions(owner)
                     changed = frozenset(k for k in before if before[k] != after[k])
                     if changed:
-                        change = owner._record_change(changed, frozenset(owner._mutation_partitions))
+                        change = owner._record_change(
+                            changed, frozenset(owner._mutation_partitions)
+                        )
             finally:
                 owner._mutation_depth -= 1
         if change is not None:

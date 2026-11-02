@@ -123,16 +123,26 @@ def migrate_moltrack(
                     f"Dataset {name!r} needs original images or an explicit lossless acquisition binding"
                 )
             channels = tuple(data.get("images", {}))
-            channel = channels[0] if len(channels) == 1 else data.get("channel_name", "image")
+            channel = (
+                channels[0] if len(channels) == 1 else data.get("channel_name", "image")
+            )
             bindings[name] = image_acquisition(
-                read_image(path), channel=channel, pixel_size=data.get("pixel_size"), id=name
+                read_image(path),
+                channel=channel,
+                pixel_size=data.get("pixel_size"),
+                id=name,
             )
         result.add_acquisition(bindings[name])
     mapping = channel_mapping or {}
-    for kind, key in (("localisation_dict", "localisations"), ("tracking_dict", "tracks")):
+    for kind, key in (
+        ("localisation_dict", "localisations"),
+        ("tracking_dict", "tracks"),
+    ):
         for dataset, channels in project.get(kind, {}).items():
             if dataset not in bindings:
-                raise ValueError(f"Missing acquisition binding for legacy dataset {dataset!r}")
+                raise ValueError(
+                    f"Missing acquisition binding for legacy dataset {dataset!r}"
+                )
             for channel, data in channels.items():
                 if key not in data:
                     continue
@@ -151,7 +161,9 @@ def migrate_moltrack(
                     timeline=timeline,
                     tracks=kind == "tracking_dict",
                 )
-                messages.append(f"Imported {len(columns['frame'])} {key}: {dataset}/{channel}")
+                messages.append(
+                    f"Imported {len(columns['frame'])} {key}: {dataset}/{channel}"
+                )
     mask = project.get("segmentations")
     if mask and len(bindings) == 1:
         acquisition = next(iter(bindings.values()))
@@ -171,13 +183,17 @@ def migrate_moltrack(
                 y0, x0 = previous
                 y1, x1 = current
                 if y1 != y0:
-                    inside ^= ((y0 > yy) != (y1 > yy)) & (xx < (x1 - x0) * (yy - y0) / (y1 - y0) + x0)
+                    inside ^= ((y0 > yy) != (y1 > yy)) & (
+                        xx < (x1 - x0) * (yy - y0) / (y1 - y0) + x0
+                    )
                 previous = current
             labels[inside] = index
         if len(view):
             source = project.get("segmentation_image", {}).get("data")
             if source is not None and np.asarray(source).shape != labels.shape:
-                messages.append("Segmentation source geometry differs; source not bound to this mask")
+                messages.append(
+                    "Segmentation source geometry differs; source not bound to this mask"
+                )
                 source = None
             result.add_segmentation(
                 Segmentation(
@@ -190,7 +206,9 @@ def migrate_moltrack(
                 )
             )
     elif mask:
-        messages.append("Legacy shapes need an explicit acquisition binding; masks were not imported")
+        messages.append(
+            "Legacy shapes need an explicit acquisition binding; masks were not imported"
+        )
     for key in project.keys() - {
         "dataset_dict",
         "localisation_dict",

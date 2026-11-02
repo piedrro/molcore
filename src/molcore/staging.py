@@ -40,7 +40,10 @@ def state_token(dataset: Dataset) -> StateToken:
             for a, acquisition in dataset.acquisitions.items()
         ),
         dataset.observations.revision,
-        tuple((k, v.matrix.tobytes(), _json(v.metadata)) for k, v in dataset.calibrations.items()),
+        tuple(
+            (k, v.matrix.tobytes(), _json(v.metadata))
+            for k, v in dataset.calibrations.items()
+        ),
         tuple(
             (
                 k,
@@ -54,9 +57,15 @@ def state_token(dataset: Dataset) -> StateToken:
                 _json(s.metadata),
                 s.source_path,
                 s.mask_path,
-                None
-                if s.source_image is None
-                else (s.source_image.dtype.str, s.source_image.shape, s.source_image.tobytes()),
+                (
+                    None
+                    if s.source_image is None
+                    else (
+                        s.source_image.dtype.str,
+                        s.source_image.shape,
+                        s.source_image.tobytes(),
+                    )
+                ),
             )
             for k, s in dataset.segmentations.items()
         ),
@@ -76,7 +85,12 @@ def state_token(dataset: Dataset) -> StateToken:
             for k, a in dataset.acquisitions.items()
         ),
         tuple(
-            (k, tuple(a.id for a in s.acquisitions), s.allow_cross_boundary_tracks, s.reference)
+            (
+                k,
+                tuple(a.id for a in s.acquisitions),
+                s.allow_cross_boundary_tracks,
+                s.reference,
+            )
             for k, s in dataset.sequences.items()
         ),
         dataset.photon_sequences.revision,
@@ -116,7 +130,9 @@ def dependency_token(
         "metadata",
     }
     if components - allowed:
-        raise ValueError(f"Unknown dependency components: {sorted(components - allowed)}")
+        raise ValueError(
+            f"Unknown dependency components: {sorted(components - allowed)}"
+        )
     bindings = []
     for acquisition_id, channel in selected:
         acquisition = dataset.acquisitions[acquisition_id]
@@ -135,11 +151,20 @@ def dependency_token(
                 acquisition.phase,
                 _json(asdict(acquisition.channel_specs[channel])),
                 _json(acquisition.metadata),
-                None if acquisition.timestamps is None else acquisition.timestamps.tobytes(),
+                (
+                    None
+                    if acquisition.timestamps is None
+                    else acquisition.timestamps.tobytes()
+                ),
             )
         )
     sequences = tuple(
-        (key, tuple(a.id for a in value.acquisitions), value.reference, value.allow_cross_boundary_tracks)
+        (
+            key,
+            tuple(a.id for a in value.acquisitions),
+            value.reference,
+            value.allow_cross_boundary_tracks,
+        )
         for key, value in dataset.sequences.items()
         if any(a in value.offsets for a, _ in selected)
     )
@@ -172,7 +197,9 @@ def clone_dataset(dataset: Dataset) -> Dataset:
     Notes:
         Owners must not modify borrowed image arrays during background jobs.
     """
-    result = Dataset(id=dataset.id, name=dataset.name, metadata=deepcopy(dataset.metadata))
+    result = Dataset(
+        id=dataset.id, name=dataset.name, metadata=deepcopy(dataset.metadata)
+    )
     for acquisition in dataset.acquisitions.values():
         result.add_acquisition(
             Acquisition(
@@ -228,7 +255,10 @@ def experiment_state_token(experiment: Experiment) -> tuple:
     with experiment._lock:
         return (
             _json(experiment.metadata),
-            tuple((key, id(dataset), state_token(dataset)) for key, dataset in experiment.datasets.items()),
+            tuple(
+                (key, id(dataset), state_token(dataset))
+                for key, dataset in experiment.datasets.items()
+            ),
             experiment.alignment.revision,
         )
 
@@ -248,7 +278,12 @@ def clone_experiment(experiment: Experiment) -> Experiment:
             with dataset._lock:
                 result.add_dataset(clone_dataset(dataset))
         result.alignment._records = deepcopy(experiment.alignment._records)
-        for name in ("reference_dataset_id", "reference_acquisition_id", "reference_channel", "revision"):
+        for name in (
+            "reference_dataset_id",
+            "reference_acquisition_id",
+            "reference_channel",
+            "revision",
+        ):
             setattr(result.alignment, name, getattr(experiment.alignment, name))
     return result
 
@@ -279,8 +314,13 @@ def validate_expected(dataset: Dataset, expected: FreshnessToken | None) -> None
         before = state_token(dataset)
         if before != expected:
             batch_source = getattr(dataset, "_batch_source_token", None)
-            if batch_source != expected or before.scientific_inputs != expected.scientific_inputs:
-                raise StaleResultError("Inputs changed; compute a new preview before applying")
+            if (
+                batch_source != expected
+                or before.scientific_inputs != expected.scientific_inputs
+            ):
+                raise StaleResultError(
+                    "Inputs changed; compute a new preview before applying"
+                )
 
 
 def adopt_dataset(dataset: Dataset, staged: Dataset) -> ChangeSet | None:
@@ -312,10 +352,27 @@ def adopt_dataset(dataset: Dataset, staged: Dataset) -> ChangeSet | None:
         if getattr(before, field) != getattr(after, field):
             components.add(component)
     if before != after and not components:
-        components.update(("localizations", "tracks", "observations", "photon_sequences", "transforms"))
+        components.update(
+            (
+                "localizations",
+                "tracks",
+                "observations",
+                "photon_sequences",
+                "transforms",
+            )
+        )
     if components and not partitions:
-        partitions = {(a, c) for a, value in dataset.acquisitions.items() for c in value.channels}
-    for name in ("localizations", "tracks", "observations", "photon_sequences", "transforms", "crops"):
+        partitions = {
+            (a, c) for a, value in dataset.acquisitions.items() for c in value.channels
+        }
+    for name in (
+        "localizations",
+        "tracks",
+        "observations",
+        "photon_sequences",
+        "transforms",
+        "crops",
+    ):
         target, source = getattr(dataset, name), getattr(staged, name)
         values = vars(source).copy()
         values["dataset"] = dataset
@@ -373,7 +430,9 @@ def transact[R](
     value = operation(staged)
     with dataset._lock:
         if state_token(dataset) != before:
-            raise StaleResultError("Live state changed during transaction; staged update was discarded")
+            raise StaleResultError(
+                "Live state changed during transaction; staged update was discarded"
+            )
         change = adopt_dataset(dataset, staged)
     if change is not None:
         dataset._publish_change(change)

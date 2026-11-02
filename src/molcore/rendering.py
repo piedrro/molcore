@@ -65,31 +65,52 @@ def render_localizations(
             viewport = ((0.0, 0.0), (float(view.shape[1]), float(view.shape[2])))
         else:
             viewport = (
-                (float(np.floor(rows["y"].min()) - 1), float(np.floor(rows["x"].min()) - 1)),
-                (float(np.ceil(rows["y"].max()) + 1), float(np.ceil(rows["x"].max()) + 1)),
+                (
+                    float(np.floor(rows["y"].min()) - 1),
+                    float(np.floor(rows["x"].min()) - 1),
+                ),
+                (
+                    float(np.ceil(rows["y"].max()) + 1),
+                    float(np.ceil(rows["x"].max()) + 1),
+                ),
             )
     bounds = np.asarray(viewport, dtype=float)
-    if bounds.shape != (2, 2) or not np.isfinite(bounds).all() or np.any(bounds[1] <= bounds[0]):
+    if (
+        bounds.shape != (2, 2)
+        or not np.isfinite(bounds).all()
+        or np.any(bounds[1] <= bounds[0])
+    ):
         raise ValueError("Viewport must contain finite increasing y/x bounds")
     shape = np.ceil((bounds[1] - bounds[0]) * settings.oversampling).astype(int)
     if np.prod(shape.astype(float)) > 100_000_000:
-        raise ValueError("Rendered image exceeds 100 million pixels; reduce oversampling or viewport")
-    if settings.blur_method in ("gaussian", "gaussian_iso", "convolve") and len(rows["id"]):
+        raise ValueError(
+            "Rendered image exceeds 100 million pixels; reduce oversampling or viewport"
+        )
+    if settings.blur_method in ("gaussian", "gaussian_iso", "convolve") and len(
+        rows["id"]
+    ):
         if any(k not in rows for k in ("lpx", "lpy")):
             raise ValueError("Precision blur requires lpx and lpy measurements")
-        if not all(np.all(np.isfinite(rows[k]) & (rows[k] > 0)) for k in ("lpx", "lpy")):
+        if not all(
+            np.all(np.isfinite(rows[k]) & (rows[k] > 0)) for k in ("lpx", "lpy")
+        ):
             raise ValueError("Localization precisions must be finite and positive")
         if space != "raw":
             raw_x, raw_y = rows["lpx"].copy(), rows["lpy"].copy()
             for frame in np.unique(rows["frame"]):
-                matrix = dataset.transforms.matrix(acquisition_id, channel, int(frame), space=space)
+                matrix = dataset.transforms.matrix(
+                    acquisition_id, channel, int(frame), space=space
+                )
                 mask = rows["frame"] == frame
                 points = project_points(
-                    np.linalg.inv(matrix), np.column_stack([rows["x"][mask], rows["y"][mask]])
+                    np.linalg.inv(matrix),
+                    np.column_stack([rows["x"][mask], rows["y"][mask]]),
                 )
                 jacobian = project_jacobian(matrix, points)
                 variances = np.einsum(
-                    "nij,nj->ni", jacobian**2, np.column_stack((raw_x[mask] ** 2, raw_y[mask] ** 2))
+                    "nij,nj->ni",
+                    jacobian**2,
+                    np.column_stack((raw_x[mask] ** 2, raw_y[mask] ** 2)),
                 )
                 rows["lpx"][mask], rows["lpy"][mask] = np.sqrt(variances).T
     if len(rows["id"]):
@@ -98,7 +119,9 @@ def render_localizations(
             {"Pixelsize": 1.0, "Height": view.shape[1], "Width": view.shape[2]},
             disp_px_size=1 / settings.oversampling,
             viewport=bounds,
-            blur_method=None if settings.blur_method == "none" else settings.blur_method,
+            blur_method=(
+                None if settings.blur_method == "none" else settings.blur_method
+            ),
             min_blur_width=settings.min_blur_width,
         )
     else:

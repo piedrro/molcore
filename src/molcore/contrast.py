@@ -11,8 +11,19 @@ from numpy.typing import ArrayLike
 
 from ._logging import logged
 from .staging import state_token
-from .types import CancelEvent, Dataset, ProgressCallback, ProgressUpdate, StaleResultError
-from .types.contrast import ContrastMethod, ContrastResult, ContrastScope, ContrastSettings
+from .types import (
+    CancelEvent,
+    Dataset,
+    ProgressCallback,
+    ProgressUpdate,
+    StaleResultError,
+)
+from .types.contrast import (
+    ContrastMethod,
+    ContrastResult,
+    ContrastScope,
+    ContrastSettings,
+)
 
 _DEFAULT_SETTINGS = ContrastSettings()
 
@@ -37,7 +48,11 @@ def _indices(length: int, cap: int | None) -> np.ndarray:
         Computed NumPy array value.
     """
     count = length if cap is None else min(length, cap)
-    return np.linspace(0, length - 1, count, dtype=np.int64) if count else np.array([], dtype=np.int64)
+    return (
+        np.linspace(0, length - 1, count, dtype=np.int64)
+        if count
+        else np.array([], dtype=np.int64)
+    )
 
 
 def _mask(mask: ArrayLike | None, shape: tuple[int, ...]) -> np.ndarray | None:
@@ -56,12 +71,17 @@ def _mask(mask: ArrayLike | None, shape: tuple[int, ...]) -> np.ndarray | None:
     if result.dtype.kind != "b":
         raise TypeError("Masks must be boolean; True includes a pixel")
     if result.shape not in (shape, shape[1:]):
-        raise ValueError("Mask must match the spatial image or complete logical channel stack")
+        raise ValueError(
+            "Mask must match the spatial image or complete logical channel stack"
+        )
     return result
 
 
 def _report(
-    completed: int, total: int, progress: ProgressCallback | None, cancel_event: CancelEvent | None
+    completed: int,
+    total: int,
+    progress: ProgressCallback | None,
+    cancel_event: CancelEvent | None,
 ) -> None:
     """Report.
 
@@ -102,7 +122,9 @@ def _collect(
     for index in indices:
         image = np.asarray(read(int(index)))
         if image.ndim != 2 or image.dtype.kind not in "biuf":
-            raise ValueError("Images must have real numeric pixels and two spatial dimensions")
+            raise ValueError(
+                "Images must have real numeric pixels and two spatial dimensions"
+            )
         selected = np.isfinite(image)
         if mask is not None:
             selected &= mask if mask.ndim == 2 else mask[index]
@@ -119,7 +141,9 @@ def _collect(
     return samples
 
 
-def _limits(samples: Sequence[_Samples], settings: ContrastSettings) -> tuple[float, float]:
+def _limits(
+    samples: Sequence[_Samples], settings: ContrastSettings
+) -> tuple[float, float]:
     """Limits.
 
     Args:
@@ -135,7 +159,9 @@ def _limits(samples: Sequence[_Samples], settings: ContrastSettings) -> tuple[fl
         lower = min(sample.minimum for sample in samples)
         upper = max(sample.maximum for sample in samples)
     else:
-        values = np.concatenate([values for sample in samples for values in sample.values])
+        values = np.concatenate(
+            [values for sample in samples for values in sample.values]
+        )
         values.sort()
         limits = []
         for percentile in settings.percentiles:
@@ -163,8 +189,16 @@ def _limits(samples: Sequence[_Samples], settings: ContrastSettings) -> tuple[fl
         delta = max(0.5, abs(value) * 0.01)
         with np.errstate(over="ignore", invalid="ignore"):
             lo, hi = value - delta, value + delta
-            lower = lo if np.isfinite(lo) and lo < value else float(np.nextafter(value, -np.inf))
-            upper = hi if np.isfinite(hi) and hi > value else float(np.nextafter(value, np.inf))
+            lower = (
+                lo
+                if np.isfinite(lo) and lo < value
+                else float(np.nextafter(value, -np.inf))
+            )
+            upper = (
+                hi
+                if np.isfinite(hi) and hi > value
+                else float(np.nextafter(value, np.inf))
+            )
         if not np.isfinite(lower):
             lower = value
         if not np.isfinite(upper):
@@ -222,7 +256,12 @@ def autocontrast(
     lower, upper = _limits([samples], settings)
     _report(completed, len(indices), None, cancel_event)
     return ContrastResult(
-        lower, upper, settings, tuple(int(i) for i in indices), samples.valid_count, samples.sample_count
+        lower,
+        upper,
+        settings,
+        tuple(int(i) for i in indices),
+        samples.valid_count,
+        samples.sample_count,
     )
 
 
@@ -264,7 +303,9 @@ def autocontrast_channels(
     Returns:
         Computed dict[str, ContrastResult] value.
     """
-    if not isinstance(settings, ContrastSettings) or not isinstance(scope, ContrastScope):
+    if not isinstance(settings, ContrastSettings) or not isinstance(
+        scope, ContrastScope
+    ):
         raise TypeError("Use ContrastSettings and ContrastScope enum")
     _report(0, 1, None, cancel_event)
     acquisition = dataset.acquisitions[acquisition_id]
@@ -279,7 +320,10 @@ def autocontrast_channels(
         if (
             not isinstance(frame_range, tuple)
             or len(frame_range) != 2
-            or any(isinstance(v, bool) or not isinstance(v, (int, np.integer)) for v in frame_range)
+            or any(
+                isinstance(v, bool) or not isinstance(v, (int, np.integer))
+                for v in frame_range
+            )
             or frame_range[0] < 0
             or frame_range[1] < frame_range[0]
         ):
@@ -292,7 +336,8 @@ def autocontrast_channels(
         eligible = np.arange(len(view), dtype=np.int64)
         if frame_range is not None:
             eligible = eligible[
-                (view.source_frames >= frame_range[0]) & (view.source_frames < frame_range[1])
+                (view.source_frames >= frame_range[0])
+                & (view.source_frames < frame_range[1])
             ]
         if not len(eligible):
             raise ValueError(f"No selected frames in channel {name}")
@@ -311,19 +356,31 @@ def autocontrast_channels(
     samples = {}
     for name in names:
         samples[name] = _collect(
-            acquisition.channels[name].__getitem__, indices[name], included[name], settings, report
+            acquisition.channels[name].__getitem__,
+            indices[name],
+            included[name],
+            settings,
+            report,
         )
         if not samples[name].valid_count:
             raise ValueError(f"No finite unmasked pixels in channel {name}")
-    shared = _limits(list(samples.values()), settings) if scope == ContrastScope.SHARED else None
+    shared = (
+        _limits(list(samples.values()), settings)
+        if scope == ContrastScope.SHARED
+        else None
+    )
     result = {}
     for name in names:
-        lower, upper = shared if shared is not None else _limits([samples[name]], settings)
+        lower, upper = (
+            shared if shared is not None else _limits([samples[name]], settings)
+        )
         result[name] = ContrastResult(
             lower,
             upper,
             settings,
-            tuple(int(i) for i in acquisition.channels[name].source_frames[indices[name]]),
+            tuple(
+                int(i) for i in acquisition.channels[name].source_frames[indices[name]]
+            ),
             samples[name].valid_count,
             samples[name].sample_count,
             scope,

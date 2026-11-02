@@ -81,9 +81,13 @@ class PhotometrySettings:
                 raise ValueError(f"{name} must be an integer >= {minimum}")
         if self.spot_size % 2 != 1:
             raise ValueError("spot_size must be odd")
-        if not isinstance(self.shape, ApertureShape) or not isinstance(self.background, BackgroundMethod):
+        if not isinstance(self.shape, ApertureShape) or not isinstance(
+            self.background, BackgroundMethod
+        ):
             raise TypeError("Use ApertureShape and BackgroundMethod enums")
-        if not isinstance(self.exclude_neighbours, bool) or not isinstance(self.follow_drift, bool):
+        if not isinstance(self.exclude_neighbours, bool) or not isinstance(
+            self.follow_drift, bool
+        ):
             raise TypeError("Photometry flags must be booleans")
 
 

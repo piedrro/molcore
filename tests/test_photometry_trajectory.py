@@ -6,7 +6,14 @@ from concurrent.futures import CancelledError
 
 import numpy as np
 
-from molcore import Acquisition, ArraySource, Calibration, ChannelSpec, Dataset, StaleResultError
+from molcore import (
+    Acquisition,
+    ArraySource,
+    Calibration,
+    ChannelSpec,
+    Dataset,
+    StaleResultError,
+)
 from molcore.cpu import CpuExecutor
 from molcore.photometry import measure_localizations, stationary_traces, track_traces
 from molcore.tracking import track
@@ -45,7 +52,11 @@ def fixture():
     exp = Dataset()
     exp.add_acquisition(Acquisition(ArraySource(movie), id="a", pixel_size=100.0))
     ids = exp.localizations.add(
-        acquisition_id="a", channel="image", frame=[0, 2, 4], x=[7.0, 7.0, 7.0], y=[7.0, 7.0, 7.0]
+        acquisition_id="a",
+        channel="image",
+        frame=[0, 2, 4],
+        x=[7.0, 7.0, 7.0],
+        y=[7.0, 7.0, 7.0],
     )
     return exp, ids
 
@@ -76,7 +87,9 @@ class PhotometryTests(unittest.TestCase):
         exp, ids = fixture()
         exp.localizations.move_many(ids[:1], x=0.0, y=0.0)
         settings = PhotometrySettings(background=BackgroundMethod.GLOBAL)
-        result = measure_localizations(exp, ids[:1], settings=settings, apply=False, cpu=InlineCpu())
+        result = measure_localizations(
+            exp, ids[:1], settings=settings, apply=False, cpu=InlineCpu()
+        )
         self.assertEqual(result.columns["signal_count"][0], 4)
         self.assertLess(result.columns["intensity"][0], 0.0)
         result = measure_localizations(exp, [], apply=False, cpu=InlineCpu())
@@ -102,15 +115,22 @@ class PhotometryTests(unittest.TestCase):
         specs = {"d": ChannelSpec(excitation="d"), "a": ChannelSpec(excitation="a")}
         exp.add_acquisition(
             Acquisition(
-                ArraySource(np.ones((4, 15, 15))), id="a", channel_specs=specs, excitation_sequence=("d", "a")
+                ArraySource(np.ones((4, 15, 15))),
+                id="a",
+                channel_specs=specs,
+                excitation_sequence=("d", "a"),
             )
         )
         exp.transforms.add_calibration(
             Calibration("offset", [[1.0, 0.0, 2.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
         )
         exp.transforms.select("a", "a", "offset")
-        ids = exp.localizations.add(acquisition_id="a", channel="d", frame=0, x=7.0, y=7.0)
-        result = stationary_traces(exp, ids, channels=["a"], apply=False, cpu=InlineCpu())
+        ids = exp.localizations.add(
+            acquisition_id="a", channel="d", frame=0, x=7.0, y=7.0
+        )
+        result = stationary_traces(
+            exp, ids, channels=["a"], apply=False, cpu=InlineCpu()
+        )
         np.testing.assert_equal(result.columns["frame"], [1, 3])
         np.testing.assert_allclose(result.columns["x"], 5.0)
 
@@ -153,7 +173,9 @@ class TrajectoryTests(unittest.TestCase):
 
     def test_tracking_gaps_and_partition_application(self):
         exp, ids = fixture()
-        settings = TrackingSettings(search_range=2.0, memory=1, min_length=3, space=CoordinateSpace.RAW)
+        settings = TrackingSettings(
+            search_range=2.0, memory=1, min_length=3, space=CoordinateSpace.RAW
+        )
         result = track(exp, "a", "image", settings=settings, cpu=InlineCpu())
         self.assertEqual(len(result.memberships), 1)
         np.testing.assert_equal(result.memberships[0], ids)
@@ -184,10 +206,16 @@ class NumericalEdgeTests(unittest.TestCase):
         exp, ids = fixture()
         source = exp.acquisitions["a"].source.array
         source[:, 6:9, 9:12] = 1000.0
-        exp.localizations.add(acquisition_id="a", channel="image", frame=0, x=10.0, y=7.0)
+        exp.localizations.add(
+            acquisition_id="a", channel="image", frame=0, x=10.0, y=7.0
+        )
         masked = measure_localizations(exp, ids[:1], cpu=InlineCpu(), apply=False)
         unmasked = measure_localizations(
-            exp, ids[:1], settings=PhotometrySettings(exclude_neighbours=False), cpu=InlineCpu(), apply=False
+            exp,
+            ids[:1],
+            settings=PhotometrySettings(exclude_neighbours=False),
+            cpu=InlineCpu(),
+            apply=False,
         )
         self.assertAlmostEqual(masked.columns["local_background_mean"][0], 10.0)
         self.assertGreater(unmasked.columns["local_background_mean"][0], 10.0)
@@ -239,7 +267,13 @@ class NumericalEdgeTests(unittest.TestCase):
         event.set()
         with self.assertRaises(CancelledError):
             track(exp, "a", "image", cpu=InlineCpu(), cancel_event=event)
-        result = track(exp, "a", "image", settings=TrackingSettings(memory=0, min_length=2), cpu=InlineCpu())
+        result = track(
+            exp,
+            "a",
+            "image",
+            settings=TrackingSettings(memory=0, min_length=2),
+            cpu=InlineCpu(),
+        )
         self.assertEqual(len(result.memberships), 0)
         self.assertEqual(len(exp.tracks), 0)
 
@@ -252,9 +286,13 @@ class NumericalEdgeTests(unittest.TestCase):
         exp.acquisitions["a"].timestamps = None
         exp.acquisitions["a"].pixel_size = None
         with self.assertRaises(ValueError):
-            trajectory_statistics(exp, tid, frame_interval=1.0, unit=SpatialUnit.NANOMETRES)
+            trajectory_statistics(
+                exp, tid, frame_interval=1.0, unit=SpatialUnit.NANOMETRES
+            )
         with self.assertRaises(ValueError):
-            trajectory_statistics(exp, tid, frame_interval=1.0, lag_bin_edges=[0.0, 1.0, 1.0])
+            trajectory_statistics(
+                exp, tid, frame_interval=1.0, lag_bin_edges=[0.0, 1.0, 1.0]
+            )
 
     def test_photometry_run_persistence(self):
         import tempfile

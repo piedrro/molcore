@@ -9,7 +9,12 @@ import tifffile
 from scipy.ndimage import map_coordinates
 
 from molcore import ArraySource, Calibration, Dataset, alignment
-from molcore.files import export_tiff, image_acquisition, read_calibration, write_calibration
+from molcore.files import (
+    export_tiff,
+    image_acquisition,
+    read_calibration,
+    write_calibration,
+)
 
 
 def projected(matrix, points):
@@ -40,7 +45,9 @@ class OpticalAlignmentTests(unittest.TestCase):
             dataset.save(path)
             with Dataset.open(path) as restored:
                 restored.transforms.select("a", "DA", "optics")
-                np.testing.assert_array_equal(restored.transforms._registration("a", "AA"), np.eye(3))
+                np.testing.assert_array_equal(
+                    restored.transforms._registration("a", "AA"), np.eye(3)
+                )
 
     def alex(self, identifier="a"):
         pixels = np.arange(6 * 16 * 32, dtype=np.uint16).reshape(6, 16, 32)
@@ -52,16 +59,21 @@ class OpticalAlignmentTests(unittest.TestCase):
         model.add_acquisition(a)
         model.add_acquisition(self.alex("b"))
         self.assertEqual(
-            {c: s.emission for c, s in a.channel_specs.items()}, {"DD": "D", "DA": "A", "AD": "D", "AA": "A"}
+            {c: s.emission for c, s in a.channel_specs.items()},
+            {"DD": "D", "DA": "A", "AD": "D", "AA": "A"},
         )
         matrix = np.array([[1, 0, 2], [0, 1, -1], [0, 0, 1.0]])
         model.transforms.add_calibration(Calibration("optics", matrix))
         model.transforms.select("a", "DA", "optics")
         for channel in ("DA", "AA"):
             for frame in a.channels[channel].source_frames:
-                np.testing.assert_array_equal(model.transforms.matrix("a", channel, int(frame)), matrix)
+                np.testing.assert_array_equal(
+                    model.transforms.matrix("a", channel, int(frame)), matrix
+                )
         for channel in ("DD", "AD"):
-            np.testing.assert_array_equal(model.transforms._registration("a", channel), np.eye(3))
+            np.testing.assert_array_equal(
+                model.transforms._registration("a", channel), np.eye(3)
+            )
         model.transforms.select("b", "AA", "optics")
         np.testing.assert_array_equal(model.transforms._registration("b", "DA"), matrix)
         self.assertEqual(
@@ -83,7 +95,11 @@ class OpticalAlignmentTests(unittest.TestCase):
         ):
             model.add_acquisition(
                 image_acquisition(
-                    ArraySource(pixels), id=name, mode="alex", layout=layout, pixel_size=pixel_size
+                    ArraySource(pixels),
+                    id=name,
+                    mode="alex",
+                    layout=layout,
+                    pixel_size=pixel_size,
                 )
             )
         metadata = {
@@ -99,7 +115,10 @@ class OpticalAlignmentTests(unittest.TestCase):
         model.transforms.select("a", "DA", "optics")
         model.transforms.select("b", "AA", "optics")
         for name in ("reversed", "scaled"):
-            with self.subTest(acquisition=name), self.assertRaisesRegex(ValueError, "geometry|pixel"):
+            with (
+                self.subTest(acquisition=name),
+                self.assertRaisesRegex(ValueError, "geometry|pixel"),
+            ):
                 model.transforms.select(name, "DA", "optics")
         self.assertNotIn(("reversed", "AA"), model.transforms._selected)
         self.assertNotIn(("scaled", "DA"), model.transforms._selected)
@@ -115,19 +134,29 @@ class OpticalAlignmentTests(unittest.TestCase):
         model.transforms.set_drift("a", np.tile([0.5, 1.5], (6, 1)))
         points = np.array([[3.0, 4.0], [9.0, 8.0]])
         ids = model.localizations.add(
-            acquisition_id="a", channel="DA", frame=[0, 2], x=points[:, 0], y=points[:, 1]
+            acquisition_id="a",
+            channel="DA",
+            frame=[0, 2],
+            x=points[:, 0],
+            y=points[:, 1],
         )
         rows = model.localizations.query(ids=ids, space="corrected")
         expected = projected(matrix, points) - [0.5, 1.5]
         np.testing.assert_allclose(np.column_stack([rows["x"], rows["y"]]), expected)
-        x, y = model.transforms.convert_coordinates(rows, source_space="corrected", target_space="raw")
+        x, y = model.transforms.convert_coordinates(
+            rows, source_space="corrected", target_space="raw"
+        )
         np.testing.assert_allclose(np.column_stack([x, y]), points)
         corrected = np.eye(3)
         corrected[:2, 2] = [-0.5, -1.5]
-        np.testing.assert_allclose(model.transforms.matrix("a", "DA", 0), corrected @ matrix)
+        np.testing.assert_allclose(
+            model.transforms.matrix("a", "DA", 0), corrected @ matrix
+        )
         raw = a.channels["AA"][0]
         yy, xx = np.indices(raw.shape)
-        inverse = projected(np.linalg.inv(corrected @ matrix), np.column_stack([xx.ravel(), yy.ravel()]))
+        inverse = projected(
+            np.linalg.inv(corrected @ matrix), np.column_stack([xx.ravel(), yy.ravel()])
+        )
         expected_image = map_coordinates(
             raw.astype(float), [inverse[:, 1], inverse[:, 0]], order=1, mode="constant"
         ).reshape(raw.shape)
@@ -157,20 +186,27 @@ class OpticalAlignmentTests(unittest.TestCase):
         target_ids = model.localizations.add(
             acquisition_id="a", channel="DD", frame=0, x=target[:, 0], y=target[:, 1]
         )
-        options = dict(source_ids=source_ids, target_ids=target_ids, model="homography", num_cpus=1)
+        options = dict(
+            source_ids=source_ids, target_ids=target_ids, model="homography", num_cpus=1
+        )
         result = alignment.estimate_alignment(model, "a", "DA", "DD", **options)
         np.testing.assert_allclose(result.matrix, matrix, atol=1e-9)
         np.testing.assert_array_equal(result.inliers, np.arange(24) < 19)
         np.testing.assert_array_equal(
-            alignment.estimate_alignment(model, "a", "DA", "DD", **options).matrix, result.matrix
+            alignment.estimate_alignment(model, "a", "DA", "DD", **options).matrix,
+            result.matrix,
         )
 
     def test_translation_and_affine_ransac_reject_outliers_deterministically(self):
         rng = np.random.default_rng(43)
         source = rng.uniform(2, 25, (30, 2))
         matrices = {
-            "translation": np.array([[1.0, 0.0, 2.0], [0.0, 1.0, -3.0], [0.0, 0.0, 1.0]]),
-            "affine": np.array([[1.03, 0.04, 2.0], [-0.02, 0.97, -3.0], [0.0, 0.0, 1.0]]),
+            "translation": np.array(
+                [[1.0, 0.0, 2.0], [0.0, 1.0, -3.0], [0.0, 0.0, 1.0]]
+            ),
+            "affine": np.array(
+                [[1.03, 0.04, 2.0], [-0.02, 0.97, -3.0], [0.0, 0.0, 1.0]]
+            ),
         }
         for name, matrix in matrices.items():
             with self.subTest(model=name):
@@ -196,11 +232,14 @@ class OpticalAlignmentTests(unittest.TestCase):
         point = np.array([[3.0, 4.0]])
         numerical = np.column_stack(
             [
-                (projected(matrix, point + delta)[0] - projected(matrix, point)[0]) / 1e-6
+                (projected(matrix, point + delta)[0] - projected(matrix, point)[0])
+                / 1e-6
                 for delta in ([1e-6, 0], [0, 1e-6])
             ]
         )
-        np.testing.assert_allclose(project_jacobian(matrix, point)[0], numerical, rtol=1e-6)
+        np.testing.assert_allclose(
+            project_jacobian(matrix, point)[0], numerical, rtol=1e-6
+        )
 
     def test_projective_photometry_tracks_inverse_positions_and_original_frames(self):
         from molcore.photometry import stationary_traces
@@ -210,12 +249,20 @@ class OpticalAlignmentTests(unittest.TestCase):
         matrix = np.array([[1.05, 0.02, 1], [-0.03, 0.98, 2], [0.008, -0.004, 1]])
         model.transforms.add_calibration(Calibration("optics", matrix))
         model.transforms.select("a", "DA", "optics")
-        model.transforms.set_drift("a", np.column_stack([np.arange(6) * 0.2, np.zeros(6)]))
-        ids = model.localizations.add(acquisition_id="a", channel="DD", frame=0, x=7.0, y=8.0)
+        model.transforms.set_drift(
+            "a", np.column_stack([np.arange(6) * 0.2, np.zeros(6)])
+        )
+        ids = model.localizations.add(
+            acquisition_id="a", channel="DD", frame=0, x=7.0, y=8.0
+        )
         result = stationary_traces(model, ids, channels=["AA"], apply=False, num_cpus=1)
         frames = np.array([1, 3, 5])
-        expected = projected(np.linalg.inv(matrix), np.column_stack([7 + frames * 0.2, np.full(3, 8)]))
-        np.testing.assert_allclose(np.column_stack([result.columns["x"], result.columns["y"]]), expected)
+        expected = projected(
+            np.linalg.inv(matrix), np.column_stack([7 + frames * 0.2, np.full(3, 8)])
+        )
+        np.testing.assert_allclose(
+            np.column_stack([result.columns["x"], result.columns["y"]]), expected
+        )
         np.testing.assert_array_equal(result.columns["frame"], frames)
 
     def test_projective_rendering_propagates_position_dependent_uncertainty(self):
@@ -229,19 +276,35 @@ class OpticalAlignmentTests(unittest.TestCase):
         model.transforms.select("a", "DA", "optics")
         points = np.array([[3.0, 4.0], [9.0, 8.0]])
         model.localizations.add(
-            acquisition_id="a", channel="DA", frame=0, x=points[:, 0], y=points[:, 1], lpx=0.2, lpy=0.4
+            acquisition_id="a",
+            channel="DA",
+            frame=0,
+            x=points[:, 0],
+            y=points[:, 1],
+            lpx=0.2,
+            lpy=0.4,
         )
         result = render_localizations(
-            model, "a", "DA", space="registered", settings=RenderSettings(blur_method="gaussian")
+            model,
+            "a",
+            "DA",
+            space="registered",
+            settings=RenderSettings(blur_method="gaussian"),
         )
         for index, point in enumerate(points):
             jacobian = np.column_stack(
                 [
-                    (projected(matrix, [point + delta])[0] - projected(matrix, [point])[0]) / 1e-6
+                    (
+                        projected(matrix, [point + delta])[0]
+                        - projected(matrix, [point])[0]
+                    )
+                    / 1e-6
                     for delta in ([1e-6, 0], [0, 1e-6])
                 ]
             )
             expected = np.sqrt(jacobian**2 @ [0.2**2, 0.4**2])
             np.testing.assert_allclose(
-                [result.columns["lpx"][index], result.columns["lpy"][index]], expected, rtol=1e-6
+                [result.columns["lpx"][index], result.columns["lpy"][index]],
+                expected,
+                rtol=1e-6,
             )

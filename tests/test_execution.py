@@ -72,15 +72,24 @@ class ExecutionTests(unittest.TestCase):
             registry.register("track", "invalid", object())
 
     def test_missing_backend_has_install_command(self):
-        self.assertIn("pip install 'molcore[tracking]'", str(missing_backend("trackpy")))
+        self.assertIn(
+            "pip install 'molcore[tracking]'", str(missing_backend("trackpy"))
+        )
 
     def test_processing_dependencies_are_optional(self):
-        config = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
+        config = tomllib.loads(
+            (Path(__file__).parents[1] / "pyproject.toml").read_text()
+        )
         project = config["project"]
         for dependency in ("cellpose", "picassosr", "trackpy", "scikit-learn"):
-            self.assertFalse(any(item.startswith(dependency) for item in project["dependencies"]))
+            self.assertFalse(
+                any(item.startswith(dependency) for item in project["dependencies"])
+            )
             self.assertTrue(
-                any(item.startswith(dependency) for item in project["optional-dependencies"]["all"])
+                any(
+                    item.startswith(dependency)
+                    for item in project["optional-dependencies"]["all"]
+                )
             )
         self.assertIn("scipy", project["dependencies"])
 
@@ -88,6 +97,9 @@ class ExecutionTests(unittest.TestCase):
         import importlib
         import sys
 
-        with patch.dict(sys.modules, {name: None for name in ("cellpose", "picasso", "trackpy", "sklearn")}):
+        with patch.dict(
+            sys.modules,
+            {name: None for name in ("cellpose", "picasso", "trackpy", "sklearn")},
+        ):
             importlib.reload(importlib.import_module("molcore.backends"))
             importlib.reload(importlib.import_module("molcore.execution"))

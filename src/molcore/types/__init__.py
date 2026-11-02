@@ -32,7 +32,14 @@ from .contrast import ContrastMethod, ContrastResult, ContrastScope, ContrastSet
 from .dataset import Dataset
 from .dataset_alignment import DatasetAlignmentResult, DatasetAlignmentSettings
 from .experiment import Experiment
-from .images import ArraySource, CachedSource, FitsSource, HDF5Source, MissingSource, TiffSource
+from .images import (
+    ArraySource,
+    CachedSource,
+    FitsSource,
+    HDF5Source,
+    MissingSource,
+    TiffSource,
+)
 from .photons import PhotonSequence, PhotonSequenceStore, PhotonUnit
 from .processing import (
     AlignmentResult,

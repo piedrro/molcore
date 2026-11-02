@@ -95,12 +95,17 @@ class PhotonSequence:
         if not isinstance(self.depends_on_localizations, bool):
             raise TypeError("depends_on_localizations must be a boolean")
         if not all(
-            isinstance(v, str) and v for v in (self.id, self.acquisition_id, self.channel, self.method)
+            isinstance(v, str) and v
+            for v in (self.id, self.acquisition_id, self.channel, self.method)
         ):
-            raise ValueError("Sequence, acquisition, channel and method identifiers must be nonempty strings")
+            raise ValueError(
+                "Sequence, acquisition, channel and method identifiers must be nonempty strings"
+            )
         frames = np.asarray(self.frames)
         if frames.ndim != 1 or frames.dtype.kind not in "iu" or np.any(frames < 0):
-            raise ValueError("Frames must be a one-dimensional nonnegative integer array")
+            raise ValueError(
+                "Frames must be a one-dimensional nonnegative integer array"
+            )
         if np.any(frames > np.iinfo(np.int64).max):
             raise ValueError("Frames exceed the supported int64 range")
         frames = frames.astype(np.int64)
@@ -124,23 +129,41 @@ class PhotonSequence:
         ):
             raise ValueError("Timestamps must match frames and increase where known")
         valid = np.isfinite(values) if self.valid is None else np.asarray(self.valid)
-        if valid.shape != frames.shape or valid.dtype.kind != "b" or np.any(valid & ~np.isfinite(values)):
-            raise ValueError("Validity must be boolean and cannot mark NaN measurements valid")
-        positions = None if self.positions is None else np.asarray(self.positions, dtype=float)
+        if (
+            valid.shape != frames.shape
+            or valid.dtype.kind != "b"
+            or np.any(valid & ~np.isfinite(values))
+        ):
+            raise ValueError(
+                "Validity must be boolean and cannot mark NaN measurements valid"
+            )
+        positions = (
+            None if self.positions is None else np.asarray(self.positions, dtype=float)
+        )
         if positions is not None and (
             positions.shape != (len(frames), 2)
             or np.isinf(positions).any()
-            or np.any(np.isnan(positions).any(axis=1) != np.isnan(positions).all(axis=1))
+            or np.any(
+                np.isnan(positions).any(axis=1) != np.isnan(positions).all(axis=1)
+            )
         ):
-            raise ValueError("Positions must contain one finite (x,y) pair or paired NaNs per sample")
+            raise ValueError(
+                "Positions must contain one finite (x,y) pair or paired NaNs per sample"
+            )
         for anchor in (self.localization_id, self.track_id):
             if anchor is not None and (
-                isinstance(anchor, bool) or not isinstance(anchor, (int, np.integer)) or anchor <= 0
+                isinstance(anchor, bool)
+                or not isinstance(anchor, (int, np.integer))
+                or anchor <= 0
             ):
                 raise ValueError("Optional anchors must be positive integer IDs")
-        if self.molecule_id is not None and (not isinstance(self.molecule_id, str) or not self.molecule_id):
+        if self.molecule_id is not None and (
+            not isinstance(self.molecule_id, str) or not self.molecule_id
+        ):
             raise ValueError("Molecule ID must be a nonempty string when supplied")
-        if self.run_id is not None and (not isinstance(self.run_id, str) or not self.run_id):
+        if self.run_id is not None and (
+            not isinstance(self.run_id, str) or not self.run_id
+        ):
             raise ValueError("Run ID must be a nonempty string when supplied")
         reserved = {
             "id",
@@ -168,24 +191,43 @@ class PhotonSequence:
         for name, samples in self.measurements.items():
             samples = np.asarray(samples)
             if not isinstance(name, str) or not name or name in reserved:
-                raise ValueError("Measurement names must be nonempty and cannot shadow sequence fields")
+                raise ValueError(
+                    "Measurement names must be nonempty and cannot shadow sequence fields"
+                )
             if samples.shape != frames.shape or samples.dtype.kind not in "biuf":
-                raise ValueError("Measurements must be numeric sample arrays matching frames")
+                raise ValueError(
+                    "Measurements must be numeric sample arrays matching frames"
+                )
             measurements[name] = _immutable(samples)
         anchors = (
             np.full(len(frames), self.localization_id or 0, dtype=np.uint64)
             if self.localization_ids is None
             else np.asarray(self.localization_ids)
         )
-        if anchors.shape != frames.shape or anchors.dtype.kind not in "iu" or np.any(anchors < 0):
-            raise ValueError("Sample localisation IDs must be nonnegative integers matching frames")
-        object.__setattr__(self, "localization_ids", _immutable(anchors.astype(np.uint64)))
+        if (
+            anchors.shape != frames.shape
+            or anchors.dtype.kind not in "iu"
+            or np.any(anchors < 0)
+        ):
+            raise ValueError(
+                "Sample localisation IDs must be nonnegative integers matching frames"
+            )
+        object.__setattr__(
+            self, "localization_ids", _immutable(anchors.astype(np.uint64))
+        )
         object.__setattr__(self, "measurements", measurements)
         metadata = deepcopy(self.metadata)
         json.dumps(metadata, allow_nan=False)
-        for name, array in (("frames", frames), ("photons", values), ("timestamps", times), ("valid", valid)):
+        for name, array in (
+            ("frames", frames),
+            ("photons", values),
+            ("timestamps", times),
+            ("valid", valid),
+        ):
             object.__setattr__(self, name, _immutable(array))
-        object.__setattr__(self, "positions", None if positions is None else _immutable(positions))
+        object.__setattr__(
+            self, "positions", None if positions is None else _immutable(positions)
+        )
         object.__setattr__(self, "unit", PhotonUnit(self.unit))
         object.__setattr__(self, "metadata", metadata)
 
@@ -266,28 +308,42 @@ class PhotonSequenceStore:
         acquisition = self.dataset.acquisitions[sequence.acquisition_id]
         view = acquisition.channels[sequence.channel]
         if not np.isin(sequence.frames, view.source_frames).all():
-            raise ValueError("Sequence frames must belong to the measured logical channel")
+            raise ValueError(
+                "Sequence frames must belong to the measured logical channel"
+            )
         if sequence.localization_id is not None:
-            rows = self.dataset.localizations.query(ids=[sequence.localization_id], space="raw")
+            rows = self.dataset.localizations.query(
+                ids=[sequence.localization_id], space="raw"
+            )
             if len(rows["id"]) != 1 or rows["acquisition_id"][0] != acquisition.id:
-                raise ValueError("Localization anchor must belong to the sequence acquisition")
+                raise ValueError(
+                    "Localization anchor must belong to the sequence acquisition"
+                )
         if sequence.track_id is not None:
             rows = self.dataset.tracks.query(
                 track_id=sequence.track_id, acquisition_id=acquisition.id, space="raw"
             )
             if not len(rows["id"]):
                 raise ValueError("Track anchor must include the sequence acquisition")
-        sample_ids = np.unique(sequence.localization_ids[sequence.localization_ids != 0])
+        sample_ids = np.unique(
+            sequence.localization_ids[sequence.localization_ids != 0]
+        )
         if len(sample_ids):
             anchors = self.dataset.localizations.query(ids=sample_ids, space="raw")
-            if len(anchors["id"]) != len(sample_ids) or np.any(anchors["acquisition_id"] != acquisition.id):
-                raise ValueError("Sample localisation anchors must belong to the sequence acquisition")
+            if len(anchors["id"]) != len(sample_ids) or np.any(
+                anchors["acquisition_id"] != acquisition.id
+            ):
+                raise ValueError(
+                    "Sample localisation anchors must belong to the sequence acquisition"
+                )
         times = sequence.timestamps
         if acquisition.timestamps is not None:
             recorded = acquisition.timestamps[sequence.frames]
             known = np.isfinite(times)
             if not np.allclose(times[known], recorded[known], rtol=1e-12, atol=1e-12):
-                raise ValueError("Sequence timestamps disagree with recorded camera timestamps")
+                raise ValueError(
+                    "Sequence timestamps disagree with recorded camera timestamps"
+                )
             times = recorded
         sequence = replace(sequence, timestamps=times)
         self._data[sequence.id] = sequence

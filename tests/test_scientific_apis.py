@@ -14,7 +14,11 @@ def fixture():
     exp = Dataset()
     exp.add_acquisition(Acquisition(ArraySource(np.ones((5, 11, 11))), id="a"))
     ids = exp.localizations.add(
-        acquisition_id="a", channel="image", frame=[0, 2, 4], x=[3.0, 4.0, 5.0], y=[4.0, 4.0, 4.0]
+        acquisition_id="a",
+        channel="image",
+        frame=[0, 2, 4],
+        x=[3.0, 4.0, 5.0],
+        y=[4.0, 4.0, 4.0],
     )
     return exp, ids
 
@@ -24,10 +28,17 @@ class EditingTests(unittest.TestCase):
         exp, ids = fixture()
         track = exp.tracks.add(ids)
         exp.observations.add(
-            molecule_id="m", acquisition_id="a", channel="image", frame=0, intensity=1.0, track_id=track
+            molecule_id="m",
+            acquisition_id="a",
+            channel="image",
+            frame=0,
+            intensity=1.0,
+            track_id=track,
         )
         exp.localizations.update_measurements(ids[[2, 0]], signal=[20.0, 10.0])
-        np.testing.assert_equal(exp.localizations.query()["signal"], [10.0, np.nan, 20.0])
+        np.testing.assert_equal(
+            exp.localizations.query()["signal"], [10.0, np.nan, 20.0]
+        )
         self.assertEqual(len(exp.observations.query()["id"]), 0)
         token = state_token(exp)
         for values in ({"x": [1.0, 2.0]}, {"signal": [1.0, "bad"]}):
@@ -39,7 +50,9 @@ class EditingTests(unittest.TestCase):
             exp.save(path)
             with Dataset.open(path) as restored:
                 np.testing.assert_equal(restored.localizations.query()["id"], ids)
-                np.testing.assert_equal(restored.localizations.query()["signal"], [10.0, np.nan, 20.0])
+                np.testing.assert_equal(
+                    restored.localizations.query()["signal"], [10.0, np.nan, 20.0]
+                )
 
     def test_batch_and_bulk_positions(self):
         from molcore.processing import apply_batch
@@ -56,7 +69,9 @@ class EditingTests(unittest.TestCase):
             )
         self.assertEqual(state_token(exp), token)
         exp.localizations.move_many(ids, x=7.0, y=8.0)
-        np.testing.assert_equal(exp.localizations.query(original=True)["x"], [3.0, 4.0, 5.0])
+        np.testing.assert_equal(
+            exp.localizations.query(original=True)["x"], [3.0, 4.0, 5.0]
+        )
         with self.assertRaises(StaleResultError):
             apply_batch(exp, [], expected=token)
 
@@ -69,7 +84,9 @@ class EditingTests(unittest.TestCase):
         tracks = exp.tracks.replace("a", "image", [ids[:2]])
         self.assertGreater(tracks[0], old)
         np.testing.assert_equal(exp.localizations.query()["id"], ids)
-        self.assertEqual(len(exp.tracks.query(acquisition_id="a", channel="image")["id"]), 2)
+        self.assertEqual(
+            len(exp.tracks.query(acquisition_id="a", channel="image")["id"]), 2
+        )
 
     def test_removal_cascades_without_closing_borrowed_source(self):
         exp, ids = fixture()
@@ -89,12 +106,16 @@ class EditingTests(unittest.TestCase):
         exp.transforms.set_drift("a", [[1.0, 2.0]] * 5)
         rows = exp.localizations.query(space="raw")
         converted = exp.transforms.convert_coordinates(
-            rows, source_space=CoordinateSpace.RAW, target_space=CoordinateSpace.CORRECTED
+            rows,
+            source_space=CoordinateSpace.RAW,
+            target_space=CoordinateSpace.CORRECTED,
         )
         rows = rows.to_columns()
         rows["x"], rows["y"] = converted
         x, y = exp.transforms.convert_coordinates(
-            rows, source_space=CoordinateSpace.CORRECTED, target_space=CoordinateSpace.RAW
+            rows,
+            source_space=CoordinateSpace.CORRECTED,
+            target_space=CoordinateSpace.RAW,
         )
         np.testing.assert_allclose(x, [3.0, 4.0, 5.0])
         np.testing.assert_allclose(y, 4.0)
@@ -117,11 +138,20 @@ class ScientificEdgeTests(unittest.TestCase):
         source = exp.acquisitions["a"].source
         source.close = Mock()
         exp.add_acquisition(Acquisition(source, id="b"))
-        other = exp.localizations.add(acquisition_id="b", channel="image", frame=0, x=2.0, y=3.0)
-        exp.add_sequence(["a", "b"], id="s", allow_cross_boundary_tracks=True, reference="r")
+        other = exp.localizations.add(
+            acquisition_id="b", channel="image", frame=0, x=2.0, y=3.0
+        )
+        exp.add_sequence(
+            ["a", "b"], id="s", allow_cross_boundary_tracks=True, reference="r"
+        )
         track = exp.tracks.add(np.r_[ids, other], sequence_id="s")
         exp.observations.add(
-            molecule_id="m", acquisition_id="b", channel="image", frame=0, intensity=1.0, track_id=track
+            molecule_id="m",
+            acquisition_id="b",
+            channel="image",
+            frame=0,
+            intensity=1.0,
+            track_id=track,
         )
         with self.assertRaises(ValueError):
             exp.tracks.replace("a", "image", [])
@@ -167,7 +197,9 @@ class QueryIsolationTests(unittest.TestCase):
         exp, ids = fixture()
         exp.tracks.add(ids)
         exp.add_acquisition(Acquisition(ArraySource(np.ones((5, 11, 11))), id="b"))
-        other = exp.localizations.add(acquisition_id="b", channel="image", frame=[0, 4], x=2.0, y=3.0)
+        other = exp.localizations.add(
+            acquisition_id="b", channel="image", frame=[0, 4], x=2.0, y=3.0
+        )
         exp.tracks.add(other)
         exp.transforms.set_drift("b", [[0.0, 0.0]], frames=[0])
         rows = exp.tracks.query(acquisition_id="a", space=CoordinateSpace.CORRECTED)
@@ -239,7 +271,11 @@ class TransactionReviewTests(unittest.TestCase):
             id="cells",
             acquisition_id="a",
             labels=np.ones((11, 11), dtype=int),
-            metadata={"algorithm": "cellpose", "cellpose_version": "4.2", "torch_version": "2.8"},
+            metadata={
+                "algorithm": "cellpose",
+                "cellpose_version": "4.2",
+                "torch_version": "2.8",
+            },
         )
         apply_segmentations(exp, {"cells": segmentation})
         exp.remove_acquisition("a", cascade=True)
@@ -266,11 +302,15 @@ class MappingAndBoundaryTests(unittest.TestCase):
             )
         )
         exp.transforms.add_calibration(
-            Calibration("a_to_ref", [[2.0, 0.2, 1.0], [0.1, 1.5, -2.0], [0.0, 0.0, 1.0]])
+            Calibration(
+                "a_to_ref", [[2.0, 0.2, 1.0], [0.1, 1.5, -2.0], [0.0, 0.0, 1.0]]
+            )
         )
         exp.transforms.select("a", "a", "a_to_ref")
         exp.transforms.set_drift("a", [[1.0, 2.0]] * 4)
-        ids = exp.localizations.add(acquisition_id="a", channel="d", frame=[0, 2], x=[2.0, 5.0], y=[3.0, 7.0])
+        ids = exp.localizations.add(
+            acquisition_id="a", channel="d", frame=[0, 2], x=[2.0, 5.0], y=[3.0, 7.0]
+        )
         rows = exp.localizations.query(ids=ids)
         x, y = exp.transforms.convert_coordinates(
             rows, target_channel="a", target_space=CoordinateSpace.CORRECTED
@@ -284,7 +324,10 @@ class MappingAndBoundaryTests(unittest.TestCase):
         alternating = Acquisition(
             ArraySource(np.ones((4, 11, 11))),
             id="alternating",
-            channel_specs={"d": ChannelSpec(excitation="d"), "a": ChannelSpec(excitation="a")},
+            channel_specs={
+                "d": ChannelSpec(excitation="d"),
+                "a": ChannelSpec(excitation="a"),
+            },
             excitation_sequence=("d", "a"),
         )
         view = alternating.channels["a"]
@@ -301,7 +344,9 @@ class MappingAndBoundaryTests(unittest.TestCase):
         other = exp.localizations.add(
             acquisition_id="b", channel="image", frame=[0, 2], x=[50.0, 51.0], y=0.0
         )
-        exp.add_sequence(["a", "b"], id="s", reference="r", allow_cross_boundary_tracks=True)
+        exp.add_sequence(
+            ["a", "b"], id="s", reference="r", allow_cross_boundary_tracks=True
+        )
         tid = exp.tracks.add(np.r_[ids, other], sequence_id="s")
         result = trajectory_statistics(exp, tid, frame_interval=0.5)
         self.assertEqual(len(result.steps["distance"]), 3)
@@ -314,5 +359,9 @@ class MappingAndBoundaryTests(unittest.TestCase):
         from molcore.staging import clone_dataset
 
         exp, _ = fixture()
-        exp.add_segmentation(Segmentation(id="mask", acquisition_id="a", labels=np.ones((11, 11), dtype=int)))
+        exp.add_segmentation(
+            Segmentation(
+                id="mask", acquisition_id="a", labels=np.ones((11, 11), dtype=int)
+            )
+        )
         self.assertEqual(state_token(exp), state_token(clone_dataset(exp)))

@@ -8,7 +8,10 @@ from molcore.execution import Executor
 
 
 def consume(
-    dataset: Dataset, result: LocalisationResult, executor: Executor, backend: ProcessorBackend
+    dataset: Dataset,
+    result: LocalisationResult,
+    executor: Executor,
+    backend: ProcessorBackend,
 ) -> None:
     assert_type(dataset.apply(result), LocalisationResult)
     assert_type(dataset.localizations.query(), LocalizationBatch)

@@ -47,7 +47,9 @@ class CropStore:
         """
         self.dataset = dataset
         self._saved = {}
-        self._photon_saved: dict[tuple[str, int, int], tuple[str, int] | tuple[str, int, str]] = {}
+        self._photon_saved: dict[
+            tuple[str, int, int], tuple[str, int] | tuple[str, int, str]
+        ] = {}
 
     @logged
     def invalidate(self, ids: ArrayLike | None) -> None:
@@ -59,7 +61,9 @@ class CropStore:
         ids = set(int(i) for i in ids)
         self._saved = {k: v for k, v in self._saved.items() if k[0] not in ids}
 
-    def _extract(self, row: Any, width: int, camera_frame: int, localization_id: int | None) -> Crop:
+    def _extract(
+        self, row: Any, width: int, camera_frame: int, localization_id: int | None
+    ) -> Crop:
         """Extract.
 
         Args:
@@ -74,7 +78,10 @@ class CropStore:
         view = self.dataset.acquisitions[row["acquisition_id"]].channels[row["channel"]]
         image = view[view.channel_index(camera_frame)]
         half = width // 2
-        x0, y0 = int(np.floor(row["x"] + 0.5)) - half, int(np.floor(row["y"] + 0.5)) - half
+        x0, y0 = (
+            int(np.floor(row["x"] + 0.5)) - half,
+            int(np.floor(row["y"] + 0.5)) - half,
+        )
         x1, y1 = max(0, x0), max(0, y0)
         x2, y2 = min(image.shape[1], x0 + width), min(image.shape[0], y0 + width)
         pixels = np.zeros((width, width), dtype=image.dtype)
@@ -83,7 +90,13 @@ class CropStore:
             pixels[y1 - y0 : y2 - y0, x1 - x0 : x2 - x0] = image[y1:y2, x1:x2]
             valid[y1 - y0 : y2 - y0, x1 - x0 : x2 - x0] = True
         return Crop(
-            pixels, valid, row["acquisition_id"], row["channel"], int(camera_frame), (x0, y0), localization_id
+            pixels,
+            valid,
+            row["acquisition_id"],
+            row["channel"],
+            int(camera_frame),
+            (x0, y0),
+            localization_id,
         )
 
     @logged
@@ -125,7 +138,9 @@ class CropStore:
         """
         validate_width(width)
         meta = self.dataset.tracks.metadata[track_id]
-        rows = self.dataset.tracks.query(track_id=track_id, sequence_id=meta["sequence_id"], space="raw")
+        rows = self.dataset.tracks.query(
+            track_id=track_id, sequence_id=meta["sequence_id"], space="raw"
+        )
         for localization_id in rows["id"]:
             yield self.localization(localization_id, width=width)
 
@@ -158,7 +173,9 @@ class CropStore:
                 "Photon sequence is stale; recompute or explicitly request historical crops"
             )
         if sequence.positions is None:
-            raise ValueError("Photon-sequence crops require explicit raw-channel positions")
+            raise ValueError(
+                "Photon-sequence crops require explicit raw-channel positions"
+            )
         for index, frame in enumerate(sequence.frames):
             if not np.isfinite(sequence.positions[index]).all():
                 yield None
@@ -166,11 +183,18 @@ class CropStore:
             key = (sequence_id, index, width)
             if key in self._photon_saved:
                 path, row, *group = self._photon_saved[key]
-                yield read_crop(path, row, group_name=group[0] if group else "photon_crops")
+                yield read_crop(
+                    path, row, group_name=group[0] if group else "photon_crops"
+                )
                 continue
             x, y = sequence.positions[index]
             crop = self._extract(
-                dict(acquisition_id=sequence.acquisition_id, channel=sequence.channel, x=x, y=y),
+                dict(
+                    acquisition_id=sequence.acquisition_id,
+                    channel=sequence.channel,
+                    x=x,
+                    y=y,
+                ),
                 width,
                 int(frame),
                 int(sequence.localization_ids[index]) or None,
@@ -178,7 +202,9 @@ class CropStore:
             yield replace(crop, photon_sequence_id=sequence_id, sample_index=index)
 
     @logged
-    def stationary(self, localization_id: int, frames: ArrayLike | None, *, width: int = 7) -> Iterator[Crop]:
+    def stationary(
+        self, localization_id: int, frames: ArrayLike | None, *, width: int = 7
+    ) -> Iterator[Crop]:
         """Sample explicitly requested camera frames at one fixed molecule position.
 
         Args:

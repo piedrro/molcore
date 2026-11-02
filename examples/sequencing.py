@@ -15,12 +15,17 @@ def main() -> None:
     points = np.array([[5, 5], [16, 6], [6, 17], [18, 18]])
     experiment = Experiment(metadata={"surface": "synthetic-slide"})
     for index, shift in enumerate((0, 2), start=1):
-        dataset = Dataset(id=f"round-{index}", metadata={"round_index": index, "oligo": f"probe-{index}"})
+        dataset = Dataset(
+            id=f"round-{index}",
+            metadata={"round_index": index, "oligo": f"probe-{index}"},
+        )
         pixels = np.zeros((4, 32, 64), dtype=np.uint16)
         for x, y in points:
             pixels[:, y, x + shift] = 100
             pixels[:, y, 32 + x + shift + 1] = 100
-        dataset.add_acquisition(image_acquisition(ArraySource(pixels), id="movie", mode="alex"))
+        dataset.add_acquisition(
+            image_acquisition(ArraySource(pixels), id="movie", mode="alex")
+        )
         for channel, extra in (("DD", 0), ("DA", 1)):
             dataset.localizations.add(
                 acquisition_id="movie",
@@ -41,7 +46,9 @@ def main() -> None:
         model="homography",
         num_cpus=1,
     )
-    experiment.apply_channel_calibration(reference.calibrations[optical.calibration_name])
+    experiment.apply_channel_calibration(
+        reference.calibrations[optical.calibration_name]
+    )
     result = experiment.alignment.estimate(
         "round-2",
         "round-1",
@@ -59,13 +66,20 @@ def main() -> None:
         experiment.save(snapshot, image_policy="full")
         with Experiment.open(snapshot) as restored:
             paths = export_dataset_images(
-                restored.datasets["round-2"], Path(directory) / "export", space="aligned", experiment=restored
+                restored.datasets["round-2"],
+                Path(directory) / "export",
+                space="aligned",
+                experiment=restored,
             )
             assert len(paths) == 4
             np.testing.assert_allclose(
-                restored.alignment.image("round-2", "movie", "AA", 1)[5, 5], 100, atol=1e-8
+                restored.alignment.image("round-2", "movie", "AA", 1)[5, 5],
+                100,
+                atol=1e-8,
             )
-            print(f"Aligned {len(restored.datasets)} rounds; exported {len(paths)} channel stacks")
+            print(
+                f"Aligned {len(restored.datasets)} rounds; exported {len(paths)} channel stacks"
+            )
     experiment.close()
 
 

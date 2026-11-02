@@ -49,7 +49,9 @@ def export_dataset_images(
 
     if space == "aligned":
         if experiment is None or experiment.datasets.get(dataset.id) is not dataset:
-            raise ValueError("Aligned export requires the experiment containing this dataset")
+            raise ValueError(
+                "Aligned export requires the experiment containing this dataset"
+            )
         expected = experiment_state_token(experiment)
     else:
         space = CoordinateSpace(space).value
@@ -69,9 +71,11 @@ def export_dataset_images(
                     channel_spec=vars(acquisition.channel_specs[channel]),
                     excitation_sequence=acquisition.excitation_sequence,
                     phase=acquisition.phase,
-                    timestamps=None
-                    if acquisition.timestamps is None
-                    else acquisition.timestamps[source.source_frames],
+                    timestamps=(
+                        None
+                        if acquisition.timestamps is None
+                        else acquisition.timestamps[source.source_frames]
+                    ),
                     pixel_size=acquisition.pixel_size,
                 )
             )
@@ -88,12 +92,25 @@ def export_dataset_images(
         raise ValueError("Dataset has no image frames to export")
     completed = 0
     report(progress, cancel_event, 0, total, "Exporting dataset images")
-    with atomic_files([*outputs, path / "manifest.json"], publish_guard=publish_guard) as temporary:
+    with atomic_files(
+        [*outputs, path / "manifest.json"], publish_guard=publish_guard
+    ) as temporary:
         for destination, source in zip(temporary[:-1], sources, strict=True):
             with tifffile.TiffWriter(destination, bigtiff=True) as writer:
                 for frame in range(len(source)):
-                    report(progress, cancel_event, completed, total, "Exporting dataset images")
-                    writer.write(source[frame], contiguous=True, photometric="minisblack", metadata=None)
+                    report(
+                        progress,
+                        cancel_event,
+                        completed,
+                        total,
+                        "Exporting dataset images",
+                    )
+                    writer.write(
+                        source[frame],
+                        contiguous=True,
+                        photometric="minisblack",
+                        metadata=None,
+                    )
                     completed += 1
         manifest = dict(
             dataset_id=dataset.id,
@@ -102,18 +119,29 @@ def export_dataset_images(
             metadata=dataset.metadata,
             channels=entries,
             calibrations=[asdict(c) for c in dataset.calibrations.values()],
-            selected_calibrations=[[a, c, name] for (a, c), name in dataset.transforms._selected.items()],
+            selected_calibrations=[
+                [a, c, name] for (a, c), name in dataset.transforms._selected.items()
+            ],
             drift={
                 key: dict(frames=frames, displacement=displacement)
                 for key, (frames, displacement) in dataset.transforms._drift.items()
             },
-            dataset_alignment=asdict(experiment.alignment.records[dataset.id])
-            if space == "aligned" and dataset.id != experiment.alignment.reference_dataset_id
-            else None,
+            dataset_alignment=(
+                asdict(experiment.alignment.records[dataset.id])
+                if space == "aligned"
+                and dataset.id != experiment.alignment.reference_dataset_id
+                else None
+            ),
         )
         temporary[-1].write_text(_json(manifest), encoding="utf-8")
-        current = experiment_state_token(experiment) if space == "aligned" else state_token(dataset)
+        current = (
+            experiment_state_token(experiment)
+            if space == "aligned"
+            else state_token(dataset)
+        )
         if current != expected:
-            raise StaleResultError("Dataset changed during export; output was discarded")
+            raise StaleResultError(
+                "Dataset changed during export; output was discarded"
+            )
         report(progress, cancel_event, total, total, "Dataset images exported")
     return tuple(outputs)

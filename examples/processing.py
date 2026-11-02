@@ -19,9 +19,13 @@ def progress(update):
 
 if __name__ == "__main__":
     y, x = np.indices((24, 24))
-    image = (20 + 500 * np.exp(-((x - 11.3) ** 2 + (y - 10.7) ** 2) / (2 * 1.2**2))).astype(np.float32)
+    image = (
+        20 + 500 * np.exp(-((x - 11.3) ** 2 + (y - 10.7) ** 2) / (2 * 1.2**2))
+    ).astype(np.float32)
     dataset = Dataset()
-    dataset.add_acquisition(Acquisition(ArraySource(np.repeat(image[None], 4, axis=0)), id="movie"))
+    dataset.add_acquisition(
+        Acquisition(ArraySource(np.repeat(image[None], 4, axis=0)), id="movie")
+    )
     with CpuExecutor(num_cpus=2) as cpu:
         result = localise(
             dataset,

@@ -57,7 +57,9 @@ def project_jacobian(matrix: ArrayLike, points: ArrayLike) -> np.ndarray:
     mapped = project_points(matrix, points)
     denominator = points @ matrix[2, :2] + matrix[2, 2]
     with np.errstate(divide="ignore", invalid="ignore"):
-        return (matrix[:2, :2] - mapped[..., :, None] * matrix[2, :2]) / denominator[..., None, None]
+        return (matrix[:2, :2] - mapped[..., :, None] * matrix[2, :2]) / denominator[
+            ..., None, None
+        ]
 
 
 class TransformManager:
@@ -120,12 +122,21 @@ class TransformManager:
             if selected_name != calibration_name:
                 continue
             spec = self.dataset.acquisitions[acquisition_id].channel_specs[channel]
-            key = (acquisition_id, spec.emission, channel if spec.emission is None else "")
+            key = (
+                acquisition_id,
+                spec.emission,
+                channel if spec.emission is None else "",
+            )
             groups.setdefault(key, []).append(channel)
         self._calibrations[calibration_name].metadata["selected_groups"] = [
-            {"acquisition_id": acquisition_id, "emission": emission, "channels": sorted(channels)}
+            {
+                "acquisition_id": acquisition_id,
+                "emission": emission,
+                "channels": sorted(channels),
+            }
             for (acquisition_id, emission, _), channels in sorted(
-                groups.items(), key=lambda item: (item[0][0], item[0][1] or "", item[0][2])
+                groups.items(),
+                key=lambda item: (item[0][0], item[0][1] or "", item[0][2]),
             )
         ]
 
@@ -148,47 +159,76 @@ class TransformManager:
         channels = (
             [channel]
             if emission is None
-            else [name for name, spec in acquisition.channel_specs.items() if spec.emission == emission]
+            else [
+                name
+                for name, spec in acquisition.channel_specs.items()
+                if spec.emission == emission
+            ]
         )
         calibration = self._calibrations[calibration_name]
         metadata = calibration.metadata
         source_emission = metadata.get("source_emission")
         if source_emission is not None and source_emission != emission:
-            raise ValueError("Calibration emission path does not match selected channel")
+            raise ValueError(
+                "Calibration emission path does not match selected channel"
+            )
         if (
             "source_emission" in metadata
             and source_emission is None
             and metadata.get("source_channel", channel) != channel
         ):
-            raise ValueError("Custom channel calibration belongs to a different channel")
+            raise ValueError(
+                "Custom channel calibration belongs to a different channel"
+            )
         geometry = metadata.get("source_shape")
         if geometry is not None and any(
             tuple(geometry) != acquisition.channels[c].shape[1:] for c in channels
         ):
-            raise ValueError("Calibration source geometry does not match selected emission path")
+            raise ValueError(
+                "Calibration source geometry does not match selected emission path"
+            )
         source_roi = metadata.get("source_roi")
-        if source_roi is not None and any(tuple(source_roi) != acquisition.channels[c].roi for c in channels):
-            raise ValueError("Calibration source geometry does not match selected emission path")
-        if "pixel_size_nm" in metadata and metadata["pixel_size_nm"] != acquisition.pixel_size:
+        if source_roi is not None and any(
+            tuple(source_roi) != acquisition.channels[c].roi for c in channels
+        ):
+            raise ValueError(
+                "Calibration source geometry does not match selected emission path"
+            )
+        if (
+            "pixel_size_nm" in metadata
+            and metadata["pixel_size_nm"] != acquisition.pixel_size
+        ):
             raise ValueError("Calibration pixel scale does not match acquisition")
         target_emission = metadata.get("target_emission")
         target_channels = (
-            [name for name, spec in acquisition.channel_specs.items() if spec.emission == target_emission]
+            [
+                name
+                for name, spec in acquisition.channel_specs.items()
+                if spec.emission == target_emission
+            ]
             if target_emission is not None
-            else [metadata["target_channel"]]
-            if "target_channel" in metadata
-            else []
+            else [metadata["target_channel"]] if "target_channel" in metadata else []
         )
         if target_emission is not None and not target_channels:
-            raise ValueError("Calibration reference geometry is absent from acquisition")
+            raise ValueError(
+                "Calibration reference geometry is absent from acquisition"
+            )
         for target_name in target_channels:
             if target_name not in acquisition.channels:
-                raise ValueError("Calibration reference channel is absent from acquisition")
+                raise ValueError(
+                    "Calibration reference channel is absent from acquisition"
+                )
             target_view = acquisition.channels[target_name]
-            if ("target_shape" in metadata and tuple(metadata["target_shape"]) != target_view.shape[1:]) or (
-                "target_roi" in metadata and tuple(metadata["target_roi"]) != target_view.roi
+            if (
+                "target_shape" in metadata
+                and tuple(metadata["target_shape"]) != target_view.shape[1:]
+            ) or (
+                "target_roi" in metadata
+                and tuple(metadata["target_roi"]) != target_view.roi
             ):
-                raise ValueError("Calibration reference geometry does not match acquisition")
+                raise ValueError(
+                    "Calibration reference geometry does not match acquisition"
+                )
         for name in channels:
             previous = self._selected.get((acquisition_id, name))
             self._selected[acquisition_id, name] = calibration_name
@@ -200,7 +240,11 @@ class TransformManager:
     @model_mutated
     @logged
     def set_drift(
-        self, acquisition_id: str, displacement: ArrayLike, *, frames: ArrayLike | None = None
+        self,
+        acquisition_id: str,
+        displacement: ArrayLike,
+        *,
+        frames: ArrayLike | None = None,
     ) -> None:
         """Set observed (dx, dy) drift in reference pixels at explicit frames.
 
@@ -240,7 +284,9 @@ class TransformManager:
         name = self._selected.get((acquisition_id, channel))
         return np.eye(3) if name is None else self._calibrations[name].matrix.copy()
 
-    def _displacement(self, acquisition_id: str, frames: ArrayLike | None) -> np.ndarray:
+    def _displacement(
+        self, acquisition_id: str, frames: ArrayLike | None
+    ) -> np.ndarray:
         """Displacement.
 
         Args:
@@ -259,7 +305,9 @@ class TransformManager:
             or np.any(indices >= len(available))
             or np.any(available[np.minimum(indices, len(available) - 1)] != frames)
         ):
-            raise ValueError("No drift supplied at requested camera frames; extrapolation is disabled")
+            raise ValueError(
+                "No drift supplied at requested camera frames; extrapolation is disabled"
+            )
         return displacement[indices]
 
     @logged
@@ -283,11 +331,17 @@ class TransformManager:
             Detached 3x3 affine matrix; corrected subtracts reference-space drift.
         """
         space = CoordinateSpace(space)
-        self.dataset.acquisitions[acquisition_id].channels[channel].channel_index(camera_frame)
-        matrix = np.eye(3) if space == "raw" else self._registration(acquisition_id, channel)
+        self.dataset.acquisitions[acquisition_id].channels[channel].channel_index(
+            camera_frame
+        )
+        matrix = (
+            np.eye(3) if space == "raw" else self._registration(acquisition_id, channel)
+        )
         if space == "corrected":
             translation = np.eye(3)
-            translation[:2, 2] = -self._displacement(acquisition_id, np.array([camera_frame]))[0]
+            translation[:2, 2] = -self._displacement(
+                acquisition_id, np.array([camera_frame])
+            )[0]
             matrix = translation @ matrix
         return matrix
 
@@ -340,7 +394,9 @@ class TransformManager:
         Returns:
             Computed tuple[NumPy array, NumPy array] value.
         """
-        source_space, target_space = CoordinateSpace(source_space), CoordinateSpace(target_space)
+        source_space, target_space = CoordinateSpace(source_space), CoordinateSpace(
+            target_space
+        )
         required = ("x", "y", "frame", "channel", "acquisition_id")
         arrays = {name: np.asarray(rows[name]) for name in required}
         n = len(arrays["x"])
@@ -353,7 +409,11 @@ class TransformManager:
             raise ValueError("Coordinates must be finite")
         output = np.empty_like(points)
         for i in range(n):
-            a, c, frame = arrays["acquisition_id"][i], arrays["channel"][i], arrays["frame"][i]
+            a, c, frame = (
+                arrays["acquisition_id"][i],
+                arrays["channel"][i],
+                arrays["frame"][i],
+            )
             target = c if target_channel is None else target_channel
             source_matrix = self.matrix(a, c, frame, space=source_space)
             destination = self.matrix(a, target, frame, space=target_space)
@@ -366,7 +426,9 @@ class TransformManager:
         return output[:, 0], output[:, 1]
 
     @logged
-    def into_channel(self, rows: dict[str, np.ndarray], channel: str) -> tuple[np.ndarray, np.ndarray]:
+    def into_channel(
+        self, rows: dict[str, np.ndarray], channel: str
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Map raw coordinates through the reference into another channel.
 
         Args:
@@ -414,7 +476,9 @@ class TransformManager:
         try:
             from scipy.ndimage import map_coordinates
         except ImportError as exc:
-            raise ImportError("SciPy is missing; reinstall MolCore with its runtime dependencies") from exc
+            raise ImportError(
+                "SciPy is missing; reinstall MolCore with its runtime dependencies"
+            ) from exc
         y, x = np.indices(image.shape, dtype=float)
         inverse = np.linalg.inv(matrix)
         raw = project_points(inverse, np.column_stack([x.ravel(), y.ravel()]))
@@ -429,7 +493,11 @@ class TransformManager:
 
     @logged
     def view(
-        self, acquisition_id: str, channel: str, *, space: CoordinateSpace | str = "corrected"
+        self,
+        acquisition_id: str,
+        channel: str,
+        *,
+        space: CoordinateSpace | str = "corrected",
     ) -> Source:
         """Create a lazy, Dask-compatible transformed channel view.
 
@@ -448,7 +516,11 @@ class TransformedView(Source):
     """Lazy frame resampling using a TransformManager."""
 
     def __init__(
-        self, manager: TransformManager, acquisition_id: str, channel: str, space: CoordinateSpace | str
+        self,
+        manager: TransformManager,
+        acquisition_id: str,
+        channel: str,
+        space: CoordinateSpace | str,
     ) -> None:
         """Initialise the object and validate its configuration.
 
@@ -458,7 +530,11 @@ class TransformedView(Source):
             channel: Logical source channel name.
             space: Coordinate space: raw channel pixels, registered reference or drift-corrected reference.
         """
-        self.manager, self.acquisition_id, self.channel = manager, acquisition_id, channel
+        self.manager, self.acquisition_id, self.channel = (
+            manager,
+            acquisition_id,
+            channel,
+        )
         self.space = CoordinateSpace(space)
         self.source = manager.dataset.acquisitions[acquisition_id].channels[channel]
         self.shape, self.dtype = self.source.shape, np.dtype(float)
@@ -473,5 +549,8 @@ class TransformedView(Source):
             Computed NumPy array value.
         """
         return self.manager.image(
-            self.acquisition_id, self.channel, int(self.source.source_frames[index]), space=self.space
+            self.acquisition_id,
+            self.channel,
+            int(self.source.source_frames[index]),
+            space=self.space,
         )

@@ -41,7 +41,9 @@ class InlineCpu:
                 if progress:
                     progress(
                         ProgressUpdate(
-                            len(results) + (completed / count if count else 1), len(jobs), description
+                            len(results) + (completed / count if count else 1),
+                            len(jobs),
+                            description,
                         )
                     )
 
@@ -61,7 +63,7 @@ class ControlledModel:
     def __init__(self, **kwargs):
         self.calls.append(kwargs)
         self.device = kwargs["device"]
-        self.pretrained_model = kwargs["pretrained_model"]
+        self.pretrained_model = kwargs.get("pretrained_model", kwargs.get("model_type"))
 
     def eval(self, image, **kwargs):
         self.evaluations.append((image.copy(), kwargs))
@@ -73,6 +75,18 @@ class ControlledModel:
         mask[1:3, 1:3] = 7
         image[:] = 0  # Backend preprocessing must not overwrite source provenance.
         return (mask[:-1] if self.bad_mask else mask), [], np.zeros(256)
+
+
+class CellposeVersionTests(unittest.TestCase):
+    def test_version_3_is_supported_and_version_4_is_rejected(self):
+        with patch.object(cellpose, "version", return_value="3.0.9"):
+            self.assertEqual(cellpose._backend_version(), "3.0.9")
+        with patch.object(cellpose, "version", return_value="4.2.1.1"):
+            with self.assertRaises(ImportError):
+                cellpose._backend_version()
+
+    def test_default_model_is_cyto3(self):
+        self.assertEqual(CellposeSettings().pretrained_model, "cyto3")
 
 
 class CellposeTests(unittest.TestCase):
@@ -108,7 +122,12 @@ class CellposeTests(unittest.TestCase):
         old_picasso = self.exp.processing.software.get("picassosr")
         updates = []
         settings = CellposeSettings(
-            diameter=25, normalize=False, flow_threshold=0.3, cellprob_threshold=-1, min_size=2, batch_size=4
+            diameter=25,
+            normalize=False,
+            flow_threshold=0.3,
+            cellprob_threshold=-1,
+            min_size=2,
+            batch_size=4,
         )
         result = cellpose.segment(
             self.exp,
@@ -134,9 +153,10 @@ class CellposeTests(unittest.TestCase):
         inspect.signature(self.constructor.eval).bind(
             None, ControlledModel.evaluations[0][0], **ControlledModel.evaluations[0][1]
         )
-        self.assertEqual(kwargs["pretrained_model"], "cpsam_v2")
+        self.assertEqual(kwargs["model_type"], "cyto3")
         self.assertFalse(kwargs["gpu"])
-        self.assertNotIn("model_type", kwargs)
+        self.assertNotIn("pretrained_model", kwargs)
+        self.assertNotIn("use_bfloat16", kwargs)
         evaluation = ControlledModel.evaluations[0][1]
         self.assertEqual(evaluation["diameter"], 25)
         self.assertEqual(evaluation["cellprob_threshold"], -1)
@@ -144,9 +164,14 @@ class CellposeTests(unittest.TestCase):
             path = Path(directory) / "segmentation.h5"
             self.exp.save(path)
             with Dataset.open(path) as restored:
-                np.testing.assert_array_equal(restored.segmentations["cells"].source_image, self.image[1])
+                np.testing.assert_array_equal(
+                    restored.segmentations["cells"].source_image, self.image[1]
+                )
                 self.assertEqual(
-                    restored.segmentations["cells"].metadata["settings"]["pretrained_model"], "cpsam_v2"
+                    restored.segmentations["cells"].metadata["settings"][
+                        "pretrained_model"
+                    ],
+                    "cyto3",
                 )
 
     def test_preview_and_model_cache_and_camera_frame_mapping(self):
@@ -159,7 +184,12 @@ class CellposeTests(unittest.TestCase):
             )
         )
         preview = cellpose.segment(
-            self.exp, "alex", "AA", segmentation_id="preview", apply=False, cpu=InlineCpu()
+            self.exp,
+            "alex",
+            "AA",
+            segmentation_id="preview",
+            apply=False,
+            cpu=InlineCpu(),
         )
         self.assertEqual(preview.frame, 1)
         self.assertNotIn("preview", self.exp.segmentations)
@@ -167,7 +197,9 @@ class CellposeTests(unittest.TestCase):
         self.assertEqual(len(ControlledModel.calls), 1)
 
     def test_worker_failure_and_invalid_masks_do_not_apply_any_batch_result(self):
-        self.exp.add_acquisition(Acquisition(ArraySource(np.full((1, 5, 5), 99)), id="b"))
+        self.exp.add_acquisition(
+            Acquisition(ArraySource(np.full((1, 5, 5), 99)), id="b")
+        )
         ControlledModel.fail_on_image = 99
         requests = [
             SegmentationRequest("a", "image", segmentation_id="cells"),
@@ -179,7 +211,9 @@ class CellposeTests(unittest.TestCase):
         self.assertNotIn("other", self.exp.segmentations)
         ControlledModel.fail_on_image, ControlledModel.bad_mask = None, True
         with self.assertRaises(ValueError):
-            cellpose.segment(self.exp, "a", "image", segmentation_id="cells", cpu=InlineCpu())
+            cellpose.segment(
+                self.exp, "a", "image", segmentation_id="cells", cpu=InlineCpu()
+            )
         self.assertIs(self.exp.segmentations["cells"], self.old)
 
     def test_cancellation_and_stale_target_or_source_preserve_user_edits(self):
@@ -187,7 +221,12 @@ class CellposeTests(unittest.TestCase):
         stop.set()
         with self.assertRaises(CancelledError):
             cellpose.segment(
-                self.exp, "a", "image", segmentation_id="cells", cpu=InlineCpu(), cancel_event=stop
+                self.exp,
+                "a",
+                "image",
+                segmentation_id="cells",
+                cpu=InlineCpu(),
+                cancel_event=stop,
             )
         edited = []
         replacement = Segmentation("cells", "a", np.full((5, 5), 2, dtype=np.uint16))
@@ -199,7 +238,12 @@ class CellposeTests(unittest.TestCase):
 
         with self.assertRaises(StaleResultError):
             cellpose.segment(
-                self.exp, "a", "image", segmentation_id="cells", cpu=InlineCpu(), progress=progress
+                self.exp,
+                "a",
+                "image",
+                segmentation_id="cells",
+                cpu=InlineCpu(),
+                progress=progress,
             )
         self.assertIs(self.exp.segmentations["cells"], replacement)
         edited.clear()
@@ -211,7 +255,12 @@ class CellposeTests(unittest.TestCase):
 
         with self.assertRaises(StaleResultError):
             cellpose.segment(
-                self.exp, "a", "image", segmentation_id="cells", cpu=InlineCpu(), progress=change_image
+                self.exp,
+                "a",
+                "image",
+                segmentation_id="cells",
+                cpu=InlineCpu(),
+                progress=change_image,
             )
         self.assertIs(self.exp.segmentations["cells"], replacement)
 
@@ -226,11 +275,17 @@ class CellposeTests(unittest.TestCase):
                 CellposeSettings(**kwargs)
         with self.assertRaises(ValueError):
             cellpose.segment(
-                self.exp, "a", "image", settings=CellposeSettings(pretrained_model="cyto3"), cpu=InlineCpu()
+                self.exp,
+                "a",
+                "image",
+                settings=CellposeSettings(pretrained_model="cpsam"),
+                cpu=InlineCpu(),
             )
         with self.assertRaises(ValueError):
             cellpose.segment_many(
-                self.exp, [SegmentationRequest("a", "image", segmentation_id="same")] * 2, cpu=InlineCpu()
+                self.exp,
+                [SegmentationRequest("a", "image", segmentation_id="same")] * 2,
+                cpu=InlineCpu(),
             )
         self.assertEqual(ControlledModel.calls, [])
 
@@ -238,13 +293,21 @@ class CellposeTests(unittest.TestCase):
         cpu = InlineCpu()
         cpu.num_cpus = 2
         with self.assertRaises(ValueError):
-            cellpose.segment(self.exp, "a", "image", settings=CellposeSettings(gpu=True), cpu=cpu)
+            cellpose.segment(
+                self.exp, "a", "image", settings=CellposeSettings(gpu=True), cpu=cpu
+            )
         with (
             patch.object(self.torch.cuda, "is_available", return_value=False),
             patch.object(self.torch.backends.mps, "is_available", return_value=False),
         ):
             with self.assertRaises(RuntimeError):
-                cellpose.segment(self.exp, "a", "image", settings=CellposeSettings(gpu=True), cpu=InlineCpu())
+                cellpose.segment(
+                    self.exp,
+                    "a",
+                    "image",
+                    settings=CellposeSettings(gpu=True),
+                    cpu=InlineCpu(),
+                )
 
     def test_real_spawned_backend_rejects_invalid_local_weights_without_download(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -261,37 +324,36 @@ class CellposeTests(unittest.TestCase):
                 )
         self.assertIs(self.exp.segmentations["cells"], self.old)
 
-    def test_real_cellpose_eval_preprocessing_and_mask_construction_without_weights(self):
-        model = object.__new__(self.constructor)
-        model.device = self.torch.device("cpu")
-        model.gpu, model.backbone, model.pretrained_model = False, "sam_vitl", "cpsam_v2"
+    def test_real_cellpose_eval_preprocessing_and_mask_construction_without_weights(
+        self,
+    ):
+        model = self.constructor(gpu=False, pretrained_model=False)
 
-        def flows(image, **kwargs):
-            shape = image.shape[:3]
-            return (
-                np.zeros((2, *shape), dtype=np.float32),
-                np.full(shape, -1, dtype=np.float32),
-                np.zeros((shape[0], 256), dtype=np.float32),
-            )
+        def flows(net, image, **kwargs):
+            output = np.zeros((*image.shape[:2], 3), dtype=np.float32)
+            output[..., 2] = -1
+            return output, np.zeros(256, dtype=np.float32)
 
         with (
             patch.object(self.models, "CellposeModel", return_value=model),
-            patch.object(model, "_run_net", side_effect=flows),
+            patch.object(self.models, "run_net", side_effect=flows),
         ):
-            result = cellpose.segment(self.exp, "a", "image", frame=1, apply=False, cpu=InlineCpu())
+            result = cellpose.segment(
+                self.exp, "a", "image", frame=1, apply=False, cpu=InlineCpu()
+            )
         self.assertEqual(result.labels.shape, (5, 5))
         self.assertEqual(int(result.labels.max()), 0)
         np.testing.assert_array_equal(result.source_image, self.image[1])
 
-    def test_dino_requires_its_upstream_backend_without_silent_fallback(self):
-        with patch("molcore.cellpose.importlib.util.find_spec", return_value=None):
-            with self.assertRaisesRegex(ImportError, "dinov3"):
+    def test_sam_and_dino_models_are_rejected_without_fallback(self):
+        for name in ("cpsam", "cpsam_v2", "cpdino", "cpdino-vitb"):
+            with self.subTest(model=name), self.assertRaises(ValueError):
                 cellpose.segment(
                     self.exp,
                     "a",
                     "image",
                     segmentation_id="cells",
-                    settings=CellposeSettings(pretrained_model="cpdino"),
+                    settings=CellposeSettings(pretrained_model=name),
                     cpu=InlineCpu(),
                 )
         self.assertEqual(ControlledModel.calls, [])
