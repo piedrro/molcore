@@ -13,6 +13,7 @@ from .types import (
     SpatialUnit,
     TrajectoryStatistics,
 )
+from .types.tables import identifiers
 
 
 @logged
@@ -20,6 +21,7 @@ def trajectory_statistics(
     dataset: Dataset,
     track_id: int,
     *,
+    ids: ArrayLike | None = None,
     space: CoordinateSpace = CoordinateSpace.CORRECTED,
     unit: SpatialUnit = SpatialUnit.PIXELS,
     frame_interval: float | None = None,
@@ -38,10 +40,15 @@ def trajectory_statistics(
     Fits require an explicit inclusive lag range and at least two distinct lags.
     Negative slopes are returned without clipping. Physical calibration is required
     for nanometres. Coordinates and masks are read without changing the model.
+    Explicit IDs restrict statistics to those track members, retaining their
+    original camera frames and timing. Empty selections return empty steps/MSD
+    and zero duration/path length; fitting still requires populated lags.
 
     Args:
         dataset: Scientific model supplying acquisitions and result tables.
         track_id: Track id used by this operation.
+        ids: Distinct stable member IDs to include; None selects the whole track.
+            Unknown, nonmember, duplicate, and malformed IDs are rejected.
         space: Coordinate space: raw channel pixels, registered reference or drift-corrected reference.
         unit: Unit used by this operation.
         frame_interval: Frame interval used by this operation.
@@ -76,6 +83,14 @@ def trajectory_statistics(
     ):
         raise ValueError("Fit lag range must be finite and increasing")
     rows = dataset.tracks.query(track_id=track_id, space=space)
+    if ids is not None:
+        selected = identifiers(ids)
+        if len(np.unique(selected)) != len(selected):
+            raise ValueError("Selected localization IDs must be distinct")
+        if not np.isin(selected, rows["id"]).all():
+            raise ValueError("Selected localization IDs must belong to the track")
+        keep = np.isin(rows["id"], selected)
+        rows = {name: values[keep] for name, values in rows.items()}
     steps = []
     aggregates = {}
     duration = path_length = 0.0

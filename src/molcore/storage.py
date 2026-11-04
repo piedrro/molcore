@@ -504,7 +504,11 @@ def _write_dataset_group(
         }
         if acquisition.timestamps is not None:
             group.create_dataset("timestamps", data=acquisition.timestamps)
-        if options.originals == "full":
+        source = acquisition.source
+        while isinstance(source, CachedSource):
+            source = source.source
+        # MissingSource carries geometry only; full snapshots embed available originals.
+        if options.originals == "full" and not isinstance(source, MissingSource):
             n, y, x = acquisition.source.shape
             images = group.create_dataset(
                 "images",

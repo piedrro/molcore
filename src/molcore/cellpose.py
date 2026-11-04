@@ -244,8 +244,9 @@ def _job(payload: tuple, reporter: WorkerProgress) -> Any:
     # Preserve the exact input pixels even when the backend normalizes in place.
     source = np.array(image, copy=True)
     source.flags.writeable = False
+    inference = np.max(source) - source if settings.invert else source
     output = model.eval(
-        np.array(source, dtype=np.float32, copy=True),
+        np.array(inference, dtype=np.float32, copy=True),
         batch_size=settings.batch_size,
         channels=None,
         channel_axis=None,

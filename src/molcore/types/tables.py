@@ -966,18 +966,22 @@ class TrackTable:
         channel: str,
         memberships: list[ArrayLike],
         *,
+        ids: ArrayLike | None = None,
         segmentation_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> np.ndarray:
         """Replace wholly contained partition tracks atomically, retaining localization IDs.
 
         Memberships is an iterable of nonempty localization-ID arrays. Spanning
-        tracks intersecting the partition are rejected, including empty replacements.
+        tracks intersecting the scope are rejected, including empty replacements.
+        Explicit IDs restrict replacement to that exact scope; an empty selection
+        replaces nothing. Unknown, duplicate and out-of-partition IDs are rejected.
 
         Args:
             acquisition_id: Source acquisition identifier.
             channel: Logical source channel name.
             memberships: Memberships used by this operation.
+            ids: Stable localization IDs defining the scope; None selects the partition.
             segmentation_id: Optional segmentation identifier restricting the selected objects.
             metadata: Additional structured provenance and acquisition metadata.
 
@@ -991,6 +995,15 @@ class TrackTable:
         partition = self.dataset.localizations.query(
             acquisition_id=acquisition_id, channel=channel, space="raw"
         )["id"]
+        if ids is not None:
+            selected = identifiers(ids)
+            if len(np.unique(selected)) != len(selected):
+                raise ValueError("Selected localization IDs must be distinct")
+            if not np.isin(selected, partition).all():
+                raise ValueError(
+                    "Selected localization IDs must belong to the partition"
+                )
+            partition = selected
         old = []
         for track, members in self._members.items():
             inside = np.isin(members, partition)
@@ -1031,6 +1044,43 @@ class TrackTable:
             raise ValueError("Unknown track ID")
         self.dataset.observations._invalidate(tracks=[track_id])
         del self._members[track_id], self.metadata[track_id]
+        self.revision += 1
+
+    @model_mutated
+    @logged
+    def retain_members(self, track_id: int, ids: ArrayLike) -> None:
+        """Retain a track subset in its existing order without removing localizations.
+
+        A nonempty subset preserves the track ID and metadata. An empty subset
+        deletes the track. Changed memberships invalidate dependent observations
+        and photon sequences, including access to their historical crops. Raw
+        localization crops remain valid; track crops resolve current membership.
+        Keeping every member is a no-op, regardless of input order.
+
+        Args:
+            track_id: Existing track identifier.
+            ids: Distinct existing members to retain; order does not reorder the track.
+
+        Raises:
+            ValueError: The track is unknown or selected IDs are duplicated,
+                malformed, unknown, or not members of this track.
+        """
+        track_id = int(track_id)
+        if track_id not in self._members:
+            raise ValueError("Unknown track ID")
+        selected = identifiers(ids)
+        if len(np.unique(selected)) != len(selected):
+            raise ValueError("Retained localization IDs must be distinct")
+        members = self._members[track_id]
+        if not np.isin(selected, members).all():
+            raise ValueError("Retained localization IDs must belong to the track")
+        if not len(selected):
+            self.delete(track_id)
+            return
+        if len(selected) == len(members):
+            return
+        self._members[track_id] = members[np.isin(members, selected)]
+        self.dataset.observations._invalidate(tracks=[track_id])
         self.revision += 1
 
     @model_mutated

@@ -141,12 +141,18 @@ class PhotonSequenceResult:
 
 @dataclass(frozen=True)
 class TrackingSettings:
-    """Trackpy distances in selected coordinate pixels; memory uses camera frames."""
+    """Trackpy distances in selected coordinate pixels and explicit frame-clock memory.
+
+    frame_clock="camera" counts every camera exposure, including other excitation
+    channels. "channel" counts frames in the selected ChannelView; absent
+    localizations consume memory, while other excitation frames do not.
+    """
 
     search_range: float = 5.0
     memory: int = 0
     min_length: int = 1
     space: CoordinateSpace = CoordinateSpace.CORRECTED
+    frame_clock: str = "camera"
 
     def __post_init__(self) -> None:
         """Validate the immutable record after construction."""
@@ -156,13 +162,22 @@ class TrackingSettings:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
                 raise ValueError(f"{name} must be an integer >= {minimum}")
+        if not isinstance(self.frame_clock, str) or self.frame_clock not in (
+            "camera",
+            "channel",
+        ):
+            raise ValueError("frame_clock must be camera or channel")
         if not isinstance(self.space, CoordinateSpace):
             raise TypeError("Use CoordinateSpace enum")
 
 
 @dataclass(frozen=True)
 class TrackingResult:
-    """Stable localization memberships independent of Trackpy particle labels."""
+    """Stable localization memberships independent of Trackpy particle labels.
+
+    selected_ids is the exact replacement scope; None means the whole partition.
+    An empty array selects nothing and never replaces unrelated tracks.
+    """
 
     acquisition_id: str
     channel: str
@@ -172,6 +187,7 @@ class TrackingResult:
     backend_version: str
     segmentation_id: str | None = None
     track_ids: np.ndarray | None = None
+    selected_ids: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
