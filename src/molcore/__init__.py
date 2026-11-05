@@ -10,6 +10,7 @@ from .types import (
     AcquisitionMode,
     AcquisitionSequence,
     AlignmentResult,
+    BactFitCell,
     Calibration,
     CameraSettings,
     CellposeSettings,
@@ -38,6 +39,7 @@ from .types import (
     ProgressUpdate,
     SaveOptions,
     Segmentation,
+    SegmentationOutline,
     SegmentationRequest,
     StaleResultError,
 )
@@ -123,6 +125,8 @@ __all__ = [
     "ImageUnavailableError",
     "ProcessingMetadata",
     "Segmentation",
+    "SegmentationOutline",
+    "BactFitCell",
     "StaleResultError",
 ]
 

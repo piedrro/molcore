@@ -17,6 +17,7 @@ from .._logging import logged
 from .._model_api import DatasetServices
 from ._shared import ImagePolicy, ProcessingMetadata, Segmentation
 from .acquisition import Acquisition, AcquisitionSequence
+from .cells import BactFitCell, SegmentationOutline
 from .photons import PhotonSequenceStore
 from .tables import LocalizationTable, ObservationTable, TrackTable
 
@@ -45,6 +46,8 @@ class Dataset(DatasetServices):
         observations: Channel measurements and their validity flags.
         photon_sequences: Independent frame-resolved photon/intensity sequences.
         segmentations: Static segmentation datasets keyed by identifier.
+        segmentation_outlines: Editable vector polygons keyed by identifier.
+        bactfit_cells: Fitted bacterial cell geometry keyed by identifier.
         processing: Analysis settings and installed software versions.
     """
 
@@ -80,9 +83,13 @@ class Dataset(DatasetServices):
         self._acquisitions: dict[str, Acquisition] = {}
         self._sequences: dict[str, AcquisitionSequence] = {}
         self._segmentations: dict[str, Segmentation] = {}
+        self._segmentation_outlines: dict[str, SegmentationOutline] = {}
+        self._bactfit_cells: dict[str, BactFitCell] = {}
         self.acquisitions = MappingProxyType(self._acquisitions)
         self.sequences = MappingProxyType(self._sequences)
         self.segmentations = MappingProxyType(self._segmentations)
+        self.segmentation_outlines = MappingProxyType(self._segmentation_outlines)
+        self.bactfit_cells = MappingProxyType(self._bactfit_cells)
         self.localizations = LocalizationTable(self)
         self.tracks = TrackTable(self)
         self.observations = ObservationTable(self)
@@ -159,6 +166,9 @@ class Dataset(DatasetServices):
             masks = [
                 k for k, s in model.segmentations.items() if s.acquisition_id == id
             ]
+            outlines = [
+                k for k, s in model.segmentation_outlines.items() if s.acquisition_id == id
+            ]
             observations = model.observations
             rows = observations._data
             dependent = (
@@ -166,6 +176,7 @@ class Dataset(DatasetServices):
                 or tracks
                 or sequences
                 or masks
+                or outlines
                 or any(
                     s.acquisition_id == id
                     for s in model.photon_sequences.query(include_stale=True)
@@ -205,6 +216,8 @@ class Dataset(DatasetServices):
                 del model._sequences[key]
             for key in masks:
                 del model._segmentations[key]
+            for key in outlines:
+                model.remove_segmentation_outline(key)
             model.transforms._selected = {
                 k: v for k, v in model.transforms._selected.items() if k[0] != id
             }
@@ -286,6 +299,60 @@ class Dataset(DatasetServices):
             self.observations._invalidate_partition(previous.acquisition_id)
         self._segmentations[segmentation.id] = segmentation
         self.observations._invalidate_partition(segmentation.acquisition_id)
+
+    @model_mutated
+    @logged
+    def add_segmentation_outline(self, outline: SegmentationOutline) -> None:
+        """Add a polygon or replace it and discard fits derived from its old geometry.
+
+        Args:
+            outline: Polygon and optional binding to an acquisition channel.
+        """
+        if outline.acquisition_id is not None:
+            acquisition = self.acquisitions.get(outline.acquisition_id)
+            if acquisition is None or outline.channel not in acquisition.channels:
+                raise ValueError("Outline references an unknown acquisition/channel")
+            if outline.frame is not None:
+                acquisition.channels[outline.channel].channel_index(outline.frame)
+        previous = self._segmentation_outlines.get(outline.id)
+        if previous is not None and previous != outline:
+            self.remove_segmentation_outline(outline.id)
+        self._segmentation_outlines[outline.id] = outline
+
+    @model_mutated
+    @logged
+    def remove_segmentation_outline(self, outline_id: str) -> None:
+        """Remove a polygon and the fits derived from it.
+
+        Args:
+            outline_id: Identifier of a registered outline.
+        """
+        del self._segmentation_outlines[outline_id]
+        for fit in tuple(self.bactfit_cells.values()):
+            if fit.outline_id == outline_id:
+                del self._bactfit_cells[fit.id]
+
+    @model_mutated
+    @logged
+    def add_bactfit_cell(self, fit: BactFitCell) -> None:
+        """Store fitted geometry, replacing an existing fit with the same ID.
+
+        Args:
+            fit: Fitted cell with an optional link to a registered outline.
+        """
+        if fit.outline_id is not None and fit.outline_id not in self.segmentation_outlines:
+            raise ValueError("Fit references an unknown segmentation outline")
+        self._bactfit_cells[fit.id] = fit
+
+    @model_mutated
+    @logged
+    def remove_bactfit_cell(self, fit_id: str) -> None:
+        """Remove a fit while retaining its source outline.
+
+        Args:
+            fit_id: Identifier of a registered fit.
+        """
+        del self._bactfit_cells[fit_id]
 
     @logged
     def segmentation_labels(

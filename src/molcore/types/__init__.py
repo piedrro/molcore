@@ -28,6 +28,7 @@ from .analysis import (
     RenderSettings,
 )
 from .batches import ColumnSchema, LocalizationBatch
+from .cells import BactFitCell, SegmentationOutline
 from .contrast import ContrastMethod, ContrastResult, ContrastScope, ContrastSettings
 from .dataset import Dataset
 from .dataset_alignment import DatasetAlignmentResult, DatasetAlignmentSettings
@@ -116,6 +117,8 @@ __all__ = [
     "ImageUnavailableError",
     "ProcessingMetadata",
     "Segmentation",
+    "SegmentationOutline",
+    "BactFitCell",
     "StaleResultError",
 ]
 

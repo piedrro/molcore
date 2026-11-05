@@ -15,6 +15,7 @@ import numpy as np
 
 from ._logging import logged
 from .types._shared import Calibration, ChannelSpec, Crop, ImagePolicy, Segmentation
+from .types.cells import BactFitCell, SegmentationOutline
 from .types.images import (
     CachedSource,
     FitsSource,
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
     from .types import Dataset, Experiment, ImageSource
     from .types.scientific import CancelEvent, ProgressCallback
 
-FORMAT_VERSION = 4
+FORMAT_VERSION = 5
 
 _SOURCE_CODECS: dict[str, tuple[type, Any, Any]] = {}
 
@@ -601,6 +602,22 @@ def _write_dataset_group(
             group.create_dataset(
                 "source", data=segmentation.source_image, compression="gzip"
             )
+    for name, records, geometry_fields in (
+        ("segmentation_outlines", dataset.segmentation_outlines, ("vertices",)),
+        (
+            "bactfit_cells",
+            dataset.bactfit_cells,
+            ("polygon", "midline", "poles", "polynomial_coefficients"),
+        ),
+    ):
+        root = file.create_group(name, track_order=True)
+        for index, record in enumerate(records.values()):
+            report(None, cancel_event)
+            group = root.create_group(str(index))
+            info = asdict(record)
+            for field in geometry_fields:
+                group.create_dataset(field, data=info.pop(field))
+            group.attrs["info"] = _json(info)
     saved_crop_ids = _write_crops(file, dataset, options.crops, crop_width)
     _write_photon_sequences(file, dataset)
     saved_photon_keys = _write_photon_crops(
@@ -753,6 +770,7 @@ def open_dataset(
             1,
             2,
             3,
+            4,
             FORMAT_VERSION,
         ):
             raise ValueError("Unsupported MolCore format/version")
@@ -826,6 +844,15 @@ def open_dataset(
                 source_image=group["source"][:] if "source" in group else None,
             )
             dataset._segmentations[segmentation.id] = segmentation
+        for name, record_type, add_record in (
+            ("segmentation_outlines", SegmentationOutline, dataset.add_segmentation_outline),
+            ("bactfit_cells", BactFitCell, dataset.add_bactfit_cell),
+        ):
+            for group in file.get(name, {}).values():
+                report(None, cancel_event)
+                info = json.loads(group.attrs["info"])
+                info.update({field: group[field][:] for field in group})
+                add_record(record_type(**info))
         if "crops" in file:
             width = int(file["crops"].attrs["width"])
             for index, localization_id in enumerate(file["crops/ids"][:]):
@@ -1018,7 +1045,7 @@ def open_experiment(
         if (
             file.attrs.get("format") != "molcore"
             or file.attrs.get("kind") != "experiment"
-            or file.attrs.get("format_version") != FORMAT_VERSION
+            or file.attrs.get("format_version") not in (4, FORMAT_VERSION)
         ):
             raise ValueError(
                 "Expected a supported Experiment snapshot; use Dataset.open for datasets"

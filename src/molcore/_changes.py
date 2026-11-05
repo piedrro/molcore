@@ -33,6 +33,8 @@ def versions(dataset: Any) -> dict[str, Any]:
     result["segmentations"] = tuple(
         (k, id(v)) for k, v in dataset.segmentations.items()
     )
+    result["segmentation_outlines"] = tuple(dataset.segmentation_outlines.values())
+    result["bactfit_cells"] = tuple(dataset.bactfit_cells.values())
     result["metadata"] = dataset._metadata_revision
     return result
 
