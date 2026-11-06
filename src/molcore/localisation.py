@@ -29,17 +29,35 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from .cpu import WorkerProgress
-    from .types import CancelEvent, ProgressCallback
+    from .types import CancelEvent, ImageSource, ProgressCallback
     from .types.acquisition import ChannelView
 
 
 _FIT_SPOT_BYTES = 32 * 1024**2
 
 
+class _WorkingChannel:
+    """A working pixel source with the original channel's frame clock."""
+
+    def __init__(self, channel: ChannelView, source: ImageSource) -> None:
+        if source.shape != channel.shape:
+            raise ValueError("Working source shape must match the logical channel")
+        self.source = source
+        self.source_frames = channel.source_frames
+        self.shape = source.shape
+        self.dtype = source.dtype
+
+    def __getitem__(self, index: Any) -> np.ndarray:
+        return self.source[index]
+
+    def __len__(self) -> int:
+        return self.shape[0]
+
+
 class _SelectedFrames:
     """Expose a selection of camera frames without loading the entire stack."""
 
-    def __init__(self, view: ChannelView, indices: np.ndarray) -> None:
+    def __init__(self, view: ChannelView | _WorkingChannel, indices: np.ndarray) -> None:
         self.view = view
         self.indices = indices
         self.dtype = view.dtype
@@ -51,8 +69,12 @@ class _SelectedFrames:
         return self.view[int(self.indices[index])]
 
 
-def _selected_images(view: ChannelView, frames: np.ndarray) -> np.ndarray | _SelectedFrames:
+def _selected_images(
+    view: ChannelView | _WorkingChannel, frames: np.ndarray
+) -> np.ndarray | _SelectedFrames:
     """Use a NumPy view for regularly spaced in-memory frames."""
+    if isinstance(view, _WorkingChannel):
+        return _SelectedFrames(view, np.searchsorted(view.source_frames, frames))
     source = view.acquisition.source
     if type(source) is ArraySource:
         step = int(frames[1] - frames[0]) if len(frames) > 1 else 1
@@ -434,6 +456,7 @@ def _run(
     context: ExecutionContext | None = None,
     backend: ProcessorBackend | str | None = None,
     registry: BackendRegistry | None = None,
+    source: ImageSource | None = None,
 ) -> Iterator[Any]:
     """Run.
 
@@ -469,10 +492,12 @@ def _run(
     if frame_range is not None and apply:
         raise ValueError("Subset processing is a preview; pass apply=False")
     acquisition = dataset.acquisitions[acquisition_id]
-    view = acquisition.channels[channel]
-    token = hash(
-        (id(acquisition.source), channel, view.roi, view.source_frames.tobytes())
-    )
+    channel_view = acquisition.channels[channel]
+    view = channel_view if source is None else _WorkingChannel(channel_view, source)
+    if source is not None and apply:
+        raise ValueError("Working-source processing requires apply=False and explicit coordinate conversion")
+    binding = (id(acquisition.source), channel, channel_view.roi, view.source_frames.tobytes())
+    token = hash(binding if source is None else (*binding, id(source)))
     if detections is not None and detections.source_token != token:
         raise ValueError("Detection image source/channel changed; detect again")
     if detections is not None and detections.expected is not None:
@@ -593,6 +618,7 @@ def detect(
     context: ExecutionContext | None = None,
     backend: ProcessorBackend | str | None = None,
     registry: BackendRegistry | None = None,
+    source: ImageSource | None = None,
 ) -> DetectionResult:
     """Detect candidates in MolCore channel frames using Picasso net gradient.
 
@@ -628,6 +654,7 @@ def detect(
         context=context,
         backend=backend,
         registry=registry,
+        source=source,
     )
 
 
@@ -646,6 +673,7 @@ def fit(
     context: ExecutionContext | None = None,
     backend: ProcessorBackend | str | None = None,
     registry: BackendRegistry | None = None,
+    source: ImageSource | None = None,
 ) -> LocalisationResult:
     """Fit typed detections and optionally replace their active model partition.
 
@@ -681,6 +709,7 @@ def fit(
         context=context,
         backend=backend,
         registry=registry,
+        source=source,
     )
 
 
@@ -701,6 +730,7 @@ def localise(
     context: ExecutionContext | None = None,
     backend: ProcessorBackend | str | None = None,
     registry: BackendRegistry | None = None,
+    source: ImageSource | None = None,
 ) -> LocalisationResult:
     """Detect and fit a MolCore channel with bounded CPU batches.
 
@@ -742,4 +772,5 @@ def localise(
         context=context,
         backend=backend,
         registry=registry,
+        source=source,
     )

@@ -34,17 +34,23 @@ from .types import (
     ProgressUpdate,
     TraceMode,
 )
+from .types.scientific import FixedApertureSettings
 from .types.tables import identifiers
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator, Mapping
 
     from .cpu import WorkerProgress
+    from .types import ImageSource
     from .types.acquisition import ChannelView
 
 _DEFAULT_SETTINGS = PhotometrySettings()
 
 _METRICS = ("sum", "mean", "median", "min", "max", "std")
+_PSF_METRICS = (
+    "psf_amplitude", "psf_background", "psf_sx", "psf_sy",
+    "psf_lpx", "psf_lpy", "psf_likelihood",
+)
 
 
 def _region(
@@ -196,6 +202,8 @@ def _measure_frames(
     num_cpus: int | None,
     progress: ProgressCallback | None,
     cancel_event: CancelEvent | None,
+    *,
+    worker: Callable[[tuple, _FrameProgress], list[dict]] = _job,
 ) -> list[list[dict]]:
     """Read frames on the caller and bound the number queued for measurement."""
     # Small aperture reductions benefit from avoiding thread contention.
@@ -218,14 +226,14 @@ def _measure_frames(
         report(0, "Starting", force=True)
         if min(workers, total) == 1:
             for payload in jobs:
-                results.append(_job(payload, reporter))
+                results.append(worker(payload, reporter))
                 report(len(results), "Aperture photometry")
         else:
             with ThreadPoolExecutor(max_workers=min(workers, total)) as pool:
                 pending = deque()
                 try:
                     for payload in jobs:
-                        pending.append(pool.submit(_job, payload, reporter))
+                        pending.append(pool.submit(worker, payload, reporter))
                         if len(pending) == workers:
                             results.append(pending.popleft().result())
                             report(len(results), "Aperture photometry")
@@ -241,7 +249,9 @@ def _measure_frames(
     return results
 
 
-def _columns(rows: list[dict]) -> dict[str, np.ndarray]:
+def _columns(
+    rows: list[dict], fixed: FixedApertureSettings | None = None
+) -> dict[str, np.ndarray]:
     """Columns.
 
     Args:
@@ -263,16 +273,108 @@ def _columns(rows: list[dict]) -> dict[str, np.ndarray]:
         "x": float,
         "y": float,
         "intensity": float,
-        "signal_count": np.int64,
-        "local_background_count": np.int64,
-        "global_background_count": np.int64,
     }
-    for prefix in ("signal", "local_background", "global_background"):
+    if fixed is None:
+        prefixes = ("signal", "local_background", "global_background")
+        dtypes.update({f"{prefix}_count": np.int64 for prefix in prefixes})
+    else:
+        prefixes = ("signal", "local_window", "masked_local_ring")
+        if fixed.global_background:
+            prefixes += ("global_background", "masked_global_background")
+        if fixed.psf_box_size is not None:
+            dtypes.update({name: float for name in _PSF_METRICS})
+    for prefix in prefixes:
         dtypes.update({f"{prefix}_{name}": float for name in _METRICS})
     return {
         name: np.asarray([row[name] for row in rows], dtype=dtype)
         for name, dtype in dtypes.items()
     }
+
+
+def fixed_aperture_masks(settings: FixedApertureSettings) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build the centred fixed aperture masks.
+
+    Args:
+        settings: Aperture geometry in image pixels.
+
+    Returns:
+        Signal, exclusion buffer and background ring masks.
+    """
+    width = settings.spot_size + 2 * (settings.buffer + settings.background_width)
+    axis = np.arange(width) - (width - 1) / 2
+    radius = settings.spot_size // 2
+    inner = radius + settings.buffer
+    if settings.shape == ApertureShape.SQUARE:
+        distance = np.maximum(abs(axis[:, None]), abs(axis[None, :]))
+        buffer = distance <= inner
+    else:
+        distance = np.hypot(axis[:, None], axis[None, :])
+        buffer = (distance > radius) & (distance <= inner)
+    return distance <= radius, buffer, (distance > inner) & (distance <= inner + settings.background_width)
+
+
+def _fixed_mask_region(
+    shape: tuple[int, int], width: int, x: float, y: float
+) -> tuple[tuple[slice, slice], tuple[slice, slice]]:
+    shift = 0.5 if width % 2 == 0 else 0
+    origin_x = round(x + shift) - width // 2
+    origin_y = round(y + shift) - width // 2
+    x0, x1 = max(0, origin_x), min(shape[1], origin_x + width)
+    y0, y1 = max(0, origin_y), min(shape[0], origin_y + width)
+    if x1 <= x0 or y1 <= y0:
+        return np.s_[:0, :0], np.s_[:0, :0]
+    return np.s_[y0:y1, x0:x1], np.s_[y0-origin_y:y1-origin_y, x0-origin_x:x1-origin_x]
+
+
+def _fixed_job(payload: tuple, reporter: WorkerProgress | _FrameProgress) -> list[dict]:
+    image, rows, regions, exclusion, masks, settings = payload
+    finite = np.isfinite(image)
+    signal_mask, _, ring_mask = masks
+    global_summaries = {}
+    if settings.global_background:
+        global_summaries = {
+            "global_background": _summary(image[finite]),
+            "masked_global_background": _summary(image[finite & ~exclusion]),
+        }
+    for row, (image_slice, mask_slice) in zip(rows, regions, strict=True):
+        reporter.check_cancelled()
+        values = image[image_slice]
+        valid = finite[image_slice]
+        signal = values[valid & signal_mask[mask_slice]]
+        ring = values[valid & ring_mask[mask_slice] & ~exclusion[image_slice]]
+        summaries = {
+            "signal": _summary(signal),
+            "local_window": _summary(values[valid]),
+            "masked_local_ring": _summary(ring),
+            **global_summaries,
+        }
+        for prefix, metrics in summaries.items():
+            row.update({f"{prefix}_{key}": value for key, value in metrics.items()})
+        row["intensity"] = summaries["signal"]["sum"]
+        if settings.psf_box_size is not None:
+            row.update(_fixed_psf(image, row["x"], row["y"], settings.psf_box_size))
+    return rows
+
+
+def _fixed_psf(image: np.ndarray, x: float, y: float, width: int) -> dict[str, float]:
+    """Fit a complete uncalibrated patch with Picasso's integrated Gaussian."""
+    from picasso.gaussmle import gaussmle
+
+    region, _ = _fixed_mask_region(image.shape, width, x, y)
+    spot = image[region]
+    if spot.shape != (width, width) or not np.isfinite(spot).all():
+        return dict.fromkeys(_PSF_METRICS, float("nan"))
+    theta, bounds, likelihood, _ = gaussmle(
+        spot[None].astype(np.float32), eps=0.0001, max_it=500, method="sigma"
+    )
+    amplitude = float(theta[0, 2])
+    sigma = float(theta[0, 4])
+    values = (
+        amplitude, float(theta[0, 3]) if amplitude > 0 else 0.0,
+        sigma, sigma, float(np.sqrt(bounds[0, 1])),
+        float(np.sqrt(bounds[0, 0])), float(likelihood[0]),
+    )
+    return dict(zip(_PSF_METRICS, values, strict=True))
 
 
 def _extract(
@@ -660,6 +762,126 @@ def stationary_traces(
             cancel_event=cancel_event,
         ),
     )
+
+
+@logged
+def stationary_site_traces(
+    dataset: Dataset,
+    acquisition_id: str,
+    channel: str,
+    sites: Mapping[str, tuple[float, float]],
+    *,
+    source: ImageSource | None = None,
+    settings: PhotometrySettings | FixedApertureSettings = _DEFAULT_SETTINGS,
+    apply: bool = True,
+    num_cpus: int | None = None,
+    progress: ProgressCallback | None = None,
+    cancel_event: CancelEvent | None = None,
+) -> PhotonSequenceResult:
+    """Measure fixed sites directly in a logical channel's pixel space.
+
+    Each site key identifies a molecule. A supplied working source must have
+    the same shape and frame ordering as the raw channel. Sites then refer to
+    working pixels and are omitted from raw crop positions. No localisations
+    or tracks are created. Centres stay fixed in the supplied pixel space.
+
+    Args:
+        dataset: Model providing the original acquisition and camera frame clock.
+        acquisition_id: Original acquisition identifier.
+        channel: Logical channel whose frames are sampled.
+        sites: Stable molecule IDs mapped to (x, y) positions.
+        source: Optional replacement pixels in the same logical frame order.
+        settings: Aperture and background measurements to compute.
+        apply: Commit the completed sequences to the model.
+        num_cpus: Number of measurement threads.
+        progress: Callback receiving progress updates.
+        cancel_event: Cooperative cancellation event.
+
+    Returns:
+        Detached photon sequences, with their stored IDs when applied.
+    """
+    expected = dataset.dependencies(acquisition_id, channel)
+    view = dataset.acquisitions[acquisition_id].channels[channel]
+    pixels = view if source is None else source
+    if pixels.shape != view.shape:
+        raise ValueError("Working source shape must match the logical channel")
+    if not isinstance(settings, (PhotometrySettings, FixedApertureSettings)):
+        raise TypeError("settings must be PhotometrySettings or FixedApertureSettings")
+    positions = dict(sites)
+    for key, position in positions.items():
+        if (
+            not isinstance(key, str) or not key
+            or np.shape(position) != (2,) or not np.isfinite(position).all()
+        ):
+            raise ValueError("Each site needs a nonempty identifier and a finite (x, y) centre")
+
+    fixed = settings if isinstance(settings, FixedApertureSettings) else None
+    if fixed is not None:
+        masks = fixed_aperture_masks(fixed)
+        regions = tuple(
+            _fixed_mask_region(view.shape[1:], masks[0].shape[0], x, y)
+            for x, y in positions.values()
+        )
+        exclusion = np.zeros(view.shape[1:], dtype=bool)
+        for image_slice, mask_slice in regions:
+            exclusion[image_slice] |= masks[1][mask_slice]
+
+    def jobs() -> Iterator[tuple]:
+        """Yield detached working-frame jobs in original camera order.
+
+        Yields:
+            Frame pixels, site requests and precomputed measurement geometry.
+        """
+        for index in range(len(view)):
+            if cancel_event is not None and cancel_event.is_set():
+                raise CancelledError("Photometry cancelled")
+            info = view.frame_info(index)
+            rows = [
+                {
+                    "molecule_id": molecule_id,
+                    "acquisition_id": acquisition_id,
+                    "channel": channel,
+                    "frame": info.camera_frame,
+                    "channel_frame": index,
+                    "cycle_index": info.cycle_index if info.cycle_index is not None else -1,
+                    "timestamp": info.timestamp if info.timestamp is not None else np.nan,
+                    "localization_id": 0,
+                    "track_id": 0,
+                    "x": x,
+                    "y": y,
+                }
+                for molecule_id, (x, y) in positions.items()
+            ]
+            image = np.array(pixels[index], copy=True)
+            if fixed is None:
+                yield image, rows, positions.values(), settings
+            else:
+                yield image, rows, regions, exclusion, masks, fixed
+
+    chunks = _measure_frames(
+        jobs() if positions else iter(()),
+        len(view) if positions else 0,
+        num_cpus,
+        progress,
+        cancel_event,
+        worker=_job if fixed is None else _fixed_job,
+    )
+    columns = _columns([row for chunk in chunks for row in chunk], fixed)
+    if source is not None:
+        columns["working_x"] = columns.pop("x")
+        columns["working_y"] = columns.pop("y")
+
+    from .photon_sequences import from_columns
+
+    run_id = str(uuid4())
+    sequences = from_columns(
+        columns,
+        run_id=run_id,
+        metadata={"settings": asdict(settings), "source_space": "working" if source is not None else "raw"},
+    )
+    result = PhotonSequenceResult(sequences, settings, TraceMode.STATIONARY, run_id, expected)
+    expected.validate(dataset)
+    return apply_photometry(dataset, result) if apply else result
 
 
 @logged

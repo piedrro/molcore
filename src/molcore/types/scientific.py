@@ -92,6 +92,35 @@ class PhotometrySettings:
 
 
 @dataclass(frozen=True)
+class FixedApertureSettings:
+    """Fixed mask geometry with separate window and masked-ring summaries."""
+
+    spot_size: int = 3
+    shape: ApertureShape = ApertureShape.SQUARE
+    buffer: int = 1
+    background_width: int = 1
+    global_background: bool = False
+    psf_box_size: int | None = None
+
+    def __post_init__(self) -> None:
+        for name, minimum in (("spot_size", 1), ("buffer", 0), ("background_width", 1)):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+                raise ValueError(f"{name} must be an integer >= {minimum}")
+        if not isinstance(self.shape, ApertureShape):
+            raise TypeError("Use the ApertureShape enum")
+        if not isinstance(self.global_background, bool):
+            raise TypeError("global_background must be a boolean")
+        if self.psf_box_size is not None and (
+            isinstance(self.psf_box_size, bool)
+            or not isinstance(self.psf_box_size, int)
+            or self.psf_box_size < 3
+            or self.psf_box_size % 2 != 1
+        ):
+            raise ValueError("PSF box size must be an odd integer of at least 3")
+
+
+@dataclass(frozen=True)
 class PhotometryResult:
     """Detached localisation-measurement columns, source state token and observation IDs.
 
@@ -121,7 +150,7 @@ class PhotonSequenceResult:
     """
 
     sequences: tuple[PhotonSequence, ...]
-    settings: PhotometrySettings
+    settings: PhotometrySettings | FixedApertureSettings
     mode: TraceMode
     run_id: str
     expected: FreshnessToken

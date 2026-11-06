@@ -134,3 +134,17 @@ snapshots rather than silently lose data.
 
 The trace viewer defaults to **Trace data → Photon sequences** and reads the primary model
 directly. It does not insert photon samples into the observation or track tables.
+
+## Explicit stationary sites
+
+`molcore.photometry.stationary_site_traces()` takes a mapping of molecule IDs to
+`(x, y)` centres for one acquisition and logical channel. The centres stay fixed
+in the measured pixel space, and the results retain that channel's camera frames.
+Use the optional `source` for a working image with identical shape and frame
+ordering. Working-image coordinates are recorded separately from raw crop
+centres.
+
+`FixedApertureSettings` enables separate local-window and masked-ring summaries,
+optional whole-frame backgrounds, and optional Picasso Gaussian fit metrics.
+Aperture intensities and fitted amplitudes are stored separately. The fitted
+amplitudes use the supplied image units.
