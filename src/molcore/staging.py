@@ -97,6 +97,7 @@ def state_token(dataset: Dataset) -> StateToken:
         dataset._lineage,
         tuple(dataset.segmentation_outlines.values()),
         tuple(dataset.bactfit_cells.values()),
+        dataset.bounding_boxes.revision,
     )
 
 
@@ -124,6 +125,7 @@ def dependency_token(
         "tracks",
         "observations",
         "photon_sequences",
+        "bounding_boxes",
         "transforms",
         "segmentations",
         "segmentation_outlines",
@@ -231,6 +233,7 @@ def clone_dataset(dataset: Dataset) -> Dataset:
         "tracks",
         "observations",
         "photon_sequences",
+        "bounding_boxes",
         "transforms",
         "crops",
         "processing",
@@ -353,6 +356,7 @@ def adopt_dataset(dataset: Dataset, staged: Dataset) -> ChangeSet | None:
         ("segmentations", "segmentations"),
         ("segmentation_outlines", "segmentation_outlines"),
         ("bactfit_cells", "bactfit_cells"),
+        ("bounding_boxes", "bounding_boxes"),
         ("calibrations", "calibrations"),
         ("acquisitions", "acquisitions"),
         ("sequences", "sequences"),
@@ -378,6 +382,7 @@ def adopt_dataset(dataset: Dataset, staged: Dataset) -> ChangeSet | None:
         "tracks",
         "observations",
         "photon_sequences",
+        "bounding_boxes",
         "transforms",
         "crops",
     ):

@@ -10,6 +10,11 @@ from threading import Event
 from time import monotonic
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
+from datetime import datetime, timezone
+from copy import deepcopy
+import json
+from importlib.metadata import PackageNotFoundError, distribution
+from pathlib import Path
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -880,6 +885,111 @@ def stationary_site_traces(
         metadata={"settings": asdict(settings), "source_space": "working" if source is not None else "raw"},
     )
     result = PhotonSequenceResult(sequences, settings, TraceMode.STATIONARY, run_id, expected)
+    expected.validate(dataset)
+    return apply_photometry(dataset, result) if apply else result
+
+
+@logged
+def bounding_box_traces(
+    dataset: Dataset,
+    acquisition_id: str,
+    channel: str,
+    bounding_box_ids: list[str] | tuple[str, ...],
+    *,
+    source: ImageSource | None = None,
+    settings: PhotometrySettings | FixedApertureSettings = _DEFAULT_SETTINGS,
+    source_metadata: Mapping[str, object] | None = None,
+    apply: bool = True,
+    num_cpus: int | None = None,
+    progress: ProgressCallback | None = None,
+    cancel_event: CancelEvent | None = None,
+) -> PhotonSequenceResult:
+    """Extract sequences anchored to persistent, revisioned bounding boxes.
+
+    Args:
+        dataset: Owner of box definitions, acquisitions and sequences.
+        acquisition_id: Recording to measure.
+        channel: Logical measurement channel.
+        bounding_box_ids: Distinct active box IDs in the supplied pixel space.
+        source: Explicit working pixels for boxes in working space.
+        settings: Signal, background and optional PSF settings.
+        source_metadata: Provenance of externally prepared working pixels.
+        apply: Publish the completed run atomically.
+        num_cpus: Number of aperture measurement threads.
+        progress: Progress update callback.
+        cancel_event: Cooperative cancellation event.
+
+    Returns:
+        Sequences linked to their box IDs and revisions, with extraction provenance.
+    """
+    ids = tuple(bounding_box_ids)
+    if len(ids) != len(set(ids)):
+        raise ValueError("Bounding box IDs must be distinct")
+    expected = dataset.dependencies(
+        acquisition_id, channel,
+        components={"bounding_boxes", "localizations", "transforms"},
+    )
+    boxes = {identifier: dataset.bounding_boxes[identifier] for identifier in ids}
+    for box in boxes.values():
+        if box.acquisition_id is not None and (
+            box.acquisition_id != acquisition_id or box.channel != channel
+        ):
+            raise ValueError("Bounding box belongs to another acquisition/channel")
+        if box.space == "working" and source is None:
+            raise ValueError("Working boxes require an explicit working source")
+        if box.space == "raw" and source is not None:
+            raise ValueError("Raw boxes require the original channel pixels")
+    result = stationary_site_traces(
+        dataset, acquisition_id, channel,
+        {identifier: (box.x, box.y) for identifier, box in boxes.items()},
+        source=source, settings=settings, apply=False, num_cpus=num_cpus,
+        progress=progress, cancel_event=cancel_event,
+    )
+    acquisition = dataset.acquisitions[acquisition_id]
+    provenance = {
+        "version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "method": "fixed_aperture" if isinstance(settings, FixedApertureSettings) else "aperture",
+        "settings": asdict(settings),
+        "source_space": "working" if source is not None else "raw",
+        "acquisition_id": acquisition_id,
+        "channel": channel,
+        "frame_clock": "camera",
+        "source": deepcopy(acquisition.metadata),
+        "working_source": deepcopy(dict(source_metadata or {})),
+        "software": deepcopy(dataset.processing.software),
+        "measurement_threads": 1 if num_cpus is None else num_cpus,
+    }
+    try:
+        installed = distribution("molcore")
+        location = Path(installed.locate_file("molcore")).resolve()
+        direct_url = installed.read_text("direct_url.json")
+        if location == Path(__file__).resolve().parent and direct_url is not None:
+            provenance["software_source"] = json.loads(direct_url)
+    except PackageNotFoundError:
+        pass
+    if isinstance(settings, FixedApertureSettings) and settings.psf_box_size is not None:
+        provenance["psf_fit"] = {
+            "backend": "picasso.gaussmle", "model": "sigma", "tolerance": 0.0001,
+            "max_iterations": 500, "camera_conversion": False,
+        }
+    shared_masks = isinstance(settings, FixedApertureSettings) or settings.exclude_neighbours
+    dependencies = {identifier: box.revision for identifier, box in boxes.items()} if shared_masks else {}
+    sequences = []
+    for sequence in result.sequences:
+        box = boxes[sequence.molecule_id]
+        sequences.append(replace(
+            sequence,
+            bounding_box_id=box.id,
+            bounding_box_revision=box.revision,
+            metadata={
+                **sequence.metadata,
+                "bounding_box": asdict(box),
+                "bounding_box_dependencies": dependencies,
+                "extraction": provenance,
+            },
+        ))
+    result = replace(result, sequences=tuple(sequences), expected=expected)
     expected.validate(dataset)
     return apply_photometry(dataset, result) if apply else result
 

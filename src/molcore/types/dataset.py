@@ -18,6 +18,7 @@ from .._model_api import DatasetServices
 from ._shared import ImagePolicy, ProcessingMetadata, Segmentation
 from .acquisition import Acquisition, AcquisitionSequence
 from .cells import BactFitCell, SegmentationOutline
+from .boxes import BoundingBoxStore
 from .photons import PhotonSequenceStore
 from .tables import LocalizationTable, ObservationTable, TrackTable
 
@@ -45,6 +46,7 @@ class Dataset(DatasetServices):
         tracks: Editable localization-to-track memberships.
         observations: Channel measurements and their validity flags.
         photon_sequences: Independent frame-resolved photon/intensity sequences.
+        bounding_boxes: Revisioned stationary measurement regions and metadata.
         segmentations: Static segmentation datasets keyed by identifier.
         segmentation_outlines: Editable vector polygons keyed by identifier.
         bactfit_cells: Fitted bacterial cell geometry keyed by identifier.
@@ -94,6 +96,7 @@ class Dataset(DatasetServices):
         self.tracks = TrackTable(self)
         self.observations = ObservationTable(self)
         self.photon_sequences = PhotonSequenceStore(self)
+        self.bounding_boxes = BoundingBoxStore(self)
         self.processing = ProcessingMetadata(software={"molcore": "0.1.0"})
         for package in (
             "numpy",
@@ -169,6 +172,7 @@ class Dataset(DatasetServices):
             outlines = [
                 k for k, s in model.segmentation_outlines.items() if s.acquisition_id == id
             ]
+            boxes = [box.id for box in model.bounding_boxes.query() if box.acquisition_id == id]
             observations = model.observations
             rows = observations._data
             dependent = (
@@ -177,6 +181,7 @@ class Dataset(DatasetServices):
                 or sequences
                 or masks
                 or outlines
+                or boxes
                 or any(
                     s.acquisition_id == id
                     for s in model.photon_sequences.query(include_stale=True)
@@ -218,6 +223,8 @@ class Dataset(DatasetServices):
                 del model._segmentations[key]
             for key in outlines:
                 model.remove_segmentation_outline(key)
+            for key in boxes:
+                model.bounding_boxes.remove(key)
             model.transforms._selected = {
                 k: v for k, v in model.transforms._selected.items() if k[0] != id
             }

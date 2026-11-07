@@ -29,6 +29,7 @@ from .analysis import (
 )
 from .batches import ColumnSchema, LocalizationBatch
 from .cells import BactFitCell, SegmentationOutline
+from .boxes import BoundingBox, BoundingBoxStore
 from .contrast import ContrastMethod, ContrastResult, ContrastScope, ContrastSettings
 from .dataset import Dataset
 from .dataset_alignment import DatasetAlignmentResult, DatasetAlignmentSettings
@@ -75,6 +76,8 @@ from .storage import SaveOptions
 from .tables import LocalizationTable, ObservationTable, TrackTable
 
 __all__ = [
+    "BoundingBox",
+    "BoundingBoxStore",
     "ColumnSchema",
     "LocalizationBatch",
     "SaveOptions",

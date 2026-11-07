@@ -16,6 +16,7 @@ import numpy as np
 from ._logging import logged
 from .types._shared import Calibration, ChannelSpec, Crop, ImagePolicy, Segmentation
 from .types.cells import BactFitCell, SegmentationOutline
+from .types.boxes import BoundingBox
 from .types.images import (
     CachedSource,
     FitsSource,
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
     from .types import Dataset, Experiment, ImageSource
     from .types.scientific import CancelEvent, ProgressCallback
 
-FORMAT_VERSION = 5
+FORMAT_VERSION = 6
 
 _SOURCE_CODECS: dict[str, tuple[type, Any, Any]] = {}
 
@@ -354,6 +355,8 @@ def _write_photon_sequences(file: h5py.File, dataset: Dataset) -> None:
                 run_id=sequence.run_id,
                 localization_id=sequence.localization_id,
                 track_id=sequence.track_id,
+                bounding_box_id=sequence.bounding_box_id,
+                bounding_box_revision=sequence.bounding_box_revision,
                 metadata=sequence.metadata,
                 stale=dataset.photon_sequences.is_stale(sequence.id),
             )
@@ -619,6 +622,12 @@ def _write_dataset_group(
                 group.create_dataset(field, data=info.pop(field))
             group.attrs["info"] = _json(info)
     saved_crop_ids = _write_crops(file, dataset, options.crops, crop_width)
+    boxes = file.create_group("bounding_boxes")
+    boxes.attrs["revision"] = dataset.bounding_boxes.revision
+    for index, box in enumerate(dataset.bounding_boxes.query(include_deleted=True)):
+        group = boxes.create_group(str(index))
+        group.attrs["info"] = _json(asdict(box))
+        group.attrs["deleted"] = box.id in dataset.bounding_boxes._deleted
     _write_photon_sequences(file, dataset)
     saved_photon_keys = _write_photon_crops(
         file, dataset, options.crops, crop_width, cancel_event
@@ -771,6 +780,7 @@ def open_dataset(
             2,
             3,
             4,
+            5,
             FORMAT_VERSION,
         ):
             raise ValueError("Unsupported MolCore format/version")
@@ -861,6 +871,15 @@ def open_dataset(
                     index,
                     file["crops"].name,
                 )
+        if "bounding_boxes" in file:
+            for group in file["bounding_boxes"].values():
+                box = BoundingBox(**json.loads(group.attrs["info"]))
+                if box.acquisition_id is not None and not group.attrs.get("deleted", False):
+                    dataset.acquisitions[box.acquisition_id].channels[box.channel]
+                dataset.bounding_boxes._data[box.id] = box
+                if group.attrs.get("deleted", False):
+                    dataset.bounding_boxes._deleted.add(box.id)
+            dataset.bounding_boxes.revision = int(file["bounding_boxes"].attrs["revision"])
         if "photon_sequences" in file:
             for group in file["photon_sequences"].values():
                 info = json.loads(group.attrs["info"])
@@ -889,6 +908,14 @@ def open_dataset(
             dataset.photon_sequences.revision = int(
                 file["photon_sequences"].attrs["revision"]
             )
+            for sequence in dataset.photon_sequences.query():
+                if sequence.bounding_box_id is not None:
+                    try:
+                        box = dataset.bounding_boxes[sequence.bounding_box_id]
+                    except KeyError as error:
+                        raise ValueError("Active sequence refers to a missing bounding box") from error
+                    if box.revision != sequence.bounding_box_revision:
+                        raise ValueError("Active sequence refers to an outdated bounding box")
         if "photon_crops" in file:
             group = file["photon_crops"]
             width = int(group.attrs["width"])
@@ -1045,7 +1072,7 @@ def open_experiment(
         if (
             file.attrs.get("format") != "molcore"
             or file.attrs.get("kind") != "experiment"
-            or file.attrs.get("format_version") not in (4, FORMAT_VERSION)
+            or file.attrs.get("format_version") not in (4, 5, FORMAT_VERSION)
         ):
             raise ValueError(
                 "Expected a supported Experiment snapshot; use Dataset.open for datasets"
