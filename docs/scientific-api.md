@@ -123,6 +123,11 @@ scripts using spawned workers require an `if __name__ == '__main__'` guard.
 
 ## Tracking and trajectory statistics
 
+For explicitly concatenated recordings, use `molcore.tracking.track_sequence`
+with an acquisition sequence that allows cross-boundary tracking. The default
+channel clock counts logical frames across the sequence. Stored memberships
+keep their acquisition-local camera frames and localisation IDs.
+
 `tracking.track` uses Trackpy >=0.7,<0.8, loaded only when tracking is requested.
 `TrackingSettings` defines search range in selected-space pixels, missing-camera-frame
 memory, minimum measured length and `CoordinateSpace`. Empty camera frames,

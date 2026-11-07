@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import CancelledError
 from dataclasses import asdict, replace
 from importlib.metadata import version
 from typing import TYPE_CHECKING
@@ -19,7 +20,7 @@ from .backends import (
 from .cpu import CpuExecutor
 from .execution import ExecutionContext
 from .revisions import FreshnessToken
-from .staging import transact
+from .staging import dependency_token, transact
 from .types import (
     CancelEvent,
     Dataset,
@@ -290,3 +291,94 @@ def apply_tracking(
     return transact(
         dataset, commit, expected=result.expected if expected is None else expected
     )
+
+
+@logged
+def track_sequence(
+    dataset: Dataset,
+    sequence_id: str,
+    channel: str,
+    *,
+    settings: TrackingSettings = TrackingSettings(frame_clock="channel"),
+    apply: bool = True,
+    cpu: CpuExecutor | None = None,
+    num_cpus: int | None = None,
+    progress: ProgressCallback | None = None,
+    cancel_event: CancelEvent | None = None,
+) -> tuple[np.ndarray, ...]:
+    """Link one channel of an explicitly cross-boundary acquisition sequence.
+
+    The selected frame clock is used only by the linker. Stored memberships
+    keep the original localisations and camera frames. Applying replaces
+    tracks contained in the sequence/channel scope atomically.
+
+    Args:
+        dataset: Model providing acquisitions and localisation IDs.
+        sequence_id: Registered sequence with cross-boundary tracking enabled.
+        channel: Logical channel shared by the sequence acquisitions.
+        settings: Linker settings and the selected frame clock.
+        apply: Replace the tracks in this scope after successful linking.
+        cpu: Optional borrowed executor.
+        num_cpus: Worker count when creating an executor.
+        progress: Callback receiving progress updates.
+        cancel_event: Cooperative cancellation event.
+
+    Returns:
+        Ordered localisation IDs for each trajectory.
+    """
+    sequence = dataset.sequences[sequence_id]
+    if not sequence.allow_cross_boundary_tracks:
+        raise ValueError("The acquisition sequence must allow cross-boundary tracks")
+    expected = dependency_token(
+        dataset, [(acquisition.id, channel) for acquisition in sequence.acquisitions],
+        components={"localizations", "tracks", "transforms"},
+    )
+    parts = []
+    channel_offset = 0
+    for acquisition in sequence.acquisitions:
+        view = acquisition.channels[channel]
+        rows = dataset.localizations.query(
+            acquisition_id=acquisition.id, channel=channel, space=settings.space
+        )
+        frames = (
+            view.channel_indices(rows["frame"]) + channel_offset
+            if settings.frame_clock == "channel"
+            else rows["frame"] + sequence.offsets[acquisition.id]
+        )
+        parts.append({"id": rows["id"], "x": rows["x"], "y": rows["y"], "frame": frames})
+        channel_offset += len(view)
+    columns = {key: np.concatenate([part[key] for part in parts]) for key in parts[0]}
+    labels = np.ones(len(columns["id"]), dtype=np.int64)
+    with executor(cpu, num_cpus) as runner:
+        output = runner.map(
+            _job, [(columns, labels, settings)] if len(labels) else [],
+            progress=progress, cancel_event=cancel_event,
+        )
+    memberships = tuple(output[0]) if output else ()
+    expected.validate(dataset)
+    if not apply:
+        return memberships
+
+    def commit(model: Dataset) -> None:
+        """Replace the track memberships covered by this sequence result.
+
+        Args:
+            model: Detached transaction model.
+        """
+        if cancel_event is not None and cancel_event.is_set():
+            raise CancelledError("Sequence tracking cancelled")
+        tracks = model.tracks.query(space="raw", channel=channel)
+        in_scope = np.isin(tracks["id"], columns["id"])
+        replacing = np.unique(tracks["track_id"][in_scope])
+        if np.isin(tracks["track_id"][~in_scope], replacing).any():
+            raise ValueError("An existing track crosses the selected sequence scope")
+        for identifier in replacing:
+            model.tracks.delete(int(identifier))
+        for members in memberships:
+            model.tracks.add(
+                members, sequence_id=sequence_id,
+                metadata={"settings": asdict(settings), "backend": version("trackpy")},
+            )
+
+    transact(dataset, commit, expected=expected)
+    return memberships

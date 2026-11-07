@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Iterator
 from copy import deepcopy
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -58,6 +58,8 @@ class PhotonSequence:
         unit: Explicit physical photon or image-intensity units.
         method: Measurement method, such as imported, aperture or psf_fit.
         molecule_id: Optional identifier linking sequences across channels.
+        bounding_box_id: Optional stable ID of the defining stationary box.
+        bounding_box_revision: Revision of that box when the samples were extracted.
         localization_id: Optional stationary seed anchor.
         track_id: Optional moving trajectory anchor.
         depends_on_transforms: Whether later registration/drift edits invalidate these measurements.
@@ -87,9 +89,20 @@ class PhotonSequence:
     measurements: dict[str, NDArray] = field(default_factory=dict)
     localization_ids: NDArray[np.uint64] | None = None
     depends_on_localizations: bool = False
+    bounding_box_id: str | None = None
+    bounding_box_revision: int | None = None
 
     def __post_init__(self) -> None:
         """Validate samples and detach immutable numeric arrays from caller storage."""
+        if (self.bounding_box_id is None) != (self.bounding_box_revision is None):
+            raise ValueError("Supply a bounding box ID and revision together")
+        if self.bounding_box_id is not None and (
+            not isinstance(self.bounding_box_id, str) or not self.bounding_box_id
+            or isinstance(self.bounding_box_revision, bool)
+            or not isinstance(self.bounding_box_revision, int)
+            or self.bounding_box_revision < 1
+        ):
+            raise ValueError("Bounding box references require an ID and positive revision")
         if not isinstance(self.depends_on_transforms, bool):
             raise TypeError("depends_on_transforms must be a boolean")
         if not isinstance(self.depends_on_localizations, bool):
@@ -186,6 +199,8 @@ class PhotonSequence:
             "molecule_id",
             "localization_id",
             "track_id",
+            "bounding_box_id",
+            "bounding_box_revision",
         }
         measurements = {}
         for name, samples in self.measurements.items():
@@ -305,6 +320,15 @@ class PhotonSequenceStore:
             raise TypeError("Expected PhotonSequence")
         if sequence.id in self._data:
             raise ValueError("Photon-sequence ID already exists")
+        if sequence.bounding_box_id is not None:
+            box = self.dataset.bounding_boxes[sequence.bounding_box_id]
+            if box.revision != sequence.bounding_box_revision:
+                raise ValueError("Photon sequence refers to an outdated bounding box")
+            if box.acquisition_id is not None and (
+                box.acquisition_id != sequence.acquisition_id or box.channel != sequence.channel
+            ):
+                raise ValueError("Bounding box belongs to another acquisition/channel")
+            sequence = replace(sequence, metadata={**sequence.metadata, "bounding_box": asdict(box)})
         acquisition = self.dataset.acquisitions[sequence.acquisition_id]
         view = acquisition.channels[sequence.channel]
         if not np.isin(sequence.frames, view.source_frames).all():
@@ -409,6 +433,20 @@ class PhotonSequenceStore:
         }
         self.revision += 1
 
+    @model_mutated
+    def mark_stale(self, ids: Iterable[str]) -> None:
+        """Retain samples as history after external scientific inputs change.
+
+        Args:
+            ids: Known sequence IDs whose source pixels or application inputs changed.
+        """
+        selected = set(ids)
+        if not selected <= self._data.keys():
+            raise ValueError("Unknown photon-sequence ID")
+        if selected - self._stale:
+            self._stale.update(selected)
+            self.revision += 1
+
     def _invalidate(
         self,
         *,
@@ -437,6 +475,21 @@ class PhotonSequenceStore:
                 and value.acquisition_id == acquisition_id
                 and (channel is None or value.channel == channel)
             )
+        }
+        if changed - self._stale:
+            self._stale.update(changed)
+            self.revision += 1
+
+    def _invalidate_bounding_boxes(self, ids: set[str]) -> None:
+        """Invalidate anchors and requested boxes used by shared background masks.
+
+        Args:
+            ids: Definitions edited or deleted by the owning store.
+        """
+        changed = {
+            key for key, sequence in self._data.items()
+            if sequence.bounding_box_id in ids
+            or ids.intersection(sequence.metadata.get("bounding_box_dependencies", {}))
         }
         if changed - self._stale:
             self._stale.update(changed)

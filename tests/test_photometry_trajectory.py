@@ -3,6 +3,7 @@
 import threading
 import unittest
 from concurrent.futures import CancelledError
+from unittest.mock import patch
 
 import numpy as np
 
@@ -62,6 +63,37 @@ def fixture():
 
 
 class PhotometryTests(unittest.TestCase):
+    def test_default_photometry_matches_borrowed_executor_without_processes(self):
+        exp, ids = fixture()
+        exp.transforms.set_drift("a", np.column_stack([np.arange(5), np.zeros(5)]))
+        expected = stationary_traces(exp, ids, apply=False, cpu=InlineCpu())
+        updates = []
+
+        def progress(update):
+            self.assertIs(threading.current_thread(), threading.main_thread())
+            updates.append(update.percent)
+
+        with patch("molcore.photometry.executor", side_effect=AssertionError("process pool")):
+            actual = stationary_traces(
+                exp, ids, apply=False, num_cpus=2, progress=progress
+            )
+        columns = actual.columns
+        for name, values in expected.columns.items():
+            if name not in {"id", "sequence_id", "run_id"}:
+                np.testing.assert_array_equal(columns[name], values)
+        self.assertEqual(updates[-1], 100)
+        self.assertEqual(updates, sorted(updates))
+
+        stop = threading.Event()
+
+        def cancel(update):
+            if update.completed > 0:
+                stop.set()
+
+        with self.assertRaises(CancelledError):
+            stationary_traces(exp, ids, num_cpus=2, progress=cancel, cancel_event=stop)
+        self.assertEqual(len(exp.photon_sequences), 0)
+
     def test_exact_metrics_and_runs(self):
         exp, ids = fixture()
         result = measure_localizations(exp, ids, cpu=InlineCpu())

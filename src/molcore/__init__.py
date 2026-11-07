@@ -1,6 +1,7 @@
 """Shared, GUI-independent data foundation for single-molecule microscopy."""
 
 import logging
+from .types.boxes import BoundingBox, BoundingBoxStore
 
 from .backends import BackendRegistry, ProcessorBackend
 from .execution import ExecutionContext, Executor
@@ -10,6 +11,7 @@ from .types import (
     AcquisitionMode,
     AcquisitionSequence,
     AlignmentResult,
+    BactFitCell,
     Calibration,
     CameraSettings,
     CellposeSettings,
@@ -38,6 +40,7 @@ from .types import (
     ProgressUpdate,
     SaveOptions,
     Segmentation,
+    SegmentationOutline,
     SegmentationRequest,
     StaleResultError,
 )
@@ -123,6 +126,8 @@ __all__ = [
     "ImageUnavailableError",
     "ProcessingMetadata",
     "Segmentation",
+    "SegmentationOutline",
+    "BactFitCell",
     "StaleResultError",
 ]
 
@@ -153,6 +158,7 @@ __all__ += [
 __all__ += ["ContrastMethod", "ContrastResult", "ContrastScope", "ContrastSettings"]
 __all__ += ["PhotonSequence", "PhotonSequenceStore", "PhotonUnit"]
 __all__ += ["PhotonSequenceResult"]
+__all__ += ["BoundingBox", "BoundingBoxStore"]
 __all__ += [
     "AnalysisResult",
     "ClusteringResult",

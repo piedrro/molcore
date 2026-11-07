@@ -134,3 +134,63 @@ snapshots rather than silently lose data.
 
 The trace viewer defaults to **Trace data → Photon sequences** and reads the primary model
 directly. It does not insert photon samples into the observation or track tables.
+
+## Explicit stationary sites
+
+### Persistent bounding boxes
+
+Use the dataset's bounding-box store when measurement sites must be edited,
+saved or linked to sequence history.
+
+```python
+from molcore import BoundingBox
+from molcore.photometry import FixedApertureSettings, bounding_box_traces
+
+box = dataset.bounding_boxes.set(BoundingBox(
+    x=42.5, y=19.0, width=7, height=7,
+    acquisition_id="movie", channel="donor",
+    metadata={"origin": "manual", "label": "molecule A"},
+))
+result = bounding_box_traces(
+    dataset, "movie", "donor", [box.id],
+    settings=FixedApertureSettings(spot_size=3, buffer=1, background_width=2),
+)
+sequence = dataset.photon_sequences[result.sequence_ids[0]]
+print(sequence.bounding_box_id, sequence.bounding_box_revision)
+print(sequence.metadata["bounding_box"])
+print(sequence.metadata["extraction"])
+dataset.save("measurement.h5", image_policy="none")
+```
+
+Each sequence retains the box definition used for extraction, its revision,
+signal and background settings, source acquisition and channel, software
+versions and creation time. Optional PSF settings and working-source provenance
+are included. Box width and height describe the defining region. Signal and
+background apertures are independently chosen for each extraction run.
+
+Editing a definition with the same ID advances its revision and marks dependent
+sequences stale. Shared background masks also depend on the other requested
+boxes. Removing a box preserves its deletion history and the sequence's original
+definition. Query stale sequences explicitly with `include_stale=True`.
+
+Working-space boxes require an explicit working image source. Their coordinates
+are recorded in that space. The caller can provide `source_metadata` describing
+the pixel-processing history. MolSeeq stores shared selections in experiment
+metadata, synchronizes their IDs into each round's bounding-box store, and keeps
+working-image recipes in the round's processing metadata.
+
+Snapshot format 6 preserves boxes, deletion history and sequence references under
+every image policy. Formats 1–5 remain readable, with an empty box collection
+when definitions were absent. Earlier readers reject format 6.
+
+`molcore.photometry.stationary_site_traces()` takes a mapping of molecule IDs to
+`(x, y)` centres for one acquisition and logical channel. The centres stay fixed
+in the measured pixel space, and the results retain that channel's camera frames.
+Use the optional `source` for a working image with identical shape and frame
+ordering. Working-image coordinates are recorded separately from raw crop
+centres.
+
+`FixedApertureSettings` enables separate local-window and masked-ring summaries,
+optional whole-frame backgrounds, and optional Picasso Gaussian fit metrics.
+Aperture intensities and fitted amplitudes are stored separately. The fitted
+amplitudes use the supplied image units.

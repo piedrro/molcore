@@ -161,8 +161,8 @@ widths. Segmentation source images are saved independently of movie policy.
 
 Saves are single-writer snapshots replaced atomically after successful writing.
 The versioned format uses JSON metadata and typed HDF5 datasets, never pickle.
-MolCore writes format version 4. Standalone datasets can still read format versions 1–3;
-experiment snapshots store multiple datasets and their alignment records together.
+MolCore writes format version 5. Standalone datasets can still read format versions 1–4,
+and experiment snapshots can still read version 4.
 Processing settings and package-version manifests round-trip with the dataset.
 
 ## CPU processing

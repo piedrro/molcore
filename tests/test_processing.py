@@ -3,6 +3,7 @@ import tempfile
 import threading
 import unittest
 from concurrent.futures import CancelledError
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -55,6 +56,98 @@ class ProcessingCase(unittest.TestCase):
     importlib.util.find_spec("picasso"), "Picasso processing extra not installed"
 )
 class LocalisationTests(ProcessingCase):
+    def test_default_detection_and_fitting_share_pixels_without_process_jobs(self):
+        from picasso.localize import identify_in_frame
+
+        exp = spot_dataset(alex=True)
+        view = exp.acquisitions["a"].channels["DD"]
+        settings = LocalisationSettings(min_net_gradient=10, chunk_size=1)
+        updates = []
+        with patch.object(localisation, "executor", side_effect=AssertionError("process pool")):
+            detected = localisation.detect(
+                exp, "a", "DD", settings=settings, frame_range=(1, 5), num_cpus=2
+            )
+            fitted = localisation.localise(
+                exp,
+                "a",
+                "DD",
+                settings=settings,
+                frame_range=(1, 5),
+                camera=CameraSettings(0, 1, 1),
+                num_cpus=2,
+                apply=False,
+                progress=updates.append,
+            )
+        y, x, gradient = identify_in_frame(view[1], 10, settings.box_size)
+        self.assertEqual(detected.columns["frame"].tolist(), [2, 4])
+        for name, expected in (("x", x), ("y", y), ("net_gradient", gradient)):
+            np.testing.assert_array_equal(detected.columns[name], np.tile(expected, 2))
+        self.assertEqual(fitted.columns["frame"].tolist(), [2, 4])
+        self.assertEqual(updates[-1].percent, 100)
+        self.assertEqual([u.percent for u in updates], sorted(u.percent for u in updates))
+
+        stop = threading.Event()
+
+        def cancel_detection(update):
+            self.assertEqual(threading.current_thread(), threading.main_thread())
+            if update.description == "Detecting localisations":
+                stop.set()
+
+        with self.assertRaises(CancelledError):
+            localisation.localise(
+                exp, "a", "DD", settings=settings, camera=CameraSettings(0, 1, 1),
+                progress=cancel_detection, cancel_event=stop,
+            )
+        self.assertEqual(len(exp.localizations), 0)
+
+    def test_default_fit_batches_spots_and_preserves_camera_frames_and_ids(self):
+        from picasso.fitting import gaussfit
+
+        exp = spot_dataset(alex=True)
+        detections = localisation.detect(
+            exp,
+            "a",
+            "DD",
+            settings=LocalisationSettings(min_net_gradient=10),
+            cpu=self.cpu,
+        )
+        columns = {name: values[::-1] for name, values in detections.columns.items()}
+        columns["n_id"] = np.array([42, 8, 20], dtype=np.uint32)
+        detections = replace(detections, columns=columns)
+        camera = CameraSettings(0, 1, 1)
+        expected = localisation.fit(exp, detections, camera=camera, cpu=self.cpu, apply=False)
+        updates = []
+        with patch.object(gaussfit, "fit_spots_async", wraps=gaussfit.fit_spots_async) as fitter:
+            actual = localisation.fit(
+                exp, detections, camera=camera, num_cpus=2, apply=False, progress=updates.append
+            )
+        self.assertEqual(fitter.call_count, 1)
+        self.assertEqual(len(fitter.call_args.args[1]), 3)
+        self.assertEqual(actual.columns["frame"].tolist(), [0, 2, 4])
+        self.assertEqual(actual.columns["n_id"].tolist(), [20, 8, 42])
+        self.assertEqual(actual.columns.keys(), expected.columns.keys())
+        for name, values in expected.columns.items():
+            np.testing.assert_array_equal(actual.columns[name], values)
+        self.assertEqual(updates[-1].percent, 100)
+        self.assertEqual([u.percent for u in updates], sorted(u.percent for u in updates))
+
+        with patch.object(localisation, "_FIT_SPOT_BYTES", 2 * 7**2 * 4):
+            split = localisation.fit(exp, detections, camera=camera, num_cpus=2, apply=False)
+        for name, values in actual.columns.items():
+            np.testing.assert_array_equal(split.columns[name], values)
+
+        stop = threading.Event()
+
+        def cancel_on_fit(update):
+            if update.description == "Fitting localisations":
+                stop.set()
+
+        with self.assertRaises(CancelledError):
+            localisation.fit(
+                exp, detections, camera=camera, progress=cancel_on_fit, cancel_event=stop
+            )
+        self.assertEqual(len(exp.localizations), 0)
+
     def test_nonconverged_fits_do_not_clear_active_partition(self):
         exp = spot_dataset()
         ids = exp.localizations.add(
@@ -69,7 +162,7 @@ class LocalisationTests(ProcessingCase):
                 settings=LocalisationSettings(
                     min_net_gradient=10, max_iterations=1, chunk_size=5
                 ),
-                cpu=self.cpu,
+                num_cpus=1,
             )
         self.assertEqual(exp.localizations.query()["id"].tolist(), ids.tolist())
 
@@ -89,7 +182,7 @@ class LocalisationTests(ProcessingCase):
                 settings=LocalisationSettings(
                     min_net_gradient=10, fit_method=method, chunk_size=2
                 ),
-                cpu=self.cpu,
+                num_cpus=2,
             )
             np.testing.assert_allclose(fitted.columns["x"], 11.3, atol=0.12)
             np.testing.assert_allclose(fitted.columns["y"], 10.7, atol=0.12)

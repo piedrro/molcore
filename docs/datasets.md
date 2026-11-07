@@ -86,8 +86,8 @@ remain unchanged. Common-view images use the reference channel's canvas, with
 zeros outside the source footprint.
 
 `Dataset.save/open` work independently. `Experiment.save/open` include every
-round and its alignment records. Format version 4 supports nested lazy movie and
-crop sources; full-image snapshots always store original camera pixels.
+round and its alignment records. Snapshots support nested lazy movie and crop
+sources. Full-image snapshots always store original camera pixels.
 
 Use an explicit export to bake transformations:
 
@@ -109,3 +109,17 @@ the output file set.
 Dataset alignment panel provides fiducial preview, optional image overlays,
 Apply and Reset. Files can save/open entire experiments, append datasets, or
 import recording fragments into the selected dataset explicitly.
+
+## Segmentation outlines and fitted cells
+
+`Dataset.segmentations` stores integer label masks. For editable subpixel
+polygons, use `add_segmentation_outline(SegmentationOutline(...))` and read
+`Dataset.segmentation_outlines`. Vertices use `(x, y)` order. An outline can
+apply across frames or specify one frame. If bound to an acquisition and
+channel, the frame is an original camera-frame index.
+
+`add_bactfit_cell(BactFitCell(...))` stores a fitted polygon, midline, two poles,
+polynomial coefficients and radius, with an optional fit error. A fit can be
+standalone or reference a source outline by ID. Replacing or removing a source
+outline clears its linked fits. Both collections are saved in format version 5
+independently of the snapshot's image policy.

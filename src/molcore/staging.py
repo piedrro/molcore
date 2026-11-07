@@ -95,6 +95,9 @@ def state_token(dataset: Dataset) -> StateToken:
         ),
         dataset.photon_sequences.revision,
         dataset._lineage,
+        tuple(dataset.segmentation_outlines.values()),
+        tuple(dataset.bactfit_cells.values()),
+        dataset.bounding_boxes.revision,
     )
 
 
@@ -122,8 +125,11 @@ def dependency_token(
         "tracks",
         "observations",
         "photon_sequences",
+        "bounding_boxes",
         "transforms",
         "segmentations",
+        "segmentation_outlines",
+        "bactfit_cells",
         "acquisitions",
         "calibrations",
         "sequences",
@@ -227,6 +233,7 @@ def clone_dataset(dataset: Dataset) -> Dataset:
         "tracks",
         "observations",
         "photon_sequences",
+        "bounding_boxes",
         "transforms",
         "crops",
         "processing",
@@ -234,6 +241,8 @@ def clone_dataset(dataset: Dataset) -> Dataset:
         setattr(result, name, deepcopy(getattr(dataset, name), memo))
     result.calibrations = result.transforms.calibrations
     result._segmentations.update(deepcopy(dict(dataset.segmentations), memo))
+    result._segmentation_outlines.update(dataset.segmentation_outlines)
+    result._bactfit_cells.update(dataset.bactfit_cells)
     result._lineage = dataset._lineage
     result.revision = dataset.revision
     result._metadata_revision = dataset._metadata_revision
@@ -345,6 +354,9 @@ def adopt_dataset(dataset: Dataset, staged: Dataset) -> ChangeSet | None:
         ("metadata", "metadata"),
         ("processing", "processing"),
         ("segmentations", "segmentations"),
+        ("segmentation_outlines", "segmentation_outlines"),
+        ("bactfit_cells", "bactfit_cells"),
+        ("bounding_boxes", "bounding_boxes"),
         ("calibrations", "calibrations"),
         ("acquisitions", "acquisitions"),
         ("sequences", "sequences"),
@@ -370,6 +382,7 @@ def adopt_dataset(dataset: Dataset, staged: Dataset) -> ChangeSet | None:
         "tracks",
         "observations",
         "photon_sequences",
+        "bounding_boxes",
         "transforms",
         "crops",
     ):
@@ -382,7 +395,13 @@ def adopt_dataset(dataset: Dataset, staged: Dataset) -> ChangeSet | None:
             values["_calibrations"] = target._calibrations
         vars(target).clear()
         vars(target).update(values)
-    for name in ("_acquisitions", "_sequences", "_segmentations"):
+    for name in (
+        "_acquisitions",
+        "_sequences",
+        "_segmentations",
+        "_segmentation_outlines",
+        "_bactfit_cells",
+    ):
         target = getattr(dataset, name)
         target.clear()
         target.update(getattr(staged, name))

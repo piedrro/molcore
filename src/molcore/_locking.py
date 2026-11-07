@@ -69,6 +69,7 @@ def model_mutated[**P, R](function: Callable[P, R]) -> Callable[P, R]:
                     "tracks",
                     "observations",
                     "photon_sequences",
+                    "bounding_boxes",
                     "transforms",
                 )
             ):

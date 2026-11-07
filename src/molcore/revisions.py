@@ -35,6 +35,9 @@ class StateToken:
     sequences: tuple
     photon_sequences: int
     lineage: str
+    segmentation_outlines: tuple = ()
+    bactfit_cells: tuple = ()
+    bounding_boxes: int = 0
 
     @property
     def scientific_inputs(self) -> tuple:
@@ -48,6 +51,9 @@ class StateToken:
             self.sources,
             self.calibrations,
             self.segmentations,
+            self.segmentation_outlines,
+            self.bactfit_cells,
+            self.bounding_boxes,
             self.metadata,
             self.acquisitions,
             self.sequences,
