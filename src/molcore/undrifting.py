@@ -8,8 +8,11 @@ import numpy as np
 
 from ._logging import logged
 from ._processing import backend_version, check_snapshot, executor, snapshot
+from .execution import ExecutionContext, _record_execution
+from .snapshots import DatasetSnapshot, processor_model
 from .types.dataset import Dataset
 from .types.processing import DriftResult, DriftSettings
+from .types.selections import PartitionSelection
 from .types.tables import identifiers
 
 if TYPE_CHECKING:
@@ -17,19 +20,19 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike
 
-    from .cpu import CpuExecutor, WorkerProgress
+    from .cpu import CpuExecutor, ProgressReporter
     from .types import CancelEvent, ProgressCallback
 
 
 class _AimProgress:
-    def __init__(self, reporter: WorkerProgress, segments: Any) -> None:
+    def __init__(self, reporter: ProgressReporter, segments: Any) -> None:
         """Initialise the object and validate its configuration.
 
         Args:
             reporter: Worker progress and cooperative cancellation reporter.
             segments: Segments used by this operation.
         """
-        self.reporter, self.segments, self.phase = reporter, max(1, segments), 0
+        self.reporter, self.segments, self.phase = (reporter, max(1, segments), 0)
         self.description = "AIM drift estimation (1/2)"
 
     @logged
@@ -41,14 +44,10 @@ class _AimProgress:
             *args: Additional positional values supplied by the caller.
             **kwargs: Additional named options for this operation.
         """
-        self.reporter.report(
-            (self.phase + min(1.0, value / self.segments)) / 2, 1, self.description
-        )
+        self.reporter.report((self.phase + min(1.0, value / self.segments)) / 2, 1, self.description)
 
     @logged
-    def zero_progress(
-        self, description: str | None = None, *args: Any, **kwargs: Any
-    ) -> None:
+    def zero_progress(self, description: str | None = None, *args: Any, **kwargs: Any) -> None:
         """Zero progress.
 
         Args:
@@ -107,7 +106,7 @@ class _AimProgress:
 
 
 @logged
-def _job(payload: tuple, reporter: WorkerProgress) -> Any:
+def _job(payload: tuple, reporter: ProgressReporter) -> Any:
     """Job.
 
     Args:
@@ -131,9 +130,6 @@ def _job(payload: tuple, reporter: WorkerProgress) -> Any:
     if settings.method == "rcc":
         from picasso.postprocess import undrift
 
-        # Picasso's RCC renderer requires precision columns even though it
-        # clamps its Gaussian rendering kernel to one reference pixel.
-        # These are rendering widths, never added to the dataset's table.
         locs["lpx"] = np.ones(len(locs))
         locs["lpy"] = np.ones(len(locs))
 
@@ -181,11 +177,7 @@ def _job(payload: tuple, reporter: WorkerProgress) -> Any:
 
 
 def _prepare(
-    dataset: Dataset,
-    acquisition_id: str,
-    channel: str,
-    settings: DriftSettings,
-    ids: ArrayLike | None = None,
+    dataset: Dataset, acquisition_id: str, channel: str, settings: DriftSettings, ids: ArrayLike | None = None
 ) -> tuple:
     """Prepare.
 
@@ -205,9 +197,7 @@ def _prepare(
         acquisition_id=acquisition_id, channel=channel, space="registered"
     ).to_columns()
     if len(rows["frame"]) == 0:
-        raise ValueError(
-            "Drift estimation requires localizations in the selected channel"
-        )
+        raise ValueError("Drift estimation requires localizations in the selected channel")
     if ids is not None:
         selected = identifiers(ids)
         if len(np.unique(selected)) != len(selected):
@@ -219,32 +209,26 @@ def _prepare(
         if not len(rows["id"]):
             raise ValueError("Drift estimation requires selected localizations")
     logical_frames = np.searchsorted(view.source_frames, rows["frame"])
-    start, last = int(logical_frames.min()), int(logical_frames.max())
+    start, last = (int(logical_frames.min()), int(logical_frames.max()))
     n_frames = last - start + 1
-    # Both algorithms use cubic temporal interpolation internally.
     segments = int(
         np.round(n_frames / settings.segment_frames)
         if settings.method == "rcc"
         else np.ceil(n_frames / settings.segment_frames)
     )
     if segments < 4:
-        raise ValueError(
-            "Drift estimation requires at least four populated temporal segments"
-        )
+        raise ValueError("Drift estimation requires at least four populated temporal segments")
     groups = (logical_frames - start) // settings.segment_frames
     if len(np.unique(groups)) < 4:
-        raise ValueError(
-            "Drift estimation requires localizations in at least four segments"
-        )
+        raise ValueError("Drift estimation requires localizations in at least four segments")
     if settings.method == "rcc":
         bounds = np.linspace(0, n_frames - 1, segments + 1, dtype=np.uint32)
         times = logical_frames - start
         if any(
-            not np.any((times >= lo) & (times < hi))
-            for lo, hi in zip(bounds[:-1], bounds[1:], strict=True)
+            (not np.any((times >= lo) & (times < hi)) for lo, hi in zip(bounds[:-1], bounds[1:], strict=True))
         ):
             raise ValueError("Each RCC rendering segment must contain localizations")
-    x, y = rows["x"].copy(), rows["y"].copy()
+    x, y = (rows["x"].copy(), rows["y"].copy())
     x -= min(0.0, float(x.min()))
     y -= min(0.0, float(y.min()))
     columns = {"frame": (logical_frames - start).astype(np.uint32), "x": x, "y": y}
@@ -256,11 +240,7 @@ def _prepare(
             "Pixelsize": acquisition.pixel_size or 1.0,
         }
     ]
-    return (
-        expected,
-        (columns, info, settings),
-        view.source_frames[start : last + 1].copy(),
-    )
+    return (expected, (columns, info, settings), view.source_frames[start : last + 1].copy())
 
 
 def _many(
@@ -268,7 +248,6 @@ def _many(
     selections: Mapping[str, str],
     *,
     settings: DriftSettings,
-    apply: bool,
     num_cpus: int | None,
     cpu: CpuExecutor | None,
     progress: ProgressCallback | None,
@@ -293,35 +272,21 @@ def _many(
     installed = backend_version()
     prepared = {
         acquisition_id: _prepare(
-            dataset,
-            acquisition_id,
-            channel,
-            settings,
-            None if ids is None else ids.get(acquisition_id),
+            dataset, acquisition_id, channel, settings, None if ids is None else ids.get(acquisition_id)
         )
         for acquisition_id, channel in selections.items()
     }
     with executor(cpu, num_cpus) as runner:
         values = runner.map(
-            _job,
-            [value[1] for value in prepared.values()],
-            progress=progress,
-            cancel_event=cancel_event,
+            _job, [value[1] for value in prepared.values()], progress=progress, cancel_event=cancel_event
         )
     for acquisition_id, (expected, _, _) in prepared.items():
         check_snapshot(dataset, acquisition_id, expected)
     results = {}
-    for (acquisition_id, (_, _, sampled_frames)), displacement in zip(
-        prepared.items(), values, strict=True
-    ):
-        frames = np.arange(
-            int(sampled_frames[0]), int(sampled_frames[-1]) + 1, dtype=np.int64
-        )
+    for (acquisition_id, (_, _, sampled_frames)), displacement in zip(prepared.items(), values, strict=True):
+        frames = np.arange(int(sampled_frames[0]), int(sampled_frames[-1]) + 1, dtype=np.int64)
         interpolated = np.column_stack(
-            [
-                np.interp(frames, sampled_frames, displacement[:, axis])
-                for axis in (0, 1)
-            ]
+            [np.interp(frames, sampled_frames, displacement[:, axis]) for axis in (0, 1)]
         )
         results[acquisition_id] = DriftResult(
             acquisition_id,
@@ -332,10 +297,6 @@ def _many(
             expected=prepared[acquisition_id][0],
             backend_version=installed,
         )
-    if apply:
-        from .processing import apply_drift
-
-        return apply_drift(dataset, results)
     return results
 
 
@@ -362,42 +323,45 @@ def _run(dataset: Dataset, acquisition_id: str, channel: str, **kwargs: Any) -> 
 
 
 @logged
+@_record_execution
 def estimate_drift(
-    dataset: Dataset,
-    acquisition_id: str,
-    channel: str,
+    dataset: DatasetSnapshot,
+    selection: PartitionSelection,
     *,
     ids: ArrayLike | None = None,
     settings: DriftSettings | None = None,
-    num_cpus: int | None = None,
-    cpu: CpuExecutor | None = None,
-    progress: ProgressCallback | None = None,
-    cancel_event: CancelEvent | None = None,
+    context: ExecutionContext | None = None,
 ) -> DriftResult:
     """Estimate drift from a MolCore localization partition without applying it.
 
     Args:
+        selection: Explicit acquisition/channel or sequence/channel selection.
+        context: Execution policy, frame chunk size, progress and cancellation.
         dataset: Dataset supplying registered localization positions.
-        acquisition_id: Acquisition identifier.
-        channel: Logical reference channel.
         ids: Stable localization IDs within the partition; None selects all.
             Duplicate, unknown, out-of-partition and empty selections are rejected.
         settings: RCC/AIM settings; defaults to RCC with 1000-frame segments.
-        num_cpus: Positive CPU process count or None for the CPU default.
-        cpu: Optional reusable CpuExecutor.
-        progress: Parent-process ProgressUpdate callback, including estimator stages.
-        cancel_event: Optional caller event supporting is_set().
-
     Returns:
         Reference-pixel displacements at actual camera frames within measured coverage.
     """
+    if not isinstance(selection, PartitionSelection):
+        raise TypeError("Use PartitionSelection")
+    acquisition_id, channel = (selection.acquisition_id, selection.channel)
+    dataset = processor_model(dataset)
+    context = context or ExecutionContext()
+    context.check_cancelled()
+    cpu, num_cpus, progress, cancel_event = (
+        context.cpu,
+        context.num_cpus,
+        context.progress,
+        context.cancel_event,
+    )
     return _run(
         dataset,
         acquisition_id,
         channel,
         settings=settings or DriftSettings(),
         ids=ids,
-        apply=False,
         num_cpus=num_cpus,
         cpu=cpu,
         progress=progress,
@@ -406,32 +370,24 @@ def estimate_drift(
 
 
 @logged
+@_record_execution
 def undrift(
-    dataset: Dataset,
-    acquisition_id: str,
-    channel: str,
+    dataset: DatasetSnapshot,
+    selection: PartitionSelection,
     *,
     ids: ArrayLike | None = None,
     settings: DriftSettings | None = None,
-    num_cpus: int | None = None,
-    cpu: CpuExecutor | None = None,
-    progress: ProgressCallback | None = None,
-    cancel_event: CancelEvent | None = None,
+    context: ExecutionContext | None = None,
 ) -> DriftResult:
     """Estimate and select drift without modifying original images or coordinates.
 
     Args:
+        selection: Explicit acquisition/channel or sequence/channel selection.
+        context: Execution policy, frame chunk size, progress and cancellation.
         dataset: Dataset whose TransformManager receives the estimated drift.
-        acquisition_id: Acquisition identifier.
-        channel: Logical reference channel supplying localization measurements.
         ids: Stable IDs used for estimation only; None selects all localizations.
             Drift application still covers the acquisition, including other origins.
         settings: RCC/AIM settings in logical-channel frames and reference pixels.
-        num_cpus: Positive CPU process count; default leaves one CPU available.
-        cpu: Optional reusable CpuExecutor.
-        progress: Parent-process ProgressUpdate callback.
-        cancel_event: Optional caller cancellation event.
-
     Returns:
         DriftResult marked applied after a successful parent-process update.
 
@@ -439,13 +395,24 @@ def undrift(
         StaleResultError: Localization, registration or image inputs changed.
         ValueError: Too few populated segments or invalid estimated displacement.
     """
+    if not isinstance(selection, PartitionSelection):
+        raise TypeError("Use PartitionSelection")
+    acquisition_id, channel = (selection.acquisition_id, selection.channel)
+    dataset = processor_model(dataset)
+    context = context or ExecutionContext()
+    context.check_cancelled()
+    cpu, num_cpus, progress, cancel_event = (
+        context.cpu,
+        context.num_cpus,
+        context.progress,
+        context.cancel_event,
+    )
     return _run(
         dataset,
         acquisition_id,
         channel,
         settings=settings or DriftSettings(),
         ids=ids,
-        apply=True,
         num_cpus=num_cpus,
         cpu=cpu,
         progress=progress,
@@ -454,38 +421,38 @@ def undrift(
 
 
 @logged
+@_record_execution
 def undrift_many(
-    dataset: Dataset,
+    dataset: DatasetSnapshot,
     selections: dict[str, str],
     *,
     settings: DriftSettings | None = None,
-    apply: bool = True,
-    num_cpus: int | None = None,
-    cpu: CpuExecutor | None = None,
-    progress: ProgressCallback | None = None,
-    cancel_event: CancelEvent | None = None,
+    context: ExecutionContext | None = None,
 ) -> dict[str, DriftResult]:
     """Estimate independent acquisition drifts concurrently through shared CPU tools.
 
     Args:
+        context: Execution policy, frame chunk size, progress and cancellation.
         dataset: Dataset supplying all localization partitions.
         selections: Mapping of acquisition IDs to their reference channel names.
         settings: Shared RCC/AIM estimator parameters.
-        apply: Apply results only after every job and stale-input check succeeds.
-        num_cpus: Number of independent acquisition jobs that can execute together.
-        cpu: Optional reusable CpuExecutor.
-        progress: Parent-process aggregated ProgressUpdate callback.
-        cancel_event: Optional caller cancellation event.
-
     Returns:
         Drift results keyed by acquisition ID. A single estimator's temporal
         dependency remains sequential within its worker.
     """
+    dataset = processor_model(dataset)
+    context = context or ExecutionContext()
+    context.check_cancelled()
+    cpu, num_cpus, progress, cancel_event = (
+        context.cpu,
+        context.num_cpus,
+        context.progress,
+        context.cancel_event,
+    )
     return _many(
         dataset,
         selections,
         settings=settings or DriftSettings(),
-        apply=apply,
         num_cpus=num_cpus,
         cpu=cpu,
         progress=progress,

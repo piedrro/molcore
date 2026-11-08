@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+from scientific_helpers import compute_scenario
 
 from molcore import (
     Acquisition,
@@ -26,9 +27,7 @@ from molcore.types.processing import CameraSettings, DriftSettings, Localisation
 
 def spot_dataset(alex=False):
     y, x = np.indices((24, 24))
-    image = 20 + 3000 / (2 * np.pi * 1.2**2) * np.exp(
-        -((x - 11.3) ** 2 + (y - 10.7) ** 2) / (2 * 1.2**2)
-    )
+    image = 20 + 3000 / (2 * np.pi * 1.2**2) * np.exp(-((x - 11.3) ** 2 + (y - 10.7) ** 2) / (2 * 1.2**2))
     exp = Dataset()
     exp.add_acquisition(
         Acquisition(
@@ -52,22 +51,21 @@ class ProcessingCase(unittest.TestCase):
         cls.cpu.close()
 
 
-@unittest.skipUnless(
-    importlib.util.find_spec("picasso"), "Picasso processing extra not installed"
-)
+@unittest.skipUnless(importlib.util.find_spec("picasso"), "Picasso processing extra not installed")
 class LocalisationTests(ProcessingCase):
     def test_default_detection_and_fitting_share_pixels_without_process_jobs(self):
         from picasso.localize import identify_in_frame
 
         exp = spot_dataset(alex=True)
         view = exp.acquisitions["a"].channels["DD"]
-        settings = LocalisationSettings(min_net_gradient=10, chunk_size=1)
+        settings = LocalisationSettings(min_net_gradient=10)
         updates = []
         with patch.object(localisation, "executor", side_effect=AssertionError("process pool")):
-            detected = localisation.detect(
-                exp, "a", "DD", settings=settings, frame_range=(1, 5), num_cpus=2
+            detected = compute_scenario(
+                localisation.detect, exp, "a", "DD", settings=settings, frame_range=(1, 5), num_cpus=2
             )
-            fitted = localisation.localise(
+            fitted = compute_scenario(
+                localisation.localise,
                 exp,
                 "a",
                 "DD",
@@ -85,7 +83,6 @@ class LocalisationTests(ProcessingCase):
         self.assertEqual(fitted.columns["frame"].tolist(), [2, 4])
         self.assertEqual(updates[-1].percent, 100)
         self.assertEqual([u.percent for u in updates], sorted(u.percent for u in updates))
-
         stop = threading.Event()
 
         def cancel_detection(update):
@@ -94,9 +91,15 @@ class LocalisationTests(ProcessingCase):
                 stop.set()
 
         with self.assertRaises(CancelledError):
-            localisation.localise(
-                exp, "a", "DD", settings=settings, camera=CameraSettings(0, 1, 1),
-                progress=cancel_detection, cancel_event=stop,
+            compute_scenario(
+                localisation.localise,
+                exp,
+                "a",
+                "DD",
+                settings=settings,
+                camera=CameraSettings(0, 1, 1),
+                progress=cancel_detection,
+                cancel_event=stop,
             )
         self.assertEqual(len(exp.localizations), 0)
 
@@ -104,7 +107,8 @@ class LocalisationTests(ProcessingCase):
         from picasso.fitting import gaussfit
 
         exp = spot_dataset(alex=True)
-        detections = localisation.detect(
+        detections = compute_scenario(
+            localisation.detect,
             exp,
             "a",
             "DD",
@@ -115,11 +119,19 @@ class LocalisationTests(ProcessingCase):
         columns["n_id"] = np.array([42, 8, 20], dtype=np.uint32)
         detections = replace(detections, columns=columns)
         camera = CameraSettings(0, 1, 1)
-        expected = localisation.fit(exp, detections, camera=camera, cpu=self.cpu, apply=False)
+        expected = compute_scenario(
+            localisation.fit, exp, detections, camera=camera, cpu=self.cpu, apply=False
+        )
         updates = []
         with patch.object(gaussfit, "fit_spots_async", wraps=gaussfit.fit_spots_async) as fitter:
-            actual = localisation.fit(
-                exp, detections, camera=camera, num_cpus=2, apply=False, progress=updates.append
+            actual = compute_scenario(
+                localisation.fit,
+                exp,
+                detections,
+                camera=camera,
+                num_cpus=2,
+                apply=False,
+                progress=updates.append,
             )
         self.assertEqual(fitter.call_count, 1)
         self.assertEqual(len(fitter.call_args.args[1]), 3)
@@ -130,12 +142,12 @@ class LocalisationTests(ProcessingCase):
             np.testing.assert_array_equal(actual.columns[name], values)
         self.assertEqual(updates[-1].percent, 100)
         self.assertEqual([u.percent for u in updates], sorted(u.percent for u in updates))
-
         with patch.object(localisation, "_FIT_SPOT_BYTES", 2 * 7**2 * 4):
-            split = localisation.fit(exp, detections, camera=camera, num_cpus=2, apply=False)
+            split = compute_scenario(
+                localisation.fit, exp, detections, camera=camera, num_cpus=2, apply=False
+            )
         for name, values in actual.columns.items():
             np.testing.assert_array_equal(split.columns[name], values)
-
         stop = threading.Event()
 
         def cancel_on_fit(update):
@@ -143,45 +155,39 @@ class LocalisationTests(ProcessingCase):
                 stop.set()
 
         with self.assertRaises(CancelledError):
-            localisation.fit(
-                exp, detections, camera=camera, progress=cancel_on_fit, cancel_event=stop
+            compute_scenario(
+                localisation.fit, exp, detections, camera=camera, progress=cancel_on_fit, cancel_event=stop
             )
         self.assertEqual(len(exp.localizations), 0)
 
     def test_nonconverged_fits_do_not_clear_active_partition(self):
         exp = spot_dataset()
-        ids = exp.localizations.add(
-            acquisition_id="a", channel="image", frame=0, x=1, y=1
-        )
+        ids = exp.localizations.add(acquisition_id="a", channel="image", frame=0, x=1, y=1)
         with self.assertRaisesRegex(ValueError, "converge"):
-            localisation.localise(
+            compute_scenario(
+                localisation.localise,
                 exp,
                 "a",
                 "image",
                 camera=CameraSettings(0, 1, 1),
-                settings=LocalisationSettings(
-                    min_net_gradient=10, max_iterations=1, chunk_size=5
-                ),
+                settings=LocalisationSettings(min_net_gradient=10, max_iterations=1),
                 num_cpus=1,
             )
         self.assertEqual(exp.localizations.query()["id"].tolist(), ids.tolist())
 
     def test_detection_and_both_fits_keep_alex_camera_frames(self):
         exp = spot_dataset(alex=True)
-        settings = LocalisationSettings(min_net_gradient=10, box_size=7, chunk_size=2)
-        detections = localisation.detect(
-            exp, "a", "DD", settings=settings, cpu=self.cpu
-        )
+        settings = LocalisationSettings(min_net_gradient=10, box_size=7)
+        detections = compute_scenario(localisation.detect, exp, "a", "DD", settings=settings, cpu=self.cpu)
         self.assertEqual(detections.columns["frame"].tolist(), [0, 2, 4])
         self.assertEqual(len(exp.localizations), 0)
         for method in ("lq", "mle"):
-            fitted = localisation.fit(
+            fitted = compute_scenario(
+                localisation.fit,
                 exp,
                 detections,
                 camera=CameraSettings(0, 1, 1),
-                settings=LocalisationSettings(
-                    min_net_gradient=10, fit_method=method, chunk_size=2
-                ),
+                settings=LocalisationSettings(min_net_gradient=10, fit_method=method),
                 num_cpus=2,
             )
             np.testing.assert_allclose(fitted.columns["x"], 11.3, atol=0.12)
@@ -201,11 +207,10 @@ class LocalisationTests(ProcessingCase):
 
     def test_empty_fit_can_replace_partition_and_preview_does_not_mutate(self):
         exp = spot_dataset()
-        ids = exp.localizations.add(
-            acquisition_id="a", channel="image", frame=0, x=1, y=1
-        )
-        settings = LocalisationSettings(min_net_gradient=1e12, chunk_size=5)
-        preview = localisation.localise(
+        ids = exp.localizations.add(acquisition_id="a", channel="image", frame=0, x=1, y=1)
+        settings = LocalisationSettings(min_net_gradient=1000000000000.0)
+        preview = compute_scenario(
+            localisation.localise,
             exp,
             "a",
             "image",
@@ -217,7 +222,8 @@ class LocalisationTests(ProcessingCase):
         )
         self.assertEqual(len(preview.columns["frame"]), 0)
         self.assertEqual(exp.localizations.query()["id"].tolist(), ids.tolist())
-        localisation.localise(
+        compute_scenario(
+            localisation.localise,
             exp,
             "a",
             "image",
@@ -229,13 +235,12 @@ class LocalisationTests(ProcessingCase):
 
     def test_cancelled_and_stale_runs_do_not_overwrite_active_results(self):
         exp = spot_dataset()
-        ids = exp.localizations.add(
-            acquisition_id="a", channel="image", frame=0, x=1, y=1
-        )
+        ids = exp.localizations.add(acquisition_id="a", channel="image", frame=0, x=1, y=1)
         stop = threading.Event()
         stop.set()
         with self.assertRaises(CancelledError):
-            localisation.localise(
+            compute_scenario(
+                localisation.localise,
                 exp,
                 "a",
                 "image",
@@ -251,7 +256,8 @@ class LocalisationTests(ProcessingCase):
                 changed.append(True)
 
         with self.assertRaises(StaleResultError):
-            localisation.localise(
+            compute_scenario(
+                localisation.localise,
                 exp,
                 "a",
                 "image",
@@ -263,22 +269,16 @@ class LocalisationTests(ProcessingCase):
         self.assertEqual(exp.localizations.query()["x"].tolist(), [2])
 
 
-@unittest.skipUnless(
-    importlib.util.find_spec("picasso"), "Picasso processing extra not installed"
-)
+@unittest.skipUnless(importlib.util.find_spec("picasso"), "Picasso processing extra not installed")
 class UndriftingTests(ProcessingCase):
     def test_rcc_rejects_fewer_than_four_backend_segments_before_starting_workers(self):
         exp = Dataset()
         exp.add_acquisition(Acquisition(ArraySource(np.zeros((34, 8, 8))), id="a"))
-        exp.localizations.add(
-            acquisition_id="a", channel="image", frame=np.arange(34), x=3, y=3
-        )
-        with patch(
-            "molcore.undrifting.executor",
-            side_effect=AssertionError("Worker must not start"),
-        ):
+        exp.localizations.add(acquisition_id="a", channel="image", frame=np.arange(34), x=3, y=3)
+        with patch("molcore.undrifting.executor", side_effect=AssertionError("Worker must not start")):
             with self.assertRaises(ValueError):
-                undrifting.estimate_drift(
+                compute_scenario(
+                    undrifting.estimate_drift,
                     exp,
                     "a",
                     "image",
@@ -292,25 +292,16 @@ class UndriftingTests(ProcessingCase):
         exp = Dataset()
         for name in ("a", "b"):
             exp.add_acquisition(
-                Acquisition(
-                    ArraySource(np.zeros((60, 64, 64), dtype=np.uint16)),
-                    id=name,
-                    pixel_size=100,
-                )
+                Acquisition(ArraySource(np.zeros((60, 64, 64), dtype=np.uint16)), id=name, pixel_size=100)
             )
             frame = np.repeat(np.arange(60), 20)
-            positions = np.tile(points, (60, 1)) + np.column_stack(
-                [frame * 0.01, frame * 0.005]
-            )
+            positions = np.tile(points, (60, 1)) + np.column_stack([frame * 0.01, frame * 0.005])
             exp.localizations.add(
-                acquisition_id=name,
-                channel="image",
-                frame=frame,
-                x=positions[:, 0],
-                y=positions[:, 1],
+                acquisition_id=name, channel="image", frame=frame, x=positions[:, 0], y=positions[:, 1]
             )
         updates = []
-        results = undrifting.undrift_many(
+        results = compute_scenario(
+            undrifting.undrift_many,
             exp,
             {"a": "image", "b": "image"},
             settings=DriftSettings(segment_frames=10),
@@ -337,22 +328,16 @@ class UndriftingTests(ProcessingCase):
                         id="a",
                         pixel_size=100,
                         excitation_sequence=("D", "A"),
-                        channel_specs={
-                            "DD": ChannelSpec(excitation="D"),
-                            "AA": ChannelSpec(excitation="A"),
-                        },
+                        channel_specs={"DD": ChannelSpec(excitation="D"), "AA": ChannelSpec(excitation="A")},
                     )
                 )
                 exp.localizations.add(
-                    acquisition_id="a",
-                    channel="DD",
-                    frame=2 * frame,
-                    x=positions[:, 0],
-                    y=positions[:, 1],
+                    acquisition_id="a", channel="DD", frame=2 * frame, x=positions[:, 0], y=positions[:, 1]
                 )
                 before = exp.localizations.query(original=True, space="raw")["x"].copy()
                 updates = []
-                result = undrifting.undrift(
+                result = compute_scenario(
+                    undrifting.undrift,
                     exp,
                     "a",
                     "DD",
@@ -361,13 +346,9 @@ class UndriftingTests(ProcessingCase):
                     progress=updates.append,
                 )
                 self.assertTrue(result.applied)
-                self.assertEqual(
-                    (int(result.frames[0]), int(result.frames[-1])), (0, 158)
-                )
+                self.assertEqual((int(result.frames[0]), int(result.frames[-1])), (0, 158))
                 np.testing.assert_allclose(
-                    result.displacement[-1] - result.displacement[0],
-                    [1.2, -0.8],
-                    atol=0.4,
+                    result.displacement[-1] - result.displacement[0], [1.2, -0.8], atol=0.4
                 )
                 np.testing.assert_array_equal(
                     exp.localizations.query(original=True, space="raw")["x"], before
@@ -390,23 +371,16 @@ class AlignmentTests(unittest.TestCase):
         matrix = np.array([[1.05, 0.1, 2], [-0.05, 0.95, 1], [0, 0, 1.0]])
         target = points @ matrix[:2, :2].T + matrix[:2, 2]
         src_ids = exp.localizations.add(
-            acquisition_id="a",
-            channel="source",
-            frame=0,
-            x=points[:, 0],
-            y=points[:, 1],
+            acquisition_id="a", channel="source", frame=0, x=points[:, 0], y=points[:, 1]
         )
         dst_ids = exp.localizations.add(
-            acquisition_id="a",
-            channel="target",
-            frame=0,
-            x=target[:, 0],
-            y=target[:, 1],
+            acquisition_id="a", channel="target", frame=0, x=target[:, 0], y=target[:, 1]
         )
         target_ref = np.array([[1.0, 0, 5], [0, 1, -2], [0, 0, 1]])
         exp.transforms.add_calibration(Calibration("target-reference", target_ref))
         exp.transforms.select("a", "target", "target-reference")
-        result = alignment.align_channels(
+        result = compute_scenario(
+            alignment.align_channels,
             exp,
             "a",
             "source",
@@ -417,16 +391,13 @@ class AlignmentTests(unittest.TestCase):
             num_cpus=1,
         )
         np.testing.assert_allclose(result.matrix, matrix, atol=1e-10)
-        np.testing.assert_allclose(
-            result.reference_matrix, target_ref @ matrix, atol=1e-10
-        )
+        np.testing.assert_allclose(result.reference_matrix, target_ref @ matrix, atol=1e-10)
         np.testing.assert_allclose(result.residuals, 0, atol=1e-10)
         np.testing.assert_array_equal(
             exp.localizations.query(channel="source", space="raw")["x"], points[:, 0]
         )
         np.testing.assert_allclose(
-            exp.localizations.query(channel="source", space="registered")["x"],
-            target[:, 0] + 5,
+            exp.localizations.query(channel="source", space="registered")["x"], target[:, 0] + 5
         )
 
     def test_translation_matching_and_degenerate_affine_rejection(self):
@@ -438,15 +409,11 @@ class AlignmentTests(unittest.TestCase):
                 channel_specs={"s": ChannelSpec(), "t": ChannelSpec()},
             )
         )
-        exp.localizations.add(
-            acquisition_id="a", channel="s", frame=0, x=[2.0, 7.0], y=[2.0, 7.0]
-        )
-        exp.localizations.add(
-            acquisition_id="a", channel="t", frame=0, x=[2.2, 7.2], y=[2.3, 7.3]
-        )
-        result = alignment.estimate_alignment(
-            exp, "a", "s", "t", model="translation", match_radius=1, num_cpus=1
+        exp.localizations.add(acquisition_id="a", channel="s", frame=0, x=[2.0, 7.0], y=[2.0, 7.0])
+        exp.localizations.add(acquisition_id="a", channel="t", frame=0, x=[2.2, 7.2], y=[2.3, 7.3])
+        result = compute_scenario(
+            alignment.estimate_alignment, exp, "a", "s", "t", model="translation", match_radius=1, num_cpus=1
         )
         np.testing.assert_allclose(result.matrix[:2, 2], [0.2, 0.3])
         with self.assertRaises(ValueError):
-            alignment.estimate_alignment(exp, "a", "s", "t", match_radius=1, num_cpus=1)
+            compute_scenario(alignment.estimate_alignment, exp, "a", "s", "t", match_radius=1, num_cpus=1)

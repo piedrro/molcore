@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from threading import RLock
@@ -12,13 +13,15 @@ from uuid import uuid4
 
 import numpy as np
 
+from .._changes import mutation_scope
 from .._locking import model_mutated
 from .._logging import logged
 from .._model_api import DatasetServices
+from ..immutable import freeze_metadata
 from ._shared import ImagePolicy, ProcessingMetadata, Segmentation
 from .acquisition import Acquisition, AcquisitionSequence
-from .cells import BactFitCell, SegmentationOutline
 from .boxes import BoundingBoxStore
+from .cells import BactFitCell, SegmentationOutline
 from .photons import PhotonSequenceStore
 from .tables import LocalizationTable, ObservationTable, TrackTable
 
@@ -29,6 +32,12 @@ if TYPE_CHECKING:
 
     from .scientific import CancelEvent, ProgressCallback
     from .storage import SaveOptions
+
+
+@dataclass
+class _ProcessingState:
+    settings: dict = field(default_factory=dict)
+    software: dict = field(default_factory=dict)
 
 
 class Dataset(DatasetServices):
@@ -54,11 +63,7 @@ class Dataset(DatasetServices):
     """
 
     def __init__(
-        self,
-        *,
-        id: str | None = None,
-        name: str | None = None,
-        metadata: dict[str, Any] | None = None,
+        self, *, id: str | None = None, name: str | None = None, metadata: dict[str, Any] | None = None
     ) -> None:
         """Initialise the object and validate its configuration.
 
@@ -68,23 +73,26 @@ class Dataset(DatasetServices):
             metadata: Additional structured provenance and acquisition metadata.
         """
         self._lock = RLock()
+        self._captured = False
         self._lineage = str(uuid4())
         self.revision = 0
         self._metadata_revision = 0
+        self._processing_revision = 0
         self._partition_revisions = {}
         self._subscribers = {}
         self._mutation_depth = 0
         self._mutation_partitions = set()
-        self.id = str(uuid4()) if id is None else id
+        self._id = str(uuid4()) if id is None else id
         if not isinstance(self.id, str) or not self.id.strip():
             raise ValueError("Dataset ID must be a nonempty string")
-        self.name = self.id if name is None else name
+        self._name = self.id if name is None else name
         if not isinstance(self.name, str) or not self.name.strip():
             raise ValueError("Dataset name must be a nonempty string")
-        self.metadata = dict(metadata or {})
+        self._metadata = freeze_metadata(metadata or {})
         self._acquisitions: dict[str, Acquisition] = {}
         self._sequences: dict[str, AcquisitionSequence] = {}
         self._segmentations: dict[str, Segmentation] = {}
+        self._segmentation_revisions: dict[str, int] = {}
         self._segmentation_outlines: dict[str, SegmentationOutline] = {}
         self._bactfit_cells: dict[str, BactFitCell] = {}
         self.acquisitions = MappingProxyType(self._acquisitions)
@@ -97,18 +105,10 @@ class Dataset(DatasetServices):
         self.observations = ObservationTable(self)
         self.photon_sequences = PhotonSequenceStore(self)
         self.bounding_boxes = BoundingBoxStore(self)
-        self.processing = ProcessingMetadata(software={"molcore": "0.1.0"})
-        for package in (
-            "numpy",
-            "h5py",
-            "tifffile",
-            "picassosr",
-            "torch",
-            "trackpy",
-            "cellpose",
-        ):
+        self._processing = _ProcessingState(software={"molcore": "0.2.0"})
+        for package in ("numpy", "h5py", "tifffile", "picassosr", "torch", "trackpy", "cellpose"):
             try:
-                self.processing.software[package] = version(package)
+                self._processing.software[package] = version(package)
             except PackageNotFoundError:
                 pass
         from ..crops import CropStore
@@ -118,7 +118,80 @@ class Dataset(DatasetServices):
         self.calibrations = self.transforms.calibrations
         self.crops = CropStore(self)
 
-    @model_mutated
+    @property
+    def id(self) -> str:
+        """Stable dataset identity.
+
+        Returns:
+            The identifier allocated at construction.
+        """
+        return self._id
+
+    @property
+    def name(self) -> str:
+        """Human-readable name changed through rename().
+
+        Returns:
+            The current display name.
+        """
+        return self._name
+
+    @model_mutated(scope=lambda self, name: mutation_scope(self))
+    def rename(self, name: str) -> None:
+        """Rename this dataset and notify subscribers.
+
+        Args:
+            name: Nonempty display name.
+        """
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Dataset name must be nonempty")
+        if name != self._name:
+            self._name = name
+            self._metadata_revision += 1
+
+    @property
+    def metadata(self) -> Any:
+        """Read-only JSON metadata; use update_metadata to replace it.
+
+        Returns:
+            The computed value.
+        """
+        return self._metadata
+
+    @property
+    def processing(self) -> Any:
+        """Immutable processing provenance captured at the time of access.
+
+        Returns:
+            The computed value.
+        """
+        return ProcessingMetadata(self._processing.settings, self._processing.software)
+
+    def _replace_source(self, acquisition_id: str, source: Any) -> None:
+        """Rebind a saved source descriptor without changing its scientific pixels."""
+        old = self.acquisitions[acquisition_id]
+        replacement = Acquisition(
+            source,
+            id=old.id,
+            channel_specs=old.channel_specs,
+            excitation_sequence=old.excitation_sequence,
+            phase=old.phase,
+            timestamps=old.timestamps,
+            pixel_size=old.pixel_size,
+            metadata=old.metadata,
+            mode=old.mode,
+        )
+        self._acquisitions[acquisition_id] = replacement
+        for key, sequence in tuple(self.sequences.items()):
+            if acquisition_id in sequence.offsets:
+                self._sequences[key] = AcquisitionSequence(
+                    [replacement if value.id == acquisition_id else value for value in sequence.acquisitions],
+                    id=key,
+                    allow_cross_boundary_tracks=sequence.allow_cross_boundary_tracks,
+                    reference=sequence.reference,
+                )
+
+    @model_mutated(scope=lambda self, acquisition: mutation_scope(self, acquisition=acquisition.id))
     @logged
     def add_acquisition(self, acquisition: Acquisition) -> Acquisition:
         """Register an acquisition without replacing an existing identifier.
@@ -163,15 +236,10 @@ class Dataset(DatasetServices):
             tracks = [
                 t
                 for t, members in model.tracks._members.items()
-                if np.intersect1d(ids, members).size
-                or model.tracks.metadata[t]["sequence_id"] in sequences
+                if np.intersect1d(ids, members).size or model.tracks.metadata[t]["sequence_id"] in sequences
             ]
-            masks = [
-                k for k, s in model.segmentations.items() if s.acquisition_id == id
-            ]
-            outlines = [
-                k for k, s in model.segmentation_outlines.items() if s.acquisition_id == id
-            ]
+            masks = [k for k, s in model.segmentations.items() if s.acquisition_id == id]
+            outlines = [k for k, s in model.segmentation_outlines.items() if s.acquisition_id == id]
             boxes = [box.id for box in model.bounding_boxes.query() if box.acquisition_id == id]
             observations = model.observations
             rows = observations._data
@@ -182,28 +250,21 @@ class Dataset(DatasetServices):
                 or masks
                 or outlines
                 or boxes
-                or any(
-                    s.acquisition_id == id
-                    for s in model.photon_sequences.query(include_stale=True)
-                )
+                or any(s.acquisition_id == id for s in model.photon_sequences.query(include_stale=True))
                 or np.any(rows.get("acquisition_id", np.array([])) == id)
-                or id in model.transforms._drift
-                or any(a == id for a, _ in model.transforms._selected)
+                or (id in model.transforms._drift)
+                or any((a == id for a, _ in model.transforms._selected))
                 or any(
-                    id in values
-                    for values in model.processing.settings.values()
-                    if isinstance(values, dict)
+                    id in values for values in model._processing.settings.values() if isinstance(values, dict)
                 )
                 or any(
                     id in run.get("acquisitions", [])
-                    for run in model.processing.settings.get("photometry", {}).values()
+                    for run in model._processing.settings.get("photometry", {}).values()
                 )
             )
-            if dependent and not cascade:
+            if dependent and (not cascade):
                 raise ValueError("Acquisition has dependent state; pass cascade=True")
-            for sequence in model.photon_sequences.query(
-                acquisition_id=id, include_stale=True
-            ):
+            for sequence in model.photon_sequences.query(acquisition_id=id, include_stale=True):
                 model.photon_sequences.remove(sequence.id)
             if rows:
                 keep = (
@@ -220,17 +281,15 @@ class Dataset(DatasetServices):
             for key in sequences:
                 del model._sequences[key]
             for key in masks:
-                del model._segmentations[key]
+                model.remove_segmentation(key)
             for key in outlines:
                 model.remove_segmentation_outline(key)
             for key in boxes:
                 model.bounding_boxes.remove(key)
-            model.transforms._selected = {
-                k: v for k, v in model.transforms._selected.items() if k[0] != id
-            }
+            model.transforms._selected = {k: v for k, v in model.transforms._selected.items() if k[0] != id}
             model.transforms._drift.pop(id, None)
             model.transforms.revision += 1
-            for stage, values in model.processing.settings.items():
+            for stage, values in model._processing.settings.items():
                 if not isinstance(values, dict):
                     continue
                 if stage in ("photometry", "photon_sequences"):
@@ -254,7 +313,11 @@ class Dataset(DatasetServices):
 
         transact(self, remove)
 
-    @model_mutated
+    @model_mutated(
+        scope=lambda self, acquisition_ids, *, id=None, allow_cross_boundary_tracks=False, reference=None: (
+            mutation_scope(self)
+        )
+    )
     @logged
     def add_sequence(
         self,
@@ -286,7 +349,7 @@ class Dataset(DatasetServices):
         self._sequences[sequence.id] = sequence
         return sequence
 
-    @model_mutated
+    @model_mutated(scope=lambda self, segmentation: mutation_scope(self, record=segmentation))
     @logged
     def add_segmentation(self, segmentation: Segmentation) -> None:
         """Add or replace a static segmentation and invalidate its dependents.
@@ -302,12 +365,18 @@ class Dataset(DatasetServices):
         if segmentation.labels.shape != view.shape[1:]:
             raise ValueError("Segmentation geometry must match its bound channel")
         previous = self._segmentations.get(segmentation.id)
+        if previous is segmentation:
+            return
         if previous is not None:
             self.observations._invalidate_partition(previous.acquisition_id)
+        self._segmentation_revisions = {
+            **self._segmentation_revisions,
+            segmentation.id: self._segmentation_revisions.get(segmentation.id, 0) + 1,
+        }
         self._segmentations[segmentation.id] = segmentation
         self.observations._invalidate_partition(segmentation.acquisition_id)
 
-    @model_mutated
+    @model_mutated(scope=lambda self, outline: mutation_scope(self))
     @logged
     def add_segmentation_outline(self, outline: SegmentationOutline) -> None:
         """Add a polygon or replace it and discard fits derived from its old geometry.
@@ -326,7 +395,7 @@ class Dataset(DatasetServices):
             self.remove_segmentation_outline(outline.id)
         self._segmentation_outlines[outline.id] = outline
 
-    @model_mutated
+    @model_mutated(scope=lambda self, outline_id: mutation_scope(self))
     @logged
     def remove_segmentation_outline(self, outline_id: str) -> None:
         """Remove a polygon and the fits derived from it.
@@ -339,7 +408,7 @@ class Dataset(DatasetServices):
             if fit.outline_id == outline_id:
                 del self._bactfit_cells[fit.id]
 
-    @model_mutated
+    @model_mutated(scope=lambda self, fit: mutation_scope(self))
     @logged
     def add_bactfit_cell(self, fit: BactFitCell) -> None:
         """Store fitted geometry, replacing an existing fit with the same ID.
@@ -351,7 +420,7 @@ class Dataset(DatasetServices):
             raise ValueError("Fit references an unknown segmentation outline")
         self._bactfit_cells[fit.id] = fit
 
-    @model_mutated
+    @model_mutated(scope=lambda self, fit_id: mutation_scope(self))
     @logged
     def remove_bactfit_cell(self, fit_id: str) -> None:
         """Remove a fit while retaining its source outline.
@@ -362,9 +431,7 @@ class Dataset(DatasetServices):
         del self._bactfit_cells[fit_id]
 
     @logged
-    def segmentation_labels(
-        self, segmentation_id: str, rows: dict[str, np.ndarray]
-    ) -> np.ndarray:
+    def segmentation_labels(self, segmentation_id: str, rows: dict[str, np.ndarray]) -> np.ndarray:
         """Find object labels at effective localization coordinates.
 
         Args:
@@ -379,10 +446,9 @@ class Dataset(DatasetServices):
         if not len(labels):
             return labels
         x, y = self.transforms.coordinates(rows, space=segmentation.space)
-        # Convert reference-space queries into the bound segmentation channel.
         if segmentation.space == "raw":
             x, y = self.transforms.into_channel(rows, segmentation.channel)
-        xi, yi = np.floor(x + 0.5).astype(int), np.floor(y + 0.5).astype(int)
+        xi, yi = (np.floor(x + 0.5).astype(int), np.floor(y + 0.5).astype(int))
         inside = (
             (rows["acquisition_id"] == segmentation.acquisition_id)
             & (xi >= 0)
@@ -404,9 +470,7 @@ class Dataset(DatasetServices):
             self.localizations.query(ids=ids, space="raw")["acquisition_id"]
         )
         tracks = [
-            track
-            for track, members in self.tracks._members.items()
-            if np.intersect1d(members, ids).size
+            track for track, members in self.tracks._members.items() if np.intersect1d(members, ids).size
         ]
         self.observations._invalidate(ids=ids, tracks=tracks)
         self.crops.invalidate(ids)

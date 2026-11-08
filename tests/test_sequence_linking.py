@@ -1,4 +1,5 @@
 import numpy as np
+from scientific_helpers import compute_scenario
 
 from molcore import Acquisition, ArraySource, ChannelSpec, Dataset, TrackingSettings
 from molcore.tracking import track_sequence
@@ -35,16 +36,16 @@ def test_links_across_a_concatenation_boundary_on_channel_clock():
     sequence = dataset.add_sequence(
         ["first", "second"], allow_cross_boundary_tracks=True, reference="surface"
     )
-    tracks = track_sequence(
+    tracks = compute_scenario(
+        track_sequence,
         dataset,
         sequence.id,
         "dd",
         cpu=InlineExecutor(),
         settings=TrackingSettings(min_length=4, frame_clock="channel"),
     )
-
-    assert len(tracks) == 1
-    np.testing.assert_array_equal(tracks[0], members)
+    assert len(tracks.memberships) == 1
+    np.testing.assert_array_equal(tracks.memberships[0], members)
     rows = dataset.tracks.query(sequence_id=sequence.id)
     np.testing.assert_array_equal(rows["id"], members)
     np.testing.assert_array_equal(rows["frame"], [0, 2, 0, 2])

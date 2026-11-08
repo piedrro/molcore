@@ -10,16 +10,16 @@ their intensity samples and measurements; an optional track link records where a
 trace was measured, without turning photon samples into track members.
 
 `stationary_traces()` and `track_traces()` now return `PhotonSequenceResult`.
-Their default applying runs write directly to `dataset.photon_sequences`.
-`apply=False` returns detached sequence records; use `apply_photon_sequences()`
-to commit them explicitly. Localisation-only photometry continues to use
+Compute from `dataset.snapshot()` and commit the detached result with
+`dataset.apply(result)`. The returned receipt contains allocated sequence IDs. Localisation-only photometry continues to use
 `PhotometryResult` and the observation table.
 
 ```python
 from molcore.photometry import stationary_traces
 
-result = stationary_traces(dataset, seed_localization_ids)
-sequence = dataset.photon_sequences[result.sequence_ids[0]]
+result = stationary_traces(dataset.snapshot(), seed_localization_ids)
+receipt = dataset.apply(result)
+sequence = dataset.photon_sequences[receipt.sequence_ids[0]]
 signal = sequence.measurements["signal_sum"]
 background = sequence.measurements["local_background_mean"]
 ```
@@ -128,9 +128,8 @@ original indices. A sequence without positions can store/export its measurements
 but requesting its crops raises a clear error. Unsaved widths require original
 pixels. Stale sequence crops require explicit `include_stale=True`.
 
-Snapshots now use format version 3 for sample metrics and anchor arrays; version-1
-and version-2 files remain readable. Earlier molcore versions reject version-3
-snapshots rather than silently lose data.
+Snapshots use format version 7 for sample metrics, anchor arrays and nullable
+table schemas. Only current-format files are accepted; see [migration](api-migration.md).
 
 The trace viewer defaults to **Trace data → Photon sequences** and reads the primary model
 directly. It does not insert photon samples into the observation or track tables.
@@ -143,7 +142,7 @@ Use the dataset's bounding-box store when measurement sites must be edited,
 saved or linked to sequence history.
 
 ```python
-from molcore import BoundingBox
+from molcore import BoundingBox, PartitionSelection
 from molcore.photometry import FixedApertureSettings, bounding_box_traces
 
 box = dataset.bounding_boxes.set(BoundingBox(
@@ -152,10 +151,11 @@ box = dataset.bounding_boxes.set(BoundingBox(
     metadata={"origin": "manual", "label": "molecule A"},
 ))
 result = bounding_box_traces(
-    dataset, "movie", "donor", [box.id],
+    dataset.snapshot(), PartitionSelection("movie", "donor"), [box.id],
     settings=FixedApertureSettings(spot_size=3, buffer=1, background_width=2),
 )
-sequence = dataset.photon_sequences[result.sequence_ids[0]]
+receipt = dataset.apply(result)
+sequence = dataset.photon_sequences[receipt.sequence_ids[0]]
 print(sequence.bounding_box_id, sequence.bounding_box_revision)
 print(sequence.metadata["bounding_box"])
 print(sequence.metadata["extraction"])

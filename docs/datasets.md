@@ -47,12 +47,14 @@ surface using stable fiducials or explicitly corresponding features. A fluoresce
 reporter need not appear in every round.
 
 ```python
+from molcore import ExecutionContext
+
 result = experiment.alignment.estimate(
     "round-2", "round-1",
     source_acquisition_id="movie", source_channel="DD",
     reference_acquisition_id="movie", reference_channel="DD",
     source_ids=[1, 2, 3, 4], reference_ids=[1, 2, 3, 4],
-    num_cpus=1,
+    context=ExecutionContext(num_cpus=1),
 )
 experiment.alignment.apply([result])
 aligned_movie = experiment.alignment.view("round-2", "movie", "DA")
@@ -121,5 +123,5 @@ channel, the frame is an original camera-frame index.
 `add_bactfit_cell(BactFitCell(...))` stores a fitted polygon, midline, two poles,
 polynomial coefficients and radius, with an optional fit error. A fit can be
 standalone or reference a source outline by ID. Replacing or removing a source
-outline clears its linked fits. Both collections are saved in format version 5
+outline clears its linked fits. Both collections are saved in format version 7
 independently of the snapshot's image policy.

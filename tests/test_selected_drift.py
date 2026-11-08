@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from scientific_helpers import compute_scenario
 from test_processor_backends import InlineExecutor
 
 from molcore import Acquisition, ArraySource, Dataset, StaleResultError, undrifting
@@ -19,24 +20,16 @@ def estimate_from_x(payload, reporter):
 class SelectedDriftTests(unittest.TestCase):
     def setUp(self):
         self.model = Dataset()
-        self.model.add_acquisition(
-            Acquisition(ArraySource(np.zeros((8, 9, 9))), id="a")
-        )
-        self.model.add_acquisition(
-            Acquisition(ArraySource(np.zeros((8, 9, 9))), id="b")
-        )
+        self.model.add_acquisition(Acquisition(ArraySource(np.zeros((8, 9, 9))), id="a"))
+        self.model.add_acquisition(Acquisition(ArraySource(np.zeros((8, 9, 9))), id="b"))
         self.ids = self.model.localizations.add(
             acquisition_id="a", channel="image", frame=np.arange(8), x=np.arange(8), y=2
         )
         self.imported = self.model.localizations.add(
             acquisition_id="a", channel="image", frame=np.arange(8), x=100, y=2
         )
-        self.other = self.model.localizations.add(
-            acquisition_id="b", channel="image", frame=[0], x=4, y=4
-        )
-        self.version = patch.object(
-            undrifting, "backend_version", return_value="0.11.3"
-        )
+        self.other = self.model.localizations.add(acquisition_id="b", channel="image", frame=[0], x=4, y=4)
+        self.version = patch.object(undrifting, "backend_version", return_value="0.11.3")
         self.worker = patch.object(undrifting, "_job", side_effect=estimate_from_x)
         self.version.start()
         self.worker.start()
@@ -44,7 +37,8 @@ class SelectedDriftTests(unittest.TestCase):
         self.addCleanup(self.worker.stop)
 
     def estimate(self, ids, **kwargs):
-        return undrifting.estimate_drift(
+        return compute_scenario(
+            undrifting.estimate_drift,
             self.model,
             "a",
             "image",
@@ -58,9 +52,7 @@ class SelectedDriftTests(unittest.TestCase):
         result = self.estimate(self.ids)
         np.testing.assert_array_equal(result.displacement[:, 0], np.arange(8))
         np.testing.assert_array_equal(result.frames, np.arange(8))
-        np.testing.assert_array_equal(
-            self.model.localizations.query(ids=self.imported)["x"], [100] * 8
-        )
+        np.testing.assert_array_equal(self.model.localizations.query(ids=self.imported)["x"], [100] * 8)
         self.assertFalse(result.applied)
 
     def test_invalid_or_empty_selection_is_rejected(self):
@@ -69,6 +61,7 @@ class SelectedDriftTests(unittest.TestCase):
                 self.estimate(ids)
 
     def test_selected_estimation_retains_source_freshness_validation(self):
+
         def edit(_):
             self.model.localizations.move(self.ids[0], x=1, y=2)
 
@@ -76,7 +69,8 @@ class SelectedDriftTests(unittest.TestCase):
             self.estimate(self.ids, progress=edit)
 
     def test_undrift_applies_selected_estimate_at_acquisition_scope(self):
-        result = undrifting.undrift(
+        result = compute_scenario(
+            undrifting.undrift,
             self.model,
             "a",
             "image",

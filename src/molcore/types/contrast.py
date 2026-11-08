@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import StrEnum
 from numbers import Real
 
 import numpy as np
 
 from .._logging import logged
+from ..immutable import immutable_record
+from .results import ResultIdentity
 
 
 class ContrastMethod(StrEnum):
@@ -25,7 +26,7 @@ class ContrastScope(StrEnum):
     SHARED = "shared"
 
 
-@dataclass(frozen=True)
+@immutable_record
 class ContrastSettings:
     """Deterministic frame/pixel sampling and display limit settings.
 
@@ -38,7 +39,7 @@ class ContrastSettings:
     method: ContrastMethod = ContrastMethod.PERCENTILE
     percentiles: tuple[float, float] = (1.0, 99.0)
     max_frames: int | None = 16
-    max_pixels_per_frame: int | None = 65_536
+    max_pixels_per_frame: int | None = 65536
 
     def __post_init__(self) -> None:
         """Validate the immutable record after construction."""
@@ -47,9 +48,7 @@ class ContrastSettings:
         if (
             not isinstance(self.percentiles, tuple)
             or len(self.percentiles) != 2
-            or any(
-                isinstance(v, bool) or not isinstance(v, Real) for v in self.percentiles
-            )
+            or any(isinstance(v, bool) or not isinstance(v, Real) for v in self.percentiles)
         ):
             raise ValueError("percentiles must be a pair of real numbers")
         low, high = self.percentiles
@@ -57,14 +56,12 @@ class ContrastSettings:
             raise ValueError("Require 0 <= lower percentile < upper percentile <= 100")
         for name in ("max_frames", "max_pixels_per_frame"):
             value = getattr(self, name)
-            if value is not None and (
-                isinstance(value, bool) or not isinstance(value, int) or value < 1
-            ):
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
                 raise ValueError(f"{name} must be a positive integer or None")
 
 
-@dataclass(frozen=True)
-class ContrastResult:
+@immutable_record
+class ContrastResult(ResultIdentity):
     """Finite display limits and the sampling provenance for one input/channel.
 
     frames contains array frame indices or original camera frames for model calls.
@@ -88,4 +85,4 @@ class ContrastResult:
         Returns:
             Computed tuple[float, float] value.
         """
-        return self.lower, self.upper
+        return (self.lower, self.upper)

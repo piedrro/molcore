@@ -72,19 +72,20 @@ in other acquisitions of an explicitly linked sequence.
 ## Headless analysis
 
 ```python
+from molcore import PartitionSelection
 from molcore.filtering import filter_results
 from molcore.clustering import cluster_localizations
 from molcore.colocalisation import colocalise
 from molcore.rendering import render_localizations
 from molcore.types import FilterSettings, ClusteringSettings, ColocalisationSettings, RenderSettings
 
-selected = filter_results(dataset, "recording", "donor",
+selected = filter_results(dataset.snapshot(), PartitionSelection("recording", "donor"),
                           settings=FilterSettings("photons", 100, 1000))
-clusters = cluster_localizations(dataset, "recording", "donor",
+clusters = cluster_localizations(dataset.snapshot(), PartitionSelection("recording", "donor"),
                                 settings=ClusteringSettings(radius=1., min_samples=5))
-pairs = colocalise(dataset, "recording", "donor", "acceptor",
+pairs = colocalise(dataset.snapshot(), PartitionSelection("recording", "donor"), "acceptor",
                    settings=ColocalisationSettings(radius=2.), space="registered")
-density = render_localizations(dataset, "recording", "donor",
+density = render_localizations(dataset.snapshot(), PartitionSelection("recording", "donor"),
                                settings=RenderSettings(oversampling=5.))
 ```
 

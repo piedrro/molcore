@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Iterator
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -13,8 +13,10 @@ from uuid import uuid4
 import numpy as np
 from numpy.typing import NDArray
 
+from .._changes import mutation_scope
 from .._locking import model_locked, model_mutated
 from .._logging import logged
+from ..immutable import immutable_record
 
 if TYPE_CHECKING:
     from .dataset import Dataset
@@ -39,7 +41,7 @@ def _immutable(values: np.ndarray) -> np.ndarray:
     return np.frombuffer(values.tobytes(), dtype=values.dtype).reshape(values.shape)
 
 
-@dataclass(frozen=True)
+@immutable_record
 class PhotonSequence:
     """One molecule's ordered measurements in one acquisition and logical channel.
 
@@ -97,10 +99,11 @@ class PhotonSequence:
         if (self.bounding_box_id is None) != (self.bounding_box_revision is None):
             raise ValueError("Supply a bounding box ID and revision together")
         if self.bounding_box_id is not None and (
-            not isinstance(self.bounding_box_id, str) or not self.bounding_box_id
+            not isinstance(self.bounding_box_id, str)
+            or not self.bounding_box_id
             or isinstance(self.bounding_box_revision, bool)
-            or not isinstance(self.bounding_box_revision, int)
-            or self.bounding_box_revision < 1
+            or (not isinstance(self.bounding_box_revision, int))
+            or (self.bounding_box_revision < 1)
         ):
             raise ValueError("Bounding box references require an ID and positive revision")
         if not isinstance(self.depends_on_transforms, bool):
@@ -108,17 +111,12 @@ class PhotonSequence:
         if not isinstance(self.depends_on_localizations, bool):
             raise TypeError("depends_on_localizations must be a boolean")
         if not all(
-            isinstance(v, str) and v
-            for v in (self.id, self.acquisition_id, self.channel, self.method)
+            isinstance(v, str) and v for v in (self.id, self.acquisition_id, self.channel, self.method)
         ):
-            raise ValueError(
-                "Sequence, acquisition, channel and method identifiers must be nonempty strings"
-            )
+            raise ValueError("Sequence, acquisition, channel and method identifiers must be nonempty strings")
         frames = np.asarray(self.frames)
         if frames.ndim != 1 or frames.dtype.kind not in "iu" or np.any(frames < 0):
-            raise ValueError(
-                "Frames must be a one-dimensional nonnegative integer array"
-            )
+            raise ValueError("Frames must be a one-dimensional nonnegative integer array")
         if np.any(frames > np.iinfo(np.int64).max):
             raise ValueError("Frames exceed the supported int64 range")
         frames = frames.astype(np.int64)
@@ -142,41 +140,23 @@ class PhotonSequence:
         ):
             raise ValueError("Timestamps must match frames and increase where known")
         valid = np.isfinite(values) if self.valid is None else np.asarray(self.valid)
-        if (
-            valid.shape != frames.shape
-            or valid.dtype.kind != "b"
-            or np.any(valid & ~np.isfinite(values))
-        ):
-            raise ValueError(
-                "Validity must be boolean and cannot mark NaN measurements valid"
-            )
-        positions = (
-            None if self.positions is None else np.asarray(self.positions, dtype=float)
-        )
+        if valid.shape != frames.shape or valid.dtype.kind != "b" or np.any(valid & ~np.isfinite(values)):
+            raise ValueError("Validity must be boolean and cannot mark NaN measurements valid")
+        positions = None if self.positions is None else np.asarray(self.positions, dtype=float)
         if positions is not None and (
             positions.shape != (len(frames), 2)
             or np.isinf(positions).any()
-            or np.any(
-                np.isnan(positions).any(axis=1) != np.isnan(positions).all(axis=1)
-            )
+            or np.any(np.isnan(positions).any(axis=1) != np.isnan(positions).all(axis=1))
         ):
-            raise ValueError(
-                "Positions must contain one finite (x,y) pair or paired NaNs per sample"
-            )
+            raise ValueError("Positions must contain one finite (x,y) pair or paired NaNs per sample")
         for anchor in (self.localization_id, self.track_id):
             if anchor is not None and (
-                isinstance(anchor, bool)
-                or not isinstance(anchor, (int, np.integer))
-                or anchor <= 0
+                isinstance(anchor, bool) or not isinstance(anchor, (int, np.integer)) or anchor <= 0
             ):
                 raise ValueError("Optional anchors must be positive integer IDs")
-        if self.molecule_id is not None and (
-            not isinstance(self.molecule_id, str) or not self.molecule_id
-        ):
+        if self.molecule_id is not None and (not isinstance(self.molecule_id, str) or not self.molecule_id):
             raise ValueError("Molecule ID must be a nonempty string when supplied")
-        if self.run_id is not None and (
-            not isinstance(self.run_id, str) or not self.run_id
-        ):
+        if self.run_id is not None and (not isinstance(self.run_id, str) or not self.run_id):
             raise ValueError("Run ID must be a nonempty string when supplied")
         reserved = {
             "id",
@@ -206,43 +186,24 @@ class PhotonSequence:
         for name, samples in self.measurements.items():
             samples = np.asarray(samples)
             if not isinstance(name, str) or not name or name in reserved:
-                raise ValueError(
-                    "Measurement names must be nonempty and cannot shadow sequence fields"
-                )
+                raise ValueError("Measurement names must be nonempty and cannot shadow sequence fields")
             if samples.shape != frames.shape or samples.dtype.kind not in "biuf":
-                raise ValueError(
-                    "Measurements must be numeric sample arrays matching frames"
-                )
+                raise ValueError("Measurements must be numeric sample arrays matching frames")
             measurements[name] = _immutable(samples)
         anchors = (
             np.full(len(frames), self.localization_id or 0, dtype=np.uint64)
             if self.localization_ids is None
             else np.asarray(self.localization_ids)
         )
-        if (
-            anchors.shape != frames.shape
-            or anchors.dtype.kind not in "iu"
-            or np.any(anchors < 0)
-        ):
-            raise ValueError(
-                "Sample localisation IDs must be nonnegative integers matching frames"
-            )
-        object.__setattr__(
-            self, "localization_ids", _immutable(anchors.astype(np.uint64))
-        )
+        if anchors.shape != frames.shape or anchors.dtype.kind not in "iu" or np.any(anchors < 0):
+            raise ValueError("Sample localisation IDs must be nonnegative integers matching frames")
+        object.__setattr__(self, "localization_ids", _immutable(anchors.astype(np.uint64)))
         object.__setattr__(self, "measurements", measurements)
         metadata = deepcopy(self.metadata)
         json.dumps(metadata, allow_nan=False)
-        for name, array in (
-            ("frames", frames),
-            ("photons", values),
-            ("timestamps", times),
-            ("valid", valid),
-        ):
+        for name, array in (("frames", frames), ("photons", values), ("timestamps", times), ("valid", valid)):
             object.__setattr__(self, name, _immutable(array))
-        object.__setattr__(
-            self, "positions", None if positions is None else _immutable(positions)
-        )
+        object.__setattr__(self, "positions", None if positions is None else _immutable(positions))
         object.__setattr__(self, "unit", PhotonUnit(self.unit))
         object.__setattr__(self, "metadata", metadata)
 
@@ -302,7 +263,7 @@ class PhotonSequenceStore:
         """
         return replace(self._data[id])
 
-    @model_mutated
+    @model_mutated(scope=lambda self, sequence: mutation_scope(self, record=sequence))
     @logged
     def add(self, sequence: PhotonSequence) -> PhotonSequence:
         """Validate source frames and anchors before adding a detached record.
@@ -332,42 +293,28 @@ class PhotonSequenceStore:
         acquisition = self.dataset.acquisitions[sequence.acquisition_id]
         view = acquisition.channels[sequence.channel]
         if not np.isin(sequence.frames, view.source_frames).all():
-            raise ValueError(
-                "Sequence frames must belong to the measured logical channel"
-            )
+            raise ValueError("Sequence frames must belong to the measured logical channel")
         if sequence.localization_id is not None:
-            rows = self.dataset.localizations.query(
-                ids=[sequence.localization_id], space="raw"
-            )
+            rows = self.dataset.localizations.query(ids=[sequence.localization_id], space="raw")
             if len(rows["id"]) != 1 or rows["acquisition_id"][0] != acquisition.id:
-                raise ValueError(
-                    "Localization anchor must belong to the sequence acquisition"
-                )
+                raise ValueError("Localization anchor must belong to the sequence acquisition")
         if sequence.track_id is not None:
             rows = self.dataset.tracks.query(
                 track_id=sequence.track_id, acquisition_id=acquisition.id, space="raw"
             )
             if not len(rows["id"]):
                 raise ValueError("Track anchor must include the sequence acquisition")
-        sample_ids = np.unique(
-            sequence.localization_ids[sequence.localization_ids != 0]
-        )
+        sample_ids = np.unique(sequence.localization_ids[sequence.localization_ids != 0])
         if len(sample_ids):
             anchors = self.dataset.localizations.query(ids=sample_ids, space="raw")
-            if len(anchors["id"]) != len(sample_ids) or np.any(
-                anchors["acquisition_id"] != acquisition.id
-            ):
-                raise ValueError(
-                    "Sample localisation anchors must belong to the sequence acquisition"
-                )
+            if len(anchors["id"]) != len(sample_ids) or np.any(anchors["acquisition_id"] != acquisition.id):
+                raise ValueError("Sample localisation anchors must belong to the sequence acquisition")
         times = sequence.timestamps
         if acquisition.timestamps is not None:
             recorded = acquisition.timestamps[sequence.frames]
             known = np.isfinite(times)
             if not np.allclose(times[known], recorded[known], rtol=1e-12, atol=1e-12):
-                raise ValueError(
-                    "Sequence timestamps disagree with recorded camera timestamps"
-                )
+                raise ValueError("Sequence timestamps disagree with recorded camera timestamps")
             times = recorded
         sequence = replace(sequence, timestamps=times)
         self._data[sequence.id] = sequence
@@ -396,12 +343,14 @@ class PhotonSequenceStore:
             Matching sequence records in insertion order.
         """
         return tuple(
-            replace(value)
-            for key, value in self._data.items()
-            if (include_stale or key not in self._stale)
-            and (acquisition_id is None or value.acquisition_id == acquisition_id)
-            and (channel is None or value.channel == channel)
-            and (molecule_id is None or value.molecule_id == molecule_id)
+            (
+                replace(value)
+                for key, value in self._data.items()
+                if (include_stale or key not in self._stale)
+                and (acquisition_id is None or value.acquisition_id == acquisition_id)
+                and (channel is None or value.channel == channel)
+                and (molecule_id is None or value.molecule_id == molecule_id)
+            )
         )
 
     @model_locked
@@ -418,7 +367,7 @@ class PhotonSequenceStore:
             raise KeyError(id)
         return id in self._stale
 
-    @model_mutated
+    @model_mutated(scope=lambda self, id: mutation_scope(self))
     @logged
     def remove(self, id: str) -> None:
         """Delete one sequence and its saved crop descriptors.
@@ -433,7 +382,7 @@ class PhotonSequenceStore:
         }
         self.revision += 1
 
-    @model_mutated
+    @model_mutated(scope=lambda self, ids: mutation_scope(self))
     def mark_stale(self, ids: Iterable[str]) -> None:
         """Retain samples as history after external scientific inputs change.
 
@@ -472,7 +421,7 @@ class PhotonSequenceStore:
             or (
                 acquisition_id is not None
                 and value.depends_on_transforms
-                and value.acquisition_id == acquisition_id
+                and (value.acquisition_id == acquisition_id)
                 and (channel is None or value.channel == channel)
             )
         }
@@ -487,7 +436,8 @@ class PhotonSequenceStore:
             ids: Definitions edited or deleted by the owning store.
         """
         changed = {
-            key for key, sequence in self._data.items()
+            key
+            for key, sequence in self._data.items()
             if sequence.bounding_box_id in ids
             or ids.intersection(sequence.metadata.get("bounding_box_dependencies", {}))
         }

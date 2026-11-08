@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict, deque
 from concurrent.futures import CancelledError, ThreadPoolExecutor
+from contextlib import ExitStack, closing
+from copy import deepcopy
 from dataclasses import asdict, replace
+from datetime import UTC, datetime
 from functools import cache
+from importlib.metadata import PackageNotFoundError, distribution
+from pathlib import Path
 from threading import Event
 from time import monotonic
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
-from datetime import datetime, timezone
-from copy import deepcopy
-import json
-from importlib.metadata import PackageNotFoundError, distribution
-from pathlib import Path
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -22,12 +23,14 @@ from numpy.typing import ArrayLike
 from ._logging import logged
 from ._processing import executor
 from .cpu import CpuExecutor
+from .execution import ExecutionContext, _record_execution
+from .readers import open_reader
 from .revisions import FreshnessToken
+from .snapshots import DatasetSnapshot, processor_model
 from .staging import dependency_token, transact
 from .transforms import project_points
 from .types import (
     ApertureShape,
-    ArraySource,
     BackgroundMethod,
     CancelEvent,
     Dataset,
@@ -40,22 +43,18 @@ from .types import (
     TraceMode,
 )
 from .types.scientific import FixedApertureSettings
+from .types.selections import PartitionSelection
 from .types.tables import identifiers
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping
 
-    from .cpu import WorkerProgress
+    from .execution import ProgressReporter
     from .types import ImageSource
     from .types.acquisition import ChannelView
-
 _DEFAULT_SETTINGS = PhotometrySettings()
-
 _METRICS = ("sum", "mean", "median", "min", "max", "std")
-_PSF_METRICS = (
-    "psf_amplitude", "psf_background", "psf_sx", "psf_sy",
-    "psf_lpx", "psf_lpy", "psf_likelihood",
-)
+_PSF_METRICS = ("psf_amplitude", "psf_background", "psf_sx", "psf_sy", "psf_lpx", "psf_lpy", "psf_likelihood")
 
 
 def _region(
@@ -79,21 +78,17 @@ def _region(
     Returns:
         Computed tuple[tuple[slice, slice], NumPy array] value.
     """
-    cx, cy = int(np.floor(x + 0.5)), int(np.floor(y + 0.5))
+    cx, cy = (int(np.floor(x + 0.5)), int(np.floor(y + 0.5)))
     half = int(np.ceil(radius))
-    x0, x1 = min(max(cx - half, 0), shape[1]), min(max(cx + half + 1, 0), shape[1])
-    y0, y1 = min(max(cy - half, 0), shape[0]), min(max(cy + half + 1, 0), shape[0])
+    x0, x1 = (min(max(cx - half, 0), shape[1]), min(max(cx + half + 1, 0), shape[1]))
+    y0, y1 = (min(max(cy - half, 0), shape[0]), min(max(cy + half + 1, 0), shape[0]))
     yy = (np.arange(y0, y1) - cy)[:, None]
     xx = (np.arange(x0, x1) - cx)[None, :]
-    distance = (
-        np.maximum(abs(xx), abs(yy))
-        if aperture == ApertureShape.SQUARE
-        else np.hypot(xx, yy)
-    )
+    distance = np.maximum(abs(xx), abs(yy)) if aperture == ApertureShape.SQUARE else np.hypot(xx, yy)
     mask = distance <= radius
     if inner is not None:
         mask &= distance > inner
-    return (slice(y0, y1), slice(x0, x1)), mask
+    return ((slice(y0, y1), slice(x0, x1)), mask)
 
 
 def _summary(values: np.ndarray) -> dict[str, float]:
@@ -129,16 +124,21 @@ class _FrameProgress:
         self.cancel_event = cancel_event
 
     def check_cancelled(self) -> None:
+        """Check cancelled."""
         if self.stop.is_set() or (self.cancel_event is not None and self.cancel_event.is_set()):
             raise CancelledError("Photometry cancelled")
 
     def report(self, *_: object) -> None:
-        # The calling thread reports completed frames.
+        """Report.
+
+        Args:
+            _:  .
+        """
         self.check_cancelled()
 
 
 @logged
-def _job(payload: tuple, reporter: WorkerProgress | _FrameProgress) -> list[dict]:
+def _job(payload: tuple, reporter: ProgressReporter | _FrameProgress) -> list[dict]:
     """Job.
 
     Args:
@@ -152,11 +152,7 @@ def _job(payload: tuple, reporter: WorkerProgress | _FrameProgress) -> list[dict
     image, requests, neighbours, settings = payload
     image = np.asarray(image, dtype=np.float64)
     finite = np.isfinite(image)
-    radius = (
-        settings.spot_size // 2
-        if settings.shape == ApertureShape.SQUARE
-        else settings.spot_size / 2
-    )
+    radius = settings.spot_size // 2 if settings.shape == ApertureShape.SQUARE else settings.spot_size / 2
     exclusion = np.zeros(image.shape, dtype=bool)
     if settings.exclude_neighbours:
         for x, y in neighbours:
@@ -167,7 +163,7 @@ def _job(payload: tuple, reporter: WorkerProgress | _FrameProgress) -> list[dict
     output = []
     for index, request in enumerate(requests):
         reporter.check_cancelled()
-        x, y = request["x"], request["y"]
+        x, y = (request["x"], request["y"])
         region, signal_mask = _region(image.shape, x, y, radius, settings.shape)
         signal = image[region][signal_mask & finite[region]]
         inner = radius + settings.buffer
@@ -189,11 +185,7 @@ def _job(payload: tuple, reporter: WorkerProgress | _FrameProgress) -> list[dict
             global_background_count=global_values.size,
         )
         chosen = summaries[
-            (
-                "local_background"
-                if settings.background == BackgroundMethod.LOCAL
-                else "global_background"
-            )
+            "local_background" if settings.background == BackgroundMethod.LOCAL else "global_background"
         ]
         row["intensity"] = summaries["signal"]["sum"] - chosen["mean"] * signal.size
         output.append(row)
@@ -211,13 +203,19 @@ def _measure_frames(
     worker: Callable[[tuple, _FrameProgress], list[dict]] = _job,
 ) -> list[list[dict]]:
     """Read frames on the caller and bound the number queued for measurement."""
-    # Small aperture reductions benefit from avoiding thread contention.
     workers = CpuExecutor(num_cpus=1 if num_cpus is None else num_cpus).num_cpus
     stop = Event()
     reporter = _FrameProgress(stop, cancel_event)
     last_update = float("-inf")
 
     def report(completed: int, description: str, *, force: bool = False) -> None:
+        """Report.
+
+        Args:
+            completed: Completed.
+            description: Description.
+            force: Force.
+        """
         nonlocal last_update
         reporter.check_cancelled()
         now = monotonic()
@@ -254,9 +252,7 @@ def _measure_frames(
     return results
 
 
-def _columns(
-    rows: list[dict], fixed: FixedApertureSettings | None = None
-) -> dict[str, np.ndarray]:
+def _columns(rows: list[dict], fixed: FixedApertureSettings | None = None) -> dict[str, np.ndarray]:
     """Columns.
 
     Args:
@@ -290,10 +286,7 @@ def _columns(
             dtypes.update({name: float for name in _PSF_METRICS})
     for prefix in prefixes:
         dtypes.update({f"{prefix}_{name}": float for name in _METRICS})
-    return {
-        name: np.asarray([row[name] for row in rows], dtype=dtype)
-        for name, dtype in dtypes.items()
-    }
+    return {name: np.asarray([row[name] for row in rows], dtype=dtype) for name, dtype in dtypes.items()}
 
 
 def fixed_aperture_masks(settings: FixedApertureSettings) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -315,7 +308,7 @@ def fixed_aperture_masks(settings: FixedApertureSettings) -> tuple[np.ndarray, n
     else:
         distance = np.hypot(axis[:, None], axis[None, :])
         buffer = (distance > radius) & (distance <= inner)
-    return distance <= radius, buffer, (distance > inner) & (distance <= inner + settings.background_width)
+    return (distance <= radius, buffer, (distance > inner) & (distance <= inner + settings.background_width))
 
 
 def _fixed_mask_region(
@@ -324,14 +317,14 @@ def _fixed_mask_region(
     shift = 0.5 if width % 2 == 0 else 0
     origin_x = round(x + shift) - width // 2
     origin_y = round(y + shift) - width // 2
-    x0, x1 = max(0, origin_x), min(shape[1], origin_x + width)
-    y0, y1 = max(0, origin_y), min(shape[0], origin_y + width)
+    x0, x1 = (max(0, origin_x), min(shape[1], origin_x + width))
+    y0, y1 = (max(0, origin_y), min(shape[0], origin_y + width))
     if x1 <= x0 or y1 <= y0:
-        return np.s_[:0, :0], np.s_[:0, :0]
-    return np.s_[y0:y1, x0:x1], np.s_[y0-origin_y:y1-origin_y, x0-origin_x:x1-origin_x]
+        return (np.s_[:0, :0], np.s_[:0, :0])
+    return (np.s_[y0:y1, x0:x1], np.s_[y0 - origin_y : y1 - origin_y, x0 - origin_x : x1 - origin_x])
 
 
-def _fixed_job(payload: tuple, reporter: WorkerProgress | _FrameProgress) -> list[dict]:
+def _fixed_job(payload: tuple, reporter: ProgressReporter | _FrameProgress) -> list[dict]:
     image, rows, regions, exclusion, masks, settings = payload
     finite = np.isfinite(image)
     signal_mask, _, ring_mask = masks
@@ -375,9 +368,13 @@ def _fixed_psf(image: np.ndarray, x: float, y: float, width: int) -> dict[str, f
     amplitude = float(theta[0, 2])
     sigma = float(theta[0, 4])
     values = (
-        amplitude, float(theta[0, 3]) if amplitude > 0 else 0.0,
-        sigma, sigma, float(np.sqrt(bounds[0, 1])),
-        float(np.sqrt(bounds[0, 0])), float(likelihood[0]),
+        amplitude,
+        float(theta[0, 3]) if amplitude > 0 else 0.0,
+        sigma,
+        sigma,
+        float(np.sqrt(bounds[0, 1])),
+        float(np.sqrt(bounds[0, 0])),
+        float(likelihood[0]),
     )
     return dict(zip(_PSF_METRICS, values, strict=True))
 
@@ -390,7 +387,6 @@ def _extract(
     channels: list[str] | None,
     settings: PhotometrySettings,
     frame_range: tuple[int, int] | None,
-    apply: bool,
     cpu: CpuExecutor | None,
     num_cpus: int | None,
     progress: ProgressCallback | None,
@@ -420,7 +416,7 @@ def _extract(
         len(frame_range) != 2
         or any(isinstance(v, bool) or not isinstance(v, int) for v in frame_range)
         or frame_range[0] < 0
-        or frame_range[1] < frame_range[0]
+        or (frame_range[1] < frame_range[0])
     ):
         raise ValueError("Expected a nonnegative half-open camera-frame range")
     selected = identifiers(selected)
@@ -441,11 +437,7 @@ def _extract(
         selected_acquisitions = set(rows["acquisition_id"].tolist())
         expected = dependency_token(
             dataset,
-            (
-                (a, c)
-                for a in selected_acquisitions
-                for c in dataset.acquisitions[a].channels
-            ),
+            ((a, c) for a in selected_acquisitions for c in dataset.acquisitions[a].channels),
             components={"localizations", "tracks", "transforms", "segmentations"},
         )
         initial.validate(dataset)
@@ -454,24 +446,65 @@ def _extract(
 
     @cache
     def channel_setup(acquisition: str, channel: str) -> tuple[ChannelView, np.ndarray]:
+        """Channel setup.
+
+        Args:
+            acquisition: Acquisition.
+            channel: Channel.
+
+
+        Returns:
+            The computed value.
+        """
         view = dataset.acquisitions[acquisition].channels[channel]
         frames = view.source_frames
         if frame_range is not None:
             start, end = np.searchsorted(frames, frame_range)
             frames = frames[start:end]
-        return view, frames
+        return (view, frames)
 
     @cache
     def inverse_registration(acquisition: str, channel: str) -> np.ndarray:
+        """Inverse registration.
+
+        Args:
+            acquisition: Acquisition.
+            channel: Channel.
+
+
+        Returns:
+            The computed value.
+        """
         return np.linalg.inv(transforms._registration(acquisition, channel))
 
     @cache
     def frame_info(acquisition: str, channel: str, frame: int) -> FrameInfo:
+        """Frame info.
+
+        Args:
+            acquisition: Acquisition.
+            channel: Channel.
+            frame: Frame.
+
+
+        Returns:
+            The computed value.
+        """
         view, _ = channel_setup(acquisition, channel)
         return view.frame_info(view.channel_index(frame))
 
     @cache
     def displacement(acquisition: str, frame: int) -> np.ndarray:
+        """Displacement.
+
+        Args:
+            acquisition: Acquisition.
+            frame: Frame.
+
+
+        Returns:
+            The computed value.
+        """
         return transforms._displacement(acquisition, np.array([frame]))[0]
 
     for index in range(len(rows["id"])):
@@ -487,9 +520,7 @@ def _extract(
         molecule_id = f"track:{tid}" if tid else f"localization:{lid}"
         point = np.array([rows["x"][index], rows["y"][index]])
         reference = project_points(transforms._registration(a, source), point)
-        follows_drift = (
-            mode == TraceMode.STATIONARY and settings.follow_drift and a in transforms._drift
-        )
+        follows_drift = mode == TraceMode.STATIONARY and settings.follow_drift and (a in transforms._drift)
         if follows_drift:
             reference -= displacement(a, anchor_frame)
         for channel in channels if channels is not None else [source]:
@@ -522,12 +553,8 @@ def _extract(
                         "channel": channel,
                         "frame": frame,
                         "channel_frame": info.channel_frame,
-                        "cycle_index": (
-                            info.cycle_index if info.cycle_index is not None else -1
-                        ),
-                        "timestamp": (
-                            info.timestamp if info.timestamp is not None else np.nan
-                        ),
+                        "cycle_index": info.cycle_index if info.cycle_index is not None else -1,
+                        "timestamp": info.timestamp if info.timestamp is not None else np.nan,
                         "localization_id": lid,
                         "track_id": tid,
                         "x": float(target[0]),
@@ -541,35 +568,34 @@ def _extract(
         Yields:
             Values produced by the iterator, retaining their original order.
         """
-        for (a, channel, frame), group in requests.items():
-            if cancel_event is not None and cancel_event.is_set():
-                raise CancelledError("Photometry cancelled")
-            view, _ = channel_setup(a, channel)
-            neighbours = [(row["x"], row["y"]) for row in group]
-            if settings.exclude_neighbours:
-                other = dataset.localizations.query(
-                    acquisition_id=a, frame_range=(frame, frame + 1), space="raw"
-                )
-                if len(other["id"]):
-                    x, y = transforms.into_channel(other, channel)
-                    neighbours.extend(zip(x, y, strict=True))
-            image = view[group[0]["channel_frame"]]
-            if type(view.acquisition.source) is not ArraySource:
-                # Some lazy readers reuse their frame buffer on the next read.
-                image = np.array(image, copy=True)
-            yield image, group, neighbours, settings
+        with ExitStack() as stack:
+            readers = {}
+            for (a, channel, frame), group in requests.items():
+                if cancel_event is not None and cancel_event.is_set():
+                    raise CancelledError("Photometry cancelled")
+                view, _ = channel_setup(a, channel)
+                neighbours = [(row["x"], row["y"]) for row in group]
+                if settings.exclude_neighbours:
+                    other = dataset.localizations.query(
+                        acquisition_id=a, frame_range=(frame, frame + 1), space="raw"
+                    )
+                    if len(other["id"]):
+                        x, y = transforms.into_channel(other, channel)
+                        neighbours.extend(zip(x, y, strict=True))
+                key = (a, channel)
+                if key not in readers:
+                    readers[key] = stack.enter_context(open_reader(view))
+                image = readers[key].read_frames([group[0]["channel_frame"]])[0]
+                yield (image, group, neighbours, settings)
 
-    if cpu is None:
-        chunks = _measure_frames(jobs(), len(requests), num_cpus, progress, cancel_event)
-    else:
-        with executor(cpu, num_cpus) as runner:
-            chunks = runner.map(
-                _job,
-                jobs(),
-                total=len(requests),
-                progress=progress,
-                cancel_event=cancel_event,
-            )
+    with closing(jobs()) as work:
+        if cpu is None:
+            chunks = _measure_frames(work, len(requests), num_cpus, progress, cancel_event)
+        else:
+            with executor(cpu, num_cpus) as runner:
+                chunks = runner.map(
+                    _job, work, total=len(requests), progress=progress, cancel_event=cancel_event
+                )
     if cancel_event is not None and cancel_event.is_set():
         raise CancelledError("Photometry cancelled")
     columns = _columns([row for chunk in chunks for row in chunk])
@@ -587,11 +613,11 @@ def _extract(
         )
         result = PhotonSequenceResult(sequences, settings, mode, run_id, expected)
     expected.validate(dataset)
-    return apply_photometry(dataset, result) if apply else result
+    return result
 
 
 @logged
-def apply_photometry(
+def _apply_photometry(
     dataset: Dataset,
     result: PhotometryResult | PhotonSequenceResult,
     *,
@@ -607,7 +633,6 @@ def apply_photometry(
     Returns:
         Localisation result with observation IDs, or trace result with photon-sequence IDs.
     """
-
     if not isinstance(result, PhotonSequenceResult) and result.mode in (
         TraceMode.STATIONARY,
         TraceMode.TRACK,
@@ -620,6 +645,7 @@ def apply_photometry(
                 run_id=result.run_id,
                 metadata={
                     "settings": asdict(result.settings),
+                    "execution": dict(result.execution),
                     "mode": str(result.mode),
                 },
                 depends_on_localizations=result.settings.exclude_neighbours,
@@ -630,9 +656,9 @@ def apply_photometry(
             result.expected,
         )
     if isinstance(result, PhotonSequenceResult):
-        from .photon_sequences import apply_photon_sequences
+        from .photon_sequences import _apply_photon_sequences
 
-        return apply_photon_sequences(dataset, result, expected=expected)
+        return _apply_photon_sequences(dataset, result, expected=expected)
 
     def commit(model: Dataset) -> PhotometryResult:
         """Commit.
@@ -643,12 +669,13 @@ def apply_photometry(
         Returns:
             Computed PhotometryResult value.
         """
-        runs = model.processing.settings.setdefault("photometry", {})
+        runs = model._processing.settings.setdefault("photometry", {})
         if result.run_id in runs:
             raise ValueError("Photometry run already applied")
         ids = model.observations.add(**result.columns, run_id=result.run_id)
         runs[result.run_id] = {
             "settings": asdict(result.settings),
+            "execution": dict(result.execution),
             "mode": result.mode,
             "acquisitions": sorted(set(result.columns["acquisition_id"].tolist())),
             "channels": sorted(set(result.columns["channel"].tolist())),
@@ -657,24 +684,19 @@ def apply_photometry(
         }
         return replace(result, observation_ids=ids)
 
-    return transact(
-        dataset, commit, expected=result.expected if expected is None else expected
-    )
+    return transact(dataset, commit, expected=result.expected if expected is None else expected)
 
 
 @logged
+@_record_execution
 def measure_localizations(
-    dataset: Dataset,
+    dataset: DatasetSnapshot,
     localization_ids: ArrayLike,
     *,
     channels: list[str] | None = None,
     settings: PhotometrySettings = _DEFAULT_SETTINGS,
     frame_range: tuple[int, int] | None = None,
-    apply: bool = True,
-    cpu: CpuExecutor | None = None,
-    num_cpus: int | None = None,
-    progress: ProgressCallback | None = None,
-    cancel_event: CancelEvent | None = None,
+    context: ExecutionContext | None = None,
 ) -> PhotometryResult:
     """Measure apertures at effective positions in measured camera frames.
 
@@ -682,20 +704,24 @@ def measure_localizations(
     measure the same camera frame are omitted. Raw source pixels are required.
 
     Args:
+        context: Execution policy, frame chunk size, progress and cancellation.
         dataset: Scientific model supplying acquisitions and result tables.
         localization_ids: Localization ids used by this operation.
         channels: Channels used by this operation.
         settings: Validated settings controlling this operation.
         frame_range: Optional half-open camera-frame interval.
-        apply: Whether to commit successful results to the model.
-        cpu: Optional borrowed CPU executor; ownership remains with the caller.
-        num_cpus: Measurement threads without an executor, defaulting to one.
-        progress: Optional callback receiving structured progress updates.
-        cancel_event: Optional event whose is_set() requests cooperative cancellation.
-
     Returns:
         Computed PhotometryResult value.
     """
+    dataset = processor_model(dataset)
+    context = context or ExecutionContext()
+    context.check_cancelled()
+    cpu, num_cpus, progress, cancel_event = (
+        context.cpu,
+        context.num_cpus,
+        context.progress,
+        context.cancel_event,
+    )
     return cast(
         PhotometryResult,
         _extract(
@@ -705,7 +731,6 @@ def measure_localizations(
             channels=channels,
             settings=settings,
             frame_range=frame_range,
-            apply=apply,
             cpu=cpu,
             num_cpus=num_cpus,
             progress=progress,
@@ -715,18 +740,15 @@ def measure_localizations(
 
 
 @logged
+@_record_execution
 def stationary_traces(
-    dataset: Dataset,
+    dataset: DatasetSnapshot,
     localization_ids: ArrayLike,
     *,
     channels: list[str] | None = None,
     settings: PhotometrySettings = _DEFAULT_SETTINGS,
     frame_range: tuple[int, int] | None = None,
-    apply: bool = True,
-    cpu: CpuExecutor | None = None,
-    num_cpus: int | None = None,
-    progress: ProgressCallback | None = None,
-    cancel_event: CancelEvent | None = None,
+    context: ExecutionContext | None = None,
 ) -> PhotonSequenceResult:
     """Sample each channel's actual frames at drift-following stationary positions.
 
@@ -737,20 +759,24 @@ def stationary_traces(
     per-frame localisations, spatial tracks or observation records.
 
     Args:
+        context: Execution policy, frame chunk size, progress and cancellation.
         dataset: Scientific model supplying acquisitions and result tables.
         localization_ids: Localization ids used by this operation.
         channels: Channels used by this operation.
         settings: Validated settings controlling this operation.
         frame_range: Optional half-open camera-frame interval.
-        apply: Whether to commit successful results to the model.
-        cpu: Optional borrowed CPU executor; ownership remains with the caller.
-        num_cpus: Measurement threads without an executor, defaulting to one.
-        progress: Optional callback receiving structured progress updates.
-        cancel_event: Optional event whose is_set() requests cooperative cancellation.
-
     Returns:
         Primary photon sequences with sample metrics and any applied sequence IDs.
     """
+    dataset = processor_model(dataset)
+    context = context or ExecutionContext()
+    context.check_cancelled()
+    cpu, num_cpus, progress, cancel_event = (
+        context.cpu,
+        context.num_cpus,
+        context.progress,
+        context.cancel_event,
+    )
     return cast(
         PhotonSequenceResult,
         _extract(
@@ -760,7 +786,6 @@ def stationary_traces(
             channels=channels,
             settings=settings,
             frame_range=frame_range,
-            apply=apply,
             cpu=cpu,
             num_cpus=num_cpus,
             progress=progress,
@@ -770,18 +795,15 @@ def stationary_traces(
 
 
 @logged
+@_record_execution
 def stationary_site_traces(
-    dataset: Dataset,
-    acquisition_id: str,
-    channel: str,
+    dataset: DatasetSnapshot,
+    selection: PartitionSelection,
     sites: Mapping[str, tuple[float, float]],
     *,
     source: ImageSource | None = None,
     settings: PhotometrySettings | FixedApertureSettings = _DEFAULT_SETTINGS,
-    apply: bool = True,
-    num_cpus: int | None = None,
-    progress: ProgressCallback | None = None,
-    cancel_event: CancelEvent | None = None,
+    context: ExecutionContext | None = None,
 ) -> PhotonSequenceResult:
     """Measure fixed sites directly in a logical channel's pixel space.
 
@@ -791,20 +813,22 @@ def stationary_site_traces(
     or tracks are created. Centres stay fixed in the supplied pixel space.
 
     Args:
+        selection: Explicit acquisition/channel or sequence/channel selection.
+        context: Execution policy, frame chunk size, progress and cancellation.
         dataset: Model providing the original acquisition and camera frame clock.
-        acquisition_id: Original acquisition identifier.
-        channel: Logical channel whose frames are sampled.
         sites: Stable molecule IDs mapped to (x, y) positions.
         source: Optional replacement pixels in the same logical frame order.
         settings: Aperture and background measurements to compute.
-        apply: Commit the completed sequences to the model.
-        num_cpus: Number of measurement threads.
-        progress: Callback receiving progress updates.
-        cancel_event: Cooperative cancellation event.
-
     Returns:
         Detached photon sequences, with their stored IDs when applied.
     """
+    if not isinstance(selection, PartitionSelection):
+        raise TypeError("Use PartitionSelection")
+    acquisition_id, channel = (selection.acquisition_id, selection.channel)
+    dataset = processor_model(dataset)
+    context = context or ExecutionContext()
+    context.check_cancelled()
+    num_cpus, progress, cancel_event = (context.num_cpus, context.progress, context.cancel_event)
     expected = dataset.dependencies(acquisition_id, channel)
     view = dataset.acquisitions[acquisition_id].channels[channel]
     pixels = view if source is None else source
@@ -815,17 +839,17 @@ def stationary_site_traces(
     positions = dict(sites)
     for key, position in positions.items():
         if (
-            not isinstance(key, str) or not key
-            or np.shape(position) != (2,) or not np.isfinite(position).all()
+            not isinstance(key, str)
+            or not key
+            or np.shape(position) != (2,)
+            or (not np.isfinite(position).all())
         ):
             raise ValueError("Each site needs a nonempty identifier and a finite (x, y) centre")
-
     fixed = settings if isinstance(settings, FixedApertureSettings) else None
     if fixed is not None:
         masks = fixed_aperture_masks(fixed)
         regions = tuple(
-            _fixed_mask_region(view.shape[1:], masks[0].shape[0], x, y)
-            for x, y in positions.values()
+            (_fixed_mask_region(view.shape[1:], masks[0].shape[0], x, y) for x, y in positions.values())
         )
         exclusion = np.zeros(view.shape[1:], dtype=bool)
         for image_slice, mask_slice in regions:
@@ -837,45 +861,46 @@ def stationary_site_traces(
         Yields:
             Frame pixels, site requests and precomputed measurement geometry.
         """
-        for index in range(len(view)):
-            if cancel_event is not None and cancel_event.is_set():
-                raise CancelledError("Photometry cancelled")
-            info = view.frame_info(index)
-            rows = [
-                {
-                    "molecule_id": molecule_id,
-                    "acquisition_id": acquisition_id,
-                    "channel": channel,
-                    "frame": info.camera_frame,
-                    "channel_frame": index,
-                    "cycle_index": info.cycle_index if info.cycle_index is not None else -1,
-                    "timestamp": info.timestamp if info.timestamp is not None else np.nan,
-                    "localization_id": 0,
-                    "track_id": 0,
-                    "x": x,
-                    "y": y,
-                }
-                for molecule_id, (x, y) in positions.items()
-            ]
-            image = np.array(pixels[index], copy=True)
-            if fixed is None:
-                yield image, rows, positions.values(), settings
-            else:
-                yield image, rows, regions, exclusion, masks, fixed
+        with open_reader(pixels) as reader:
+            for index in range(len(view)):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise CancelledError("Photometry cancelled")
+                info = view.frame_info(index)
+                rows = [
+                    {
+                        "molecule_id": molecule_id,
+                        "acquisition_id": acquisition_id,
+                        "channel": channel,
+                        "frame": info.camera_frame,
+                        "channel_frame": index,
+                        "cycle_index": info.cycle_index if info.cycle_index is not None else -1,
+                        "timestamp": info.timestamp if info.timestamp is not None else np.nan,
+                        "localization_id": 0,
+                        "track_id": 0,
+                        "x": x,
+                        "y": y,
+                    }
+                    for molecule_id, (x, y) in positions.items()
+                ]
+                image = reader.read_frames([index])[0]
+                if fixed is None:
+                    yield (image, rows, positions.values(), settings)
+                else:
+                    yield (image, rows, regions, exclusion, masks, fixed)
 
-    chunks = _measure_frames(
-        jobs() if positions else iter(()),
-        len(view) if positions else 0,
-        num_cpus,
-        progress,
-        cancel_event,
-        worker=_job if fixed is None else _fixed_job,
-    )
+    with closing(jobs()) as work:
+        chunks = _measure_frames(
+            work if positions else iter(()),
+            len(view) if positions else 0,
+            num_cpus,
+            progress,
+            cancel_event,
+            worker=_job if fixed is None else _fixed_job,
+        )
     columns = _columns([row for chunk in chunks for row in chunk], fixed)
     if source is not None:
         columns["working_x"] = columns.pop("x")
         columns["working_y"] = columns.pop("y")
-
     from .photon_sequences import from_columns
 
     run_id = str(uuid4())
@@ -886,48 +911,46 @@ def stationary_site_traces(
     )
     result = PhotonSequenceResult(sequences, settings, TraceMode.STATIONARY, run_id, expected)
     expected.validate(dataset)
-    return apply_photometry(dataset, result) if apply else result
+    return result
 
 
 @logged
+@_record_execution
 def bounding_box_traces(
-    dataset: Dataset,
-    acquisition_id: str,
-    channel: str,
+    dataset: DatasetSnapshot,
+    selection: PartitionSelection,
     bounding_box_ids: list[str] | tuple[str, ...],
     *,
     source: ImageSource | None = None,
     settings: PhotometrySettings | FixedApertureSettings = _DEFAULT_SETTINGS,
     source_metadata: Mapping[str, object] | None = None,
-    apply: bool = True,
-    num_cpus: int | None = None,
-    progress: ProgressCallback | None = None,
-    cancel_event: CancelEvent | None = None,
+    context: ExecutionContext | None = None,
 ) -> PhotonSequenceResult:
     """Extract sequences anchored to persistent, revisioned bounding boxes.
 
     Args:
+        selection: Explicit acquisition/channel or sequence/channel selection.
+        context: Execution policy, frame chunk size, progress and cancellation.
         dataset: Owner of box definitions, acquisitions and sequences.
-        acquisition_id: Recording to measure.
-        channel: Logical measurement channel.
         bounding_box_ids: Distinct active box IDs in the supplied pixel space.
         source: Explicit working pixels for boxes in working space.
         settings: Signal, background and optional PSF settings.
         source_metadata: Provenance of externally prepared working pixels.
-        apply: Publish the completed run atomically.
-        num_cpus: Number of aperture measurement threads.
-        progress: Progress update callback.
-        cancel_event: Cooperative cancellation event.
-
     Returns:
         Sequences linked to their box IDs and revisions, with extraction provenance.
     """
+    if not isinstance(selection, PartitionSelection):
+        raise TypeError("Use PartitionSelection")
+    acquisition_id, channel = (selection.acquisition_id, selection.channel)
+    dataset = processor_model(dataset)
+    context = context or ExecutionContext()
+    context.check_cancelled()
+    num_cpus, progress, cancel_event = (context.num_cpus, context.progress, context.cancel_event)
     ids = tuple(bounding_box_ids)
     if len(ids) != len(set(ids)):
         raise ValueError("Bounding box IDs must be distinct")
     expected = dataset.dependencies(
-        acquisition_id, channel,
-        components={"bounding_boxes", "localizations", "transforms"},
+        acquisition_id, channel, components={"bounding_boxes", "localizations", "transforms"}
     )
     boxes = {identifier: dataset.bounding_boxes[identifier] for identifier in ids}
     for box in boxes.values():
@@ -940,15 +963,17 @@ def bounding_box_traces(
         if box.space == "raw" and source is not None:
             raise ValueError("Raw boxes require the original channel pixels")
     result = stationary_site_traces(
-        dataset, acquisition_id, channel,
+        dataset,
+        PartitionSelection(acquisition_id, channel),
         {identifier: (box.x, box.y) for identifier, box in boxes.items()},
-        source=source, settings=settings, apply=False, num_cpus=num_cpus,
-        progress=progress, cancel_event=cancel_event,
+        source=source,
+        settings=settings,
+        context=ExecutionContext(num_cpus=num_cpus, progress=progress, cancel_event=cancel_event),
     )
     acquisition = dataset.acquisitions[acquisition_id]
     provenance = {
         "version": 1,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "method": "fixed_aperture" if isinstance(settings, FixedApertureSettings) else "aperture",
         "settings": asdict(settings),
         "source_space": "working" if source is not None else "raw",
@@ -957,7 +982,7 @@ def bounding_box_traces(
         "frame_clock": "camera",
         "source": deepcopy(acquisition.metadata),
         "working_source": deepcopy(dict(source_metadata or {})),
-        "software": deepcopy(dataset.processing.software),
+        "software": deepcopy(dataset._processing.software),
         "measurement_threads": 1 if num_cpus is None else num_cpus,
     }
     try:
@@ -970,43 +995,45 @@ def bounding_box_traces(
         pass
     if isinstance(settings, FixedApertureSettings) and settings.psf_box_size is not None:
         provenance["psf_fit"] = {
-            "backend": "picasso.gaussmle", "model": "sigma", "tolerance": 0.0001,
-            "max_iterations": 500, "camera_conversion": False,
+            "backend": "picasso.gaussmle",
+            "model": "sigma",
+            "tolerance": 0.0001,
+            "max_iterations": 500,
+            "camera_conversion": False,
         }
     shared_masks = isinstance(settings, FixedApertureSettings) or settings.exclude_neighbours
     dependencies = {identifier: box.revision for identifier, box in boxes.items()} if shared_masks else {}
     sequences = []
     for sequence in result.sequences:
         box = boxes[sequence.molecule_id]
-        sequences.append(replace(
-            sequence,
-            bounding_box_id=box.id,
-            bounding_box_revision=box.revision,
-            metadata={
-                **sequence.metadata,
-                "bounding_box": asdict(box),
-                "bounding_box_dependencies": dependencies,
-                "extraction": provenance,
-            },
-        ))
+        sequences.append(
+            replace(
+                sequence,
+                bounding_box_id=box.id,
+                bounding_box_revision=box.revision,
+                metadata={
+                    **sequence.metadata,
+                    "bounding_box": asdict(box),
+                    "bounding_box_dependencies": dependencies,
+                    "extraction": provenance,
+                },
+            )
+        )
     result = replace(result, sequences=tuple(sequences), expected=expected)
     expected.validate(dataset)
-    return apply_photometry(dataset, result) if apply else result
+    return result
 
 
 @logged
+@_record_execution
 def track_traces(
-    dataset: Dataset,
+    dataset: DatasetSnapshot,
     track_ids: ArrayLike,
     *,
     channels: list[str] | None = None,
     settings: PhotometrySettings = _DEFAULT_SETTINGS,
     frame_range: tuple[int, int] | None = None,
-    apply: bool = True,
-    cpu: CpuExecutor | None = None,
-    num_cpus: int | None = None,
-    progress: ProgressCallback | None = None,
-    cancel_event: CancelEvent | None = None,
+    context: ExecutionContext | None = None,
 ) -> PhotonSequenceResult:
     """Measure moving tracks at measured members only, preserving all gaps.
 
@@ -1016,20 +1043,24 @@ def track_traces(
     existing localisation memberships unchanged.
 
     Args:
+        context: Execution policy, frame chunk size, progress and cancellation.
         dataset: Scientific model supplying acquisitions and result tables.
         track_ids: Track ids used by this operation.
         channels: Channels used by this operation.
         settings: Validated settings controlling this operation.
         frame_range: Optional half-open camera-frame interval.
-        apply: Whether to commit successful results to the model.
-        cpu: Optional borrowed CPU executor; ownership remains with the caller.
-        num_cpus: Measurement threads without an executor, defaulting to one.
-        progress: Optional callback receiving structured progress updates.
-        cancel_event: Optional event whose is_set() requests cooperative cancellation.
-
     Returns:
         Primary photon sequences linked to unchanged spatial tracks through provenance.
     """
+    dataset = processor_model(dataset)
+    context = context or ExecutionContext()
+    context.check_cancelled()
+    cpu, num_cpus, progress, cancel_event = (
+        context.cpu,
+        context.num_cpus,
+        context.progress,
+        context.cancel_event,
+    )
     return cast(
         PhotonSequenceResult,
         _extract(
@@ -1039,7 +1070,6 @@ def track_traces(
             channels=channels,
             settings=settings,
             frame_range=frame_range,
-            apply=apply,
             cpu=cpu,
             num_cpus=num_cpus,
             progress=progress,

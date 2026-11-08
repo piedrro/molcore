@@ -8,9 +8,9 @@ import numpy as np
 
 from ._logging import logged
 from .files import report
-from .revisions import StateToken
-from .staging import state_token
-from .types import CoordinateSpace, StaleResultError
+from .revisions import DependencyToken
+from .staging import dependency_token
+from .types import CoordinateSpace
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
@@ -40,17 +40,15 @@ def partition(
         Computed tuple[ChannelView, dict[str, NumPy array]] value.
     """
     view = dataset.acquisitions[acquisition_id].channels[channel]
-    rows = dataset.localizations.query(
-        acquisition_id=acquisition_id, channel=channel, space=space, ids=ids
-    )
+    rows = dataset.localizations.query(acquisition_id=acquisition_id, channel=channel, space=space, ids=ids)
     order = np.argsort(rows["id"], kind="stable")
-    return view, {key: values[order] for key, values in rows.items()}
+    return (view, {key: values[order] for key, values in rows.items()})
 
 
 @logged
 def finish(
     dataset: Dataset,
-    expected: StateToken | None,
+    expected: DependencyToken,
     progress: ProgressCallback | None,
     cancel_event: CancelEvent | None,
 ) -> None:
@@ -63,8 +61,7 @@ def finish(
         cancel_event: Optional event whose is_set() requests cooperative cancellation.
     """
     report(progress, cancel_event, 1, 1, "Analysis complete")
-    if state_token(dataset) != expected:
-        raise StaleResultError("Analysis inputs changed during computation")
+    expected.validate(dataset)
 
 
 @logged
@@ -73,7 +70,9 @@ def start(
     space: CoordinateSpace | str,
     progress: ProgressCallback | None,
     cancel_event: CancelEvent | None,
-) -> tuple[StateToken, CoordinateSpace]:
+    acquisition_id: str,
+    channels: tuple[str, ...],
+) -> tuple[DependencyToken, CoordinateSpace]:
     """Start.
 
     Args:
@@ -86,4 +85,9 @@ def start(
         Computed tuple[tuple, CoordinateSpace] value.
     """
     report(progress, cancel_event, 0, 1, "Computing analysis")
-    return state_token(dataset), CoordinateSpace(space)
+    expected = dependency_token(
+        dataset,
+        [(acquisition_id, channel) for channel in channels],
+        components={"localizations", "transforms"},
+    )
+    return (expected, CoordinateSpace(space))

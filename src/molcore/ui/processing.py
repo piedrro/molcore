@@ -18,9 +18,10 @@ from qtpy.QtWidgets import (
     QListWidgetItem,
 )
 
+from molcore import ExecutionContext, PartitionSelection
+
 from .. import alignment, cellpose, localisation, undrifting
 from .._logging import logged
-from ..processing import apply_alignment, apply_drift, apply_segmentations
 from ..staging import clone_dataset, experiment_state_token, state_token
 from ..types.processing import (
     CameraSettings,
@@ -63,7 +64,7 @@ class LocalisationWidget(ToolWidget):
             parent: Optional Qt parent controlling widget lifetime.
         """
         super().__init__(session, parent)
-        self.detections, self._detection_token = None, None
+        self.detections, self._detection_token = (None, None)
         self.settings_form = SettingsForm(LocalisationSettings)
         self.threshold = self.settings_form.controls["min_net_gradient"]
         self.camera_form = SettingsForm(CameraSettings)
@@ -81,7 +82,6 @@ class LocalisationWidget(ToolWidget):
         self._camera()
 
     def _camera(self) -> None:
-        # Clear previous calibration; never carry a different camera's values over.
         """Camera."""
         for name in ("baseline", "sensitivity", "gain"):
             self.camera_form.controls[name].clear()
@@ -97,7 +97,7 @@ class LocalisationWidget(ToolWidget):
             *_: Additional positional values supplied by the caller.
         """
         super().invalidate()
-        self.detections, self._detection_token = None, None
+        self.detections, self._detection_token = (None, None)
 
     def _detect(self, preview: bool) -> Any:
         """Detect.
@@ -108,13 +108,11 @@ class LocalisationWidget(ToolWidget):
         Returns:
             Result retaining the input format or backend-specific representation.
         """
-        settings, session = self.settings_form.value(), self.session
-        a, c, cpus = session.acquisition_id, session.channel, session.num_cpus
+        settings, session = (self.settings_form.value(), self.session)
+        a, c, cpus = (session.acquisition_id, session.channel, session.num_cpus)
         frames = (session.camera_frame, session.camera_frame + 1) if preview else None
 
-        def compute(
-            model: str, progress: ProgressCallback | None, cancel: Any
-        ) -> DetectionResult:
+        def compute(model: str, progress: ProgressCallback | None, cancel: Any) -> DetectionResult:
             """Compute a detached result using the current controls.
 
             Args:
@@ -127,13 +125,10 @@ class LocalisationWidget(ToolWidget):
             """
             return localisation.detect(
                 model,
-                a,
-                c,
+                PartitionSelection(a, c),
                 settings=settings,
                 frame_range=frames,
-                num_cpus=cpus,
-                progress=progress,
-                cancel_event=cancel,
+                context=ExecutionContext(num_cpus=cpus, progress=progress, cancel_event=cancel),
             )
 
         def complete(result: Any) -> None:
@@ -145,16 +140,10 @@ class LocalisationWidget(ToolWidget):
             self.ready(
                 result,
                 f"{len(result.columns['frame'])} candidates; "
-                + (
-                    "current-frame preview"
-                    if preview
-                    else "full-channel detections cached for fitting"
-                ),
+                + ("current-frame preview" if preview else "full-channel detections cached for fitting"),
             )
             if not preview:
-                self.detections, self._detection_token = result, state_token(
-                    session.dataset
-                )
+                self.detections, self._detection_token = (result, state_token(session.dataset))
 
         session.submit(compute, completed=complete)
 
@@ -171,9 +160,7 @@ class LocalisationWidget(ToolWidget):
     @logged
     def fit_cached(self) -> None:
         """Fit cached full-channel detections and atomically replace their partition."""
-        if self.detections is None or self._detection_token != state_token(
-            self.session.dataset
-        ):
+        if self.detections is None or self._detection_token != state_token(self.session.dataset):
             raise ValueError("Detect the full channel again before fitting")
         self._fit(self.detections)
 
@@ -191,16 +178,10 @@ class LocalisationWidget(ToolWidget):
         Returns:
             Result retaining the input format or backend-specific representation.
         """
-        settings, camera, session = (
-            self.settings_form.value(),
-            self.camera_form.value(),
-            self.session,
-        )
-        a, c, cpus = session.acquisition_id, session.channel, session.num_cpus
+        settings, camera, session = (self.settings_form.value(), self.camera_form.value(), self.session)
+        a, c, cpus = (session.acquisition_id, session.channel, session.num_cpus)
 
-        def compute(
-            model: str, progress: ProgressCallback | None, cancel: Any
-        ) -> LocalisationResult:
+        def compute(model: str, progress: ProgressCallback | None, cancel: Any) -> LocalisationResult:
             """Compute a detached result using the current controls.
 
             Args:
@@ -214,13 +195,10 @@ class LocalisationWidget(ToolWidget):
             options = dict(
                 settings=settings,
                 camera=camera,
-                apply=False,
-                num_cpus=cpus,
-                progress=progress,
-                cancel_event=cancel,
+                context=ExecutionContext(num_cpus=cpus, progress=progress, cancel_event=cancel),
             )
             if detections is None:
-                return localisation.localise(model, a, c, **options)
+                return localisation.localise(model, PartitionSelection(a, c), **options)
             return localisation.fit(model, detections, **options)
 
         session.submit(
@@ -259,12 +237,10 @@ class UndriftingWidget(ToolWidget):
     @logged
     def estimate(self) -> None:
         """Estimate reference-pixel displacement without altering raw coordinates."""
-        session, settings = self.session, self.settings_form.value()
-        a, c, cpus = session.acquisition_id, session.channel, session.num_cpus
+        session, settings = (self.session, self.settings_form.value())
+        a, c, cpus = (session.acquisition_id, session.channel, session.num_cpus)
 
-        def compute(
-            model: str, progress: ProgressCallback | None, cancel: Any
-        ) -> DriftResult:
+        def compute(model: str, progress: ProgressCallback | None, cancel: Any) -> DriftResult:
             """Compute a detached result using the current controls.
 
             Args:
@@ -277,12 +253,9 @@ class UndriftingWidget(ToolWidget):
             """
             return undrifting.estimate_drift(
                 model,
-                a,
-                c,
+                PartitionSelection(a, c),
                 settings=settings,
-                num_cpus=cpus,
-                progress=progress,
-                cancel_event=cancel,
+                context=ExecutionContext(num_cpus=cpus, progress=progress, cancel_event=cancel),
             )
 
         def complete(result: Any) -> None:
@@ -293,8 +266,7 @@ class UndriftingWidget(ToolWidget):
             """
             self.ready(
                 result,
-                f"{result.settings.method.upper()} drift at {len(result.frames)} camera frames\n"
-                f"Coverage: {result.frames[0]}–{result.frames[-1]}\nDisplacement in reference pixels",
+                f"{result.settings.method.upper()} drift at {len(result.frames)} camera frames\nCoverage: {result.frames[0]}–{result.frames[-1]}\nDisplacement in reference pixels",
             )
             self.curve.set_curve(result.frames, result.displacement)
 
@@ -304,11 +276,7 @@ class UndriftingWidget(ToolWidget):
     def apply_preview(self) -> None:
         """Apply the current non-stale drift preview on the GUI thread."""
         self.require_preview()
-        apply_drift(
-            self.session.dataset,
-            {self.preview.acquisition_id: self.preview},
-            expected=self.preview_token,
-        )
+        self.session.dataset.apply_all({self.preview.acquisition_id: self.preview}.values())
         self.session.changed()
         self.status.setText("Drift applied")
 
@@ -332,20 +300,14 @@ class ChannelAlignmentWidget(ToolWidget):
         form = QFormLayout()
         self.target = combo([])
         self.source = combo([])
-        self.apply_all = QCheckBox(
-            "Apply optical calibration to all compatible datasets"
-        )
+        self.apply_all = QCheckBox("Apply optical calibration to all compatible datasets")
         self.apply_all.setChecked(True)
         self.model = combo(["affine", "translation", "homography"])
         self.radius = QDoubleSpinBox()
-        self.radius.setRange(0.000001, 1e9)
+        self.radius.setRange(1e-06, 1000000000.0)
         self.radius.setDecimals(6)
         self.radius.setValue(5)
-        self.source_ids, self.target_ids, self.name = (
-            QLineEdit(),
-            QLineEdit(),
-            QLineEdit(),
-        )
+        self.source_ids, self.target_ids, self.name = (QLineEdit(), QLineEdit(), QLineEdit())
         for label, control in (
             ("Source emission channel", self.source),
             ("Reference channel", self.target),
@@ -358,9 +320,7 @@ class ChannelAlignmentWidget(ToolWidget):
         ):
             form.addRow(label, control)
         self.form.addLayout(form)
-        self.model.setToolTip(
-            "Homography uses deterministic RANSAC (1 pixel inlier threshold)."
-        )
+        self.model.setToolTip("Homography uses deterministic RANSAC (1 pixel inlier threshold).")
         self.target.setToolTip(
             "Optical registration applies to every channel sharing the source emission path, across all excitation frames. ALEX DA/AA share one transform into DD/AD."
         )
@@ -384,16 +344,8 @@ class ChannelAlignmentWidget(ToolWidget):
         self.target.clear()
         if self.session.acquisition_id is not None:
             acquisition = self.session.dataset.acquisitions[self.session.acquisition_id]
-            acceptor = [
-                c
-                for c, spec in acquisition.channel_specs.items()
-                if spec.emission == "A"
-            ]
-            donor = [
-                c
-                for c, spec in acquisition.channel_specs.items()
-                if spec.emission == "D"
-            ]
+            acceptor = [c for c, spec in acquisition.channel_specs.items() if spec.emission == "A"]
+            donor = [c for c, spec in acquisition.channel_specs.items() if spec.emission == "D"]
             self.source.addItems(acceptor or list(acquisition.channels))
             self.target.addItems(donor or list(acquisition.channels))
             if previous_source in (acceptor or list(acquisition.channels)):
@@ -402,13 +354,8 @@ class ChannelAlignmentWidget(ToolWidget):
                 self.source.setCurrentText(self.session.channel)
             if previous:
                 self.target.setCurrentText(previous)
-            if (
-                self.target.currentText() == self.source.currentText()
-                and self.target.count() > 1
-            ):
-                self.target.setCurrentIndex(
-                    (self.target.currentIndex() + 1) % self.target.count()
-                )
+            if self.target.currentText() == self.source.currentText() and self.target.count() > 1:
+                self.target.setCurrentIndex((self.target.currentIndex() + 1) % self.target.count())
 
     @logged
     def estimate(self) -> None:
@@ -421,13 +368,8 @@ class ChannelAlignmentWidget(ToolWidget):
             session.num_cpus,
         )
         options = dict(model=self.model.currentText(), match_radius=self.radius.value())
-        for key, control in (
-            ("source_ids", self.source_ids),
-            ("target_ids", self.target_ids),
-        ):
-            options[key] = [
-                int(v) for v in control.text().replace(",", " ").split()
-            ] or None
+        for key, control in (("source_ids", self.source_ids), ("target_ids", self.target_ids)):
+            options[key] = [int(v) for v in control.text().replace(",", " ").split()] or None
         self._fit_options = dict(
             model=options["model"],
             match_radius=options["match_radius"],
@@ -435,9 +377,7 @@ class ChannelAlignmentWidget(ToolWidget):
         )
         self._experiment_preview_token = experiment_state_token(session.experiment)
 
-        def compute(
-            model: str, progress: ProgressCallback | None, cancel: Any
-        ) -> AlignmentResult:
+        def compute(model: str, progress: ProgressCallback | None, cancel: Any) -> AlignmentResult:
             """Compute a detached result using the current controls.
 
             Args:
@@ -454,17 +394,14 @@ class ChannelAlignmentWidget(ToolWidget):
                 c,
                 target,
                 **options,
-                num_cpus=cpus,
-                progress=progress,
-                cancel_event=cancel,
+                context=ExecutionContext(num_cpus=cpus, progress=progress, cancel_event=cancel),
             )
 
         session.submit(
             compute,
             completed=lambda result: self.ready(
                 result,
-                f"{len(result.residuals)} pairs; RMS residual {np.sqrt(np.mean(result.residuals**2)):.4g} px\n"
-                f"Source → reference matrix:\n{result.reference_matrix}",
+                f"{len(result.residuals)} pairs; RMS residual {np.sqrt(np.mean(result.residuals**2)):.4g} px\nSource → reference matrix:\n{result.reference_matrix}",
             ),
         )
 
@@ -478,27 +415,15 @@ class ChannelAlignmentWidget(ToolWidget):
             .emission
         )
         if self.apply_all.isChecked() and emission is not None:
-            if (
-                experiment_state_token(self.session.experiment)
-                != self._experiment_preview_token
-            ):
-                raise ValueError(
-                    "Experiment changed; estimate a fresh optical calibration"
-                )
+            if experiment_state_token(self.session.experiment) != self._experiment_preview_token:
+                raise ValueError("Experiment changed; estimate a fresh optical calibration")
             staged = clone_dataset(self.session.dataset)
-            result = apply_alignment(
-                staged, self.preview, expected=self.preview_token, **self._fit_options
-            )
+            result = staged.apply(self.preview)
             self.session.experiment.apply_channel_calibration(
-                staged.calibrations[result.calibration_name], emission=emission
+                staged.calibrations[result.identifiers["calibration_name"]], emission=emission
             )
         else:
-            apply_alignment(
-                self.session.dataset,
-                self.preview,
-                expected=self.preview_token,
-                **self._fit_options,
-            )
+            self.session.dataset.apply(self.preview)
         self.session.changed()
         self.status.setText("Calibration applied")
 
@@ -523,9 +448,7 @@ class SegmentationWidget(ToolWidget):
         self.form.addWidget(self.settings_form)
         self.settings_form.changed.connect(self.invalidate)
         self.button("Choose local model weights…", self.choose_weights)
-        self.form.addWidget(
-            QLabel("GPU uses one worker. Cellpose may download built-in model weights.")
-        )
+        self.form.addWidget(QLabel("GPU uses one worker. Cellpose may download built-in model weights."))
         self.name = QLineEdit()
         self.name.setPlaceholderText("Optional segmentation ID for a single result")
         self.name.textChanged.connect(self.invalidate)
@@ -534,9 +457,7 @@ class SegmentationWidget(ToolWidget):
         self.targets.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.targets.setMaximumHeight(120)
         self.targets.itemSelectionChanged.connect(self.invalidate)
-        self.form.addWidget(
-            QLabel("Batch targets (optional; each records its source frame)")
-        )
+        self.form.addWidget(QLabel("Batch targets (optional; each records its source frame)"))
         self.form.addWidget(self.targets)
         self.mask_preview = MaskPreview()
         self.form.addWidget(self.mask_preview)
@@ -558,9 +479,7 @@ class SegmentationWidget(ToolWidget):
         for a, acquisition in self.session.dataset.acquisitions.items():
             for c, view in acquisition.channels.items():
                 if len(view):
-                    item = QListWidgetItem(
-                        f"{a} / {c} (first camera frame {view.source_frames[0]})"
-                    )
+                    item = QListWidgetItem(f"{a} / {c} (first camera frame {view.source_frames[0]})")
                     item.setData(Qt.UserRole, (a, c, int(view.source_frames[0])))
                     self.targets.addItem(item)
 
@@ -604,12 +523,10 @@ class SegmentationWidget(ToolWidget):
         Returns:
             Result retaining the input format or backend-specific representation.
         """
-        session, settings = self.session, self.settings_form.value()
+        session, settings = (self.session, self.settings_form.value())
         cpus = 1 if settings.gpu else session.num_cpus
 
-        def compute(
-            model: str, progress: ProgressCallback | None, cancel: Any
-        ) -> dict[str, Segmentation]:
+        def compute(model: str, progress: ProgressCallback | None, cancel: Any) -> dict[str, Segmentation]:
             """Compute a detached result using the current controls.
 
             Args:
@@ -624,10 +541,7 @@ class SegmentationWidget(ToolWidget):
                 model,
                 requests,
                 settings=settings,
-                apply=False,
-                num_cpus=cpus,
-                progress=progress,
-                cancel_event=cancel,
+                context=ExecutionContext(num_cpus=cpus, progress=progress, cancel_event=cancel),
             )
 
         def complete(results: Any) -> None:
@@ -639,8 +553,7 @@ class SegmentationWidget(ToolWidget):
             self.ready(
                 results,
                 "\n".join(
-                    f"{s.id}: {len(np.unique(s.labels[s.labels > 0]))} objects; "
-                    f"{s.acquisition_id}/{s.channel}, camera {s.frame}, {s.space}"
+                    f"{s.id}: {len(np.unique(s.labels[s.labels > 0]))} objects; {s.acquisition_id}/{s.channel}, camera {s.frame}, {s.space}"
                     for s in results.values()
                 ),
             )
@@ -653,8 +566,6 @@ class SegmentationWidget(ToolWidget):
     def apply_preview(self) -> None:
         """Apply every mask in a non-stale successful preview atomically."""
         self.require_preview()
-        apply_segmentations(
-            self.session.dataset, self.preview, expected=self.preview_token
-        )
+        self.session.dataset.apply_all(self.preview.values())
         self.session.changed()
         self.status.setText("Segmentations applied")

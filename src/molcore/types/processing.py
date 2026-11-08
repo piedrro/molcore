@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import field
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 
 from .._logging import logged
+from ..immutable import immutable_record
 from ..revisions import FreshnessToken
 from ._shared import CoordinateSpace
+from .results import ResultIdentity
 
 
-@dataclass(frozen=True)
+@immutable_record
 class CellposeSettings:
     """Cellpose 3 inference parameters for static two-dimensional images.
 
@@ -42,20 +45,12 @@ class CellposeSettings:
 
     def __post_init__(self) -> None:
         """Validate the immutable record after construction."""
-        if (
-            not isinstance(self.pretrained_model, (str, Path))
-            or not str(self.pretrained_model).strip()
-        ):
+        if not isinstance(self.pretrained_model, (str, Path)) or not str(self.pretrained_model).strip():
             raise ValueError("Specify a Cellpose 3 model name or weight path")
         object.__setattr__(self, "pretrained_model", str(self.pretrained_model))
-        if self.diameter is not None and (
-            not np.isfinite(self.diameter) or self.diameter <= 0
-        ):
+        if self.diameter is not None and (not np.isfinite(self.diameter) or self.diameter <= 0):
             raise ValueError("Diameter must be finite and positive")
-        if (
-            not np.isfinite([self.flow_threshold, self.cellprob_threshold]).all()
-            or self.flow_threshold < 0
-        ):
+        if not np.isfinite([self.flow_threshold, self.cellprob_threshold]).all() or self.flow_threshold < 0:
             raise ValueError("Invalid Cellpose thresholds")
         for name, minimum in (("min_size", 0), ("batch_size", 1)):
             value = getattr(self, name)
@@ -66,7 +61,7 @@ class CellposeSettings:
                 raise ValueError(f"{name} must be a boolean")
 
 
-@dataclass(frozen=True)
+@immutable_record
 class SegmentationRequest:
     """Binding between one segmentation source frame and its model result.
 
@@ -89,8 +84,8 @@ class SegmentationRequest:
         if (
             not isinstance(self.acquisition_id, str)
             or not self.acquisition_id
-            or not isinstance(self.channel, str)
-            or not self.channel
+            or (not isinstance(self.channel, str))
+            or (not self.channel)
         ):
             raise ValueError("Request requires acquisition and channel names")
         if self.frame is not None:
@@ -122,7 +117,7 @@ class DriftMethod(StrEnum):
     AIM = "aim"
 
 
-@dataclass(frozen=True)
+@immutable_record
 class ProgressUpdate:
     """Parent-process progress notification.
 
@@ -147,7 +142,7 @@ class ProgressUpdate:
         return 100.0 if self.total == 0 else 100 * self.completed / self.total
 
 
-@dataclass(frozen=True)
+@immutable_record
 class CameraSettings:
     """Explicit scalar camera conversion used when extracting fit spots.
 
@@ -169,12 +164,10 @@ class CameraSettings:
             not np.isfinite([self.baseline, self.sensitivity, self.gain]).all()
             or min(self.sensitivity, self.gain) <= 0
         ):
-            raise ValueError(
-                "Camera settings must be finite with positive sensitivity and gain"
-            )
+            raise ValueError("Camera settings must be finite with positive sensitivity and gain")
 
 
-@dataclass(frozen=True)
+@immutable_record
 class LocalisationSettings:
     """Net-gradient detection and Gaussian CPU fitting parameters.
 
@@ -182,7 +175,6 @@ class LocalisationSettings:
         min_net_gradient: Detection threshold in source-camera units.
         box_size: Odd fit/detection box width in channel pixels.
         fit_method: Least squares or Poisson maximum likelihood.
-        chunk_size: Maximum channel frames submitted in one CPU job.
         tolerance: Backend optimizer tolerance.
         max_iterations: Maximum iterations per fitted spot.
     """
@@ -190,14 +182,13 @@ class LocalisationSettings:
     min_net_gradient: float = 1000.0
     box_size: int = 7
     fit_method: FitMethod = FitMethod.LQ
-    chunk_size: int = 16
-    tolerance: float = 1e-3
+    tolerance: float = 0.001
     max_iterations: int = 1000
 
     def __post_init__(self) -> None:
         """Validate the immutable record after construction."""
         object.__setattr__(self, "fit_method", FitMethod(self.fit_method))
-        for name in ("box_size", "chunk_size", "max_iterations"):
+        for name in ("box_size", "max_iterations"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
@@ -206,13 +197,13 @@ class LocalisationSettings:
         if (
             not np.isfinite(self.min_net_gradient)
             or self.min_net_gradient < 0
-            or not np.isfinite(self.tolerance)
-            or self.tolerance <= 0
+            or (not np.isfinite(self.tolerance))
+            or (self.tolerance <= 0)
         ):
             raise ValueError("Invalid threshold or optimizer tolerance")
 
 
-@dataclass(frozen=True)
+@immutable_record
 class DriftSettings:
     """RCC/AIM parameters expressed in reference-channel pixels and frames.
 
@@ -244,8 +235,8 @@ class DriftSettings:
             raise ValueError("AIM distances must be finite and positive")
 
 
-@dataclass(frozen=True)
-class DetectionResult:
+@immutable_record
+class DetectionResult(ResultIdentity):
     """Detached candidate positions with original camera-frame indices.
 
     Attributes:
@@ -266,8 +257,8 @@ class DetectionResult:
     expected: FreshnessToken | None = None
 
 
-@dataclass(frozen=True)
-class LocalisationResult:
+@immutable_record
+class LocalisationResult(ResultIdentity):
     """Fitted measurement columns and optional active localization identifiers.
 
     Attributes:
@@ -289,10 +280,21 @@ class LocalisationResult:
     camera: CameraSettings | None = None
     backend_version: str = "external"
     expected: FreshnessToken | None = None
+    source_space: Literal["raw", "working"] = field(default="raw", kw_only=True)
+
+    def __post_init__(self) -> None:
+        if self.source_space not in ("raw", "working"):
+            raise ValueError("Source space must be raw or working")
+        if (
+            isinstance(self.failed_fits, bool)
+            or not isinstance(self.failed_fits, (int, np.integer))
+            or self.failed_fits < 0
+        ):
+            raise ValueError("Failed fit count must be a nonnegative integer")
 
 
-@dataclass(frozen=True)
-class DriftResult:
+@immutable_record
+class DriftResult(ResultIdentity):
     """Estimated reference-space displacement at explicit camera frames.
 
     Attributes:
@@ -314,8 +316,8 @@ class DriftResult:
     backend_version: str = "external"
 
 
-@dataclass(frozen=True)
-class AlignmentResult:
+@immutable_record
+class AlignmentResult(ResultIdentity):
     """Source-to-target channel fit and composed reference calibration.
 
     Attributes:
@@ -336,12 +338,8 @@ class AlignmentResult:
     matrix: np.ndarray
     reference_matrix: np.ndarray
     residuals: np.ndarray
-    source_ids: np.ndarray = field(
-        default_factory=lambda: np.array([], dtype=np.uint64)
-    )
-    target_ids: np.ndarray = field(
-        default_factory=lambda: np.array([], dtype=np.uint64)
-    )
+    source_ids: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.uint64))
+    target_ids: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.uint64))
     calibration_name: str | None = None
     inliers: np.ndarray = field(default_factory=lambda: np.array([], dtype=bool))
     expected: FreshnessToken | None = None

@@ -7,20 +7,20 @@ Channel alignment registers physical emission paths while leaving camera pixels 
 ## Estimate and reuse a calibration
 
 ```python
-from molcore.alignment import estimate_alignment
-from molcore.processing import apply_alignment
+from molcore.alignment import align_channels
 
-preview = estimate_alignment(
-    dataset, "camera-1", "DA", "DD",
+preview = align_channels(
+    dataset.snapshot(), "camera-1", "DA", "DD",
     source_ids=acceptor_fiducials,
     target_ids=donor_fiducials,
     model="homography",  # also "translation" or "affine"
+    name="optics-2026",
 )
-applied = apply_alignment(dataset, preview, model="homography", name="optics-2026")
-dataset.transforms.select("camera-2", "AA", applied.calibration_name)
+receipt = dataset.apply(preview)
+dataset.transforms.select("camera-2", "AA", receipt.identifiers["calibration_name"])
 ```
 
-The fiducial ID lists must be paired in corresponding order. Without IDs, pass a positive `match_radius` for mutual nearest-neighbor matching. All three fit models use deterministic RANSAC (default one-pixel inlier threshold, 1,000 trials). `AlignmentResult` exposes the matrix, residual per match, inlier mask, and source and target IDs. A preview does not change the dataset; `apply_alignment` installs a named calibration and selects the source emission group.
+The fiducial ID lists must be paired in corresponding order. Without IDs, pass a positive `match_radius` for mutual nearest-neighbor matching. All three fit models use deterministic RANSAC (default one-pixel inlier threshold, 1,000 trials). `AlignmentResult` exposes the matrix, residual per match, inlier mask, and source and target IDs. A preview does not change the dataset; `dataset.apply` installs a named calibration and selects the source emission group.
 
 Named calibrations can be selected on other acquisitions when emission path, source and reference geometry, and pixel scale agree. A fitted calibration stores those properties, its fiducial evidence, and `selected_groups` provenance. The latter lists each acquisition, emission path and logical channels currently using the calibration. Imported matrices without geometry metadata remain explicit user supplied calibrations.
 

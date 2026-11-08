@@ -3,6 +3,7 @@
 import unittest
 
 import numpy as np
+from scientific_helpers import compute_scenario
 from test_processor_backends import InlineExecutor
 
 from molcore import Acquisition, ArraySource, ChannelSpec, Dataset, tracking
@@ -20,19 +21,14 @@ def fixture(sequence, count):
         )
     )
     frames = model.acquisitions["a"].channels["D"].source_frames
-    ids = model.localizations.add(
-        acquisition_id="a",
-        channel="D",
-        frame=frames,
-        x=4,
-        y=4,
-    )
-    return model, ids
+    ids = model.localizations.add(acquisition_id="a", channel="D", frame=frames, x=4, y=4)
+    return (model, ids)
 
 
 class TrackingClockTests(unittest.TestCase):
     def link(self, model, ids, **settings):
-        return tracking.track(
+        return compute_scenario(
+            tracking.track,
             model,
             "a",
             "D",
@@ -47,9 +43,7 @@ class TrackingClockTests(unittest.TestCase):
         result = self.link(model, ids, frame_clock="channel", memory=0)
         self.assertEqual(len(result.memberships), 1)
         np.testing.assert_array_equal(result.memberships[0], ids)
-        np.testing.assert_array_equal(
-            model.localizations.query(space="raw")["frame"], [0, 2, 4]
-        )
+        np.testing.assert_array_equal(model.localizations.query(space="raw")["frame"], [0, 2, 4])
 
     def test_irregular_excitation_channel_clock_counts_logical_frames(self):
         model, ids = fixture(("D", "D", "A"), 6)
@@ -60,21 +54,14 @@ class TrackingClockTests(unittest.TestCase):
         np.testing.assert_array_equal(result.memberships[0], ids)
         np.testing.assert_array_equal(result.selected_ids, ids)
         np.testing.assert_array_equal(source_frames, [0, 1, 3, 4])
-        np.testing.assert_array_equal(
-            model.localizations.query(space="raw")["frame"], [0, 1, 3, 4]
-        )
-        np.testing.assert_array_equal(
-            model.acquisitions["a"].channels["D"].source_frames, source_frames
-        )
+        np.testing.assert_array_equal(model.localizations.query(space="raw")["frame"], [0, 1, 3, 4])
+        np.testing.assert_array_equal(model.acquisitions["a"].channels["D"].source_frames, source_frames)
         self.assertEqual(model.revision, revision)
         self.assertEqual(len(model.tracks), 0)
-        applied = tracking.apply_tracking(model, result)
-        np.testing.assert_array_equal(
-            model.tracks.query(track_id=applied.track_ids)["frame"], [0, 1, 3, 4]
-        )
+        applied = model.apply(result)
+        np.testing.assert_array_equal(model.tracks.query(track_id=applied.track_ids)["frame"], [0, 1, 3, 4])
         self.assertEqual(
-            model.processing.settings["tracking"]["a"]["D"]["settings"]["frame_clock"],
-            "channel",
+            model.processing.settings["tracking"]["a"]["D"]["settings"]["frame_clock"], "channel"
         )
 
     def test_channel_memory_one_bridges_one_missing_logical_frame(self):
@@ -82,9 +69,7 @@ class TrackingClockTests(unittest.TestCase):
             with self.subTest(sequence=sequence):
                 model, ids = fixture(sequence, count)
                 selected = ids[[0, 2]]
-                without_memory = self.link(
-                    model, selected, frame_clock="channel", memory=0
-                )
+                without_memory = self.link(model, selected, frame_clock="channel", memory=0)
                 self.assertEqual(len(without_memory.memberships), 2)
                 result = self.link(model, selected, frame_clock="channel", memory=1)
                 self.assertEqual(len(result.memberships), 1)
@@ -99,9 +84,7 @@ class TrackingClockTests(unittest.TestCase):
                 model, ids = fixture(sequence, count)
                 result = self.link(model, ids, memory=0)
                 self.assertEqual(len(result.memberships), len(memberships))
-                for actual, indices in zip(
-                    result.memberships, memberships, strict=True
-                ):
+                for actual, indices in zip(result.memberships, memberships, strict=True):
                     np.testing.assert_array_equal(actual, ids[indices])
 
     def test_invalid_frame_clock_is_rejected(self):

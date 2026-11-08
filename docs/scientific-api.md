@@ -9,7 +9,7 @@ strings. Public processing inputs and outputs have type annotations.
 
 `localizations.update_measurements(ids, **columns)` updates real numeric columns
 in the supplied stable-ID order. Scalars broadcast; arrays must match the ID count.
-IDs must be unique and present. New columns contain NaN elsewhere. Structural
+IDs must be unique and present. New columns are nullable elsewhere, preserving their native dtype and validity masks. Structural
 columns cannot be edited this way. Updates invalidate observations anchored to
 changed localizations or their tracks; image crops and positions stay intact.
 
@@ -43,11 +43,12 @@ must be recomputed from the updated model.
 Transactions recheck freshness immediately before adoption. Public model mutators
 and adoption share a reentrant lock; direct dictionary or borrowed-array edits are
 not synchronized and must not run concurrently with processing.
-Detached processor results also have dedicated `apply_photometry` and
-`apply_tracking` entry points (available from `molcore.processing` or their modules).
-Their source tokens are checked by default. An explicit `expected` token supports
-callers managing a larger transaction: that caller assumes responsibility for
-validating the original processing state before applying to its staged model.
+Scientific functions require `dataset.snapshot()` and return immutable detached
+results. Use `PartitionSelection` or `SequenceSelection` where the signature calls
+for a selection, and `context=ExecutionContext(...)` for execution policy.
+`Dataset.apply(result)` returns an immutable `ApplyReceipt` with allocated IDs;
+`apply_all` commits multiple independent results atomically. Operation-specific
+apply helpers are private. See [integration contracts](api-contracts.md).
 
 `Dataset.remove_acquisition(id, cascade=False)` rejects scientific dependents.
 With `cascade=True`, it removes the acquisition's localizations, observations,
@@ -65,7 +66,7 @@ Use `measure_localizations`, `stationary_traces`, or `track_traces` from
 stationary and moving traces return `PhotonSequenceResult` containing primary
 photon-sequence records. They accept explicit typed
 arguments for `channels`, `settings`, optional half-open camera `frame_range`,
-`apply`, `cpu`/`num_cpus`, `progress` and `cancel_event`.
+`context` for executor, CPU count, progress and cancellation.
 
 `PhotometrySettings` defaults to a 3-pixel square signal aperture, 1-pixel excluded
 buffer and 1-pixel local background ring. Use `ApertureShape.SQUARE` or `.CIRCLE`
@@ -111,9 +112,8 @@ Each sequence owns its samples, raw crop centres, per-sample localisation refere
 signal/background measurements and explicit units. `PhotonSequenceResult.columns` is
 a transient display/export projection of those records. Run settings and provenance
 are retained; earlier runs remain queryable until invalidated.
-`apply=False` produces a detached preview; reapplying an already applied result is
-rejected. Existing save/open stores measurements and provenance without a format
-migration. Raw channel pixels are required; incomplete crop snapshots cannot be
+Computation always produces a detached preview; apply explicitly with `Dataset.apply`.
+Save/open uses format 7, including measurement schemas and nullable validity masks. Raw channel pixels are required; incomplete crop snapshots cannot be
 used to reconstruct traces.
 
 One camera frame is streamed per job; `CpuExecutor.max_pending` bounds in-flight
@@ -134,7 +134,7 @@ memory, minimum measured length and `CoordinateSpace`. Empty camera frames,
 including other excitation frames, consume memory. Segmentation labels form
 independent linking groups and label zero is excluded. Each acquisition is linked
 independently; explicit existing model APIs still support spanning tracks.
-Full applying runs atomically replace the partition's tracks, including empty runs.
+Applying full results atomically replaces the partition's tracks, including empty runs.
 
 `trajectory.trajectory_statistics` returns `TrajectoryStatistics`: step columns,
 MSD columns, within-acquisition duration, path length and optional `DiffusionFit`.
@@ -208,7 +208,7 @@ settings = ContrastSettings(
 )
 limits = autocontrast(image, settings=settings).limits
 results = autocontrast_channels(
-    dataset, "recording", settings=settings,
+    dataset.snapshot(), "recording", settings=settings,
     scope=ContrastScope.PER_CHANNEL,
 )
 # A consuming application can set layer.contrast_limits = results[channel].limits

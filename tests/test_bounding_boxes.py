@@ -2,6 +2,7 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
+from scientific_helpers import compute_scenario
 
 from molcore import Acquisition, ArraySource, BoundingBox, Dataset, StaleResultError
 from molcore.photometry import FixedApertureSettings, bounding_box_traces
@@ -22,12 +23,12 @@ def model():
             metadata={"origin": "manual"},
         )
     )
-    return dataset, box
+    return (dataset, box)
 
 
 def test_box_edits_preserve_identity_and_invalidate_dependent_traces():
     dataset, box = model()
-    result = bounding_box_traces(dataset, "movie", "image", [box.id])
+    result = compute_scenario(bounding_box_traces, dataset, "movie", "image", [box.id])
     sequence = dataset.photon_sequences[result.sequence_ids[0]]
     assert sequence.bounding_box_id == box.id
     assert sequence.bounding_box_revision == box.revision
@@ -41,7 +42,7 @@ def test_box_edits_preserve_identity_and_invalidate_dependent_traces():
 
 def test_stale_box_preview_cannot_be_applied():
     dataset, box = model()
-    result = bounding_box_traces(dataset, "movie", "image", [box.id], apply=False)
+    result = compute_scenario(bounding_box_traces, dataset, "movie", "image", [box.id], apply=False)
     dataset.bounding_boxes.set(replace(box, width=7))
     with pytest.raises(StaleResultError):
         dataset.apply(result)
@@ -50,7 +51,8 @@ def test_stale_box_preview_cannot_be_applied():
 
 def test_box_metadata_and_extraction_provenance_roundtrip_without_pixels(tmp_path):
     dataset, box = model()
-    result = bounding_box_traces(
+    result = compute_scenario(
+        bounding_box_traces,
         dataset,
         "movie",
         "image",
@@ -75,8 +77,9 @@ def test_working_boxes_require_an_explicit_working_source():
     dataset, _ = model()
     box = dataset.bounding_boxes.set(BoundingBox(x=4, y=4, width=3, height=3, space="working"))
     with pytest.raises(ValueError, match="working source"):
-        bounding_box_traces(dataset, "movie", "image", [box.id])
-    result = bounding_box_traces(
+        compute_scenario(bounding_box_traces, dataset, "movie", "image", [box.id])
+    result = compute_scenario(
+        bounding_box_traces,
         dataset,
         "movie",
         "image",
@@ -90,18 +93,20 @@ def test_working_boxes_require_an_explicit_working_source():
 def test_snapshot_box_edits_do_not_change_the_live_store():
     dataset, box = model()
     snapshot = dataset.snapshot()
-    snapshot.bounding_boxes.set(replace(box, y=6))
+    with pytest.raises(AttributeError):
+        snapshot.bounding_boxes.set(replace(box, y=6))
     assert dataset.bounding_boxes[box.id].y == 4
-    assert snapshot.bounding_boxes[box.id].y == 6
+    assert snapshot.bounding_boxes[box.id].y == 4
 
 
 def test_noop_box_updates_and_detached_metadata_preserve_active_sequences():
     dataset, box = model()
-    result = bounding_box_traces(dataset, "movie", "image", [box.id])
+    result = compute_scenario(bounding_box_traces, dataset, "movie", "image", [box.id])
     revision = dataset.bounding_boxes.revision
     dataset.bounding_boxes.set(box)
     detached = dataset.bounding_boxes[box.id]
-    detached.metadata["origin"] = "outside edit"
+    with pytest.raises(TypeError):
+        detached.metadata["origin"] = "outside edit"
     assert dataset.bounding_boxes[box.id].metadata["origin"] == "manual"
     assert dataset.bounding_boxes.revision == revision
     assert not dataset.photon_sequences.is_stale(result.sequence_ids[0])
@@ -110,7 +115,8 @@ def test_noop_box_updates_and_detached_metadata_preserve_active_sequences():
 def test_editing_a_neighbour_invalidates_the_shared_background_run():
     dataset, box = model()
     neighbour = dataset.bounding_boxes.set(replace(box, id="neighbour", x=6))
-    result = bounding_box_traces(
+    result = compute_scenario(
+        bounding_box_traces,
         dataset,
         "movie",
         "image",
@@ -123,7 +129,7 @@ def test_editing_a_neighbour_invalidates_the_shared_background_run():
 
 def test_deleted_box_history_roundtrips_and_recreation_advances_revision(tmp_path):
     dataset, box = model()
-    result = bounding_box_traces(dataset, "movie", "image", [box.id])
+    result = compute_scenario(bounding_box_traces, dataset, "movie", "image", [box.id])
     dataset.bounding_boxes.remove(box.id)
     path = tmp_path / "deleted.h5"
     dataset.save(path, image_policy="none")

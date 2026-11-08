@@ -4,16 +4,9 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from scientific_helpers import compute_scenario
 
-from molcore import (
-    Acquisition,
-    ArraySource,
-    Calibration,
-    Dataset,
-    Experiment,
-    Segmentation,
-    StaleResultError,
-)
+from molcore import Acquisition, ArraySource, Calibration, Dataset, Experiment, Segmentation, StaleResultError
 from molcore.staging import clone_dataset, state_token, transact
 from molcore.types import CameraSettings, LocalisationResult, LocalisationSettings
 
@@ -22,9 +15,7 @@ def model():
     result = Dataset()
     for name in ("a", "b"):
         result.add_acquisition(Acquisition(ArraySource(np.zeros((2, 7, 7))), id=name))
-        result.localizations.add(
-            acquisition_id=name, channel="image", frame=[0], x=[2.0], y=[2.0]
-        )
+        result.localizations.add(acquisition_id=name, channel="image", frame=[0], x=[2.0], y=[2.0])
     return result
 
 
@@ -33,9 +24,7 @@ class MutationContractTests(unittest.TestCase):
         dataset = model()
         related = dataset.dependencies("a", "image")
         unrelated = dataset.dependencies("b", "image")
-        dataset.update_acquisition(
-            "a", pixel_size=100, timestamps=[0.0, 0.1], metadata={"camera": "one"}
-        )
+        dataset.update_acquisition("a", pixel_size=100, timestamps=[0.0, 0.1], metadata={"camera": "one"})
         self.assertEqual(dataset.acquisitions["a"].pixel_size, 100)
         unrelated.validate(dataset)
         with self.assertRaises(StaleResultError):
@@ -46,7 +35,7 @@ class MutationContractTests(unittest.TestCase):
         self.assertEqual(state_token(dataset), before)
 
     def test_experiment_publishes_only_after_all_datasets_are_committed(self):
-        first, second = model(), model()
+        first, second = (model(), model())
         experiment = Experiment()
         experiment.add_dataset(first)
         experiment.add_dataset(second)
@@ -59,13 +48,11 @@ class MutationContractTests(unittest.TestCase):
         first.subscribe(on_first)
         experiment.apply_channel_calibration(Calibration("shared"), emission=None)
         self.assertEqual(seen, ["shared"])
-        self.assertEqual(
-            second.localizations.query(ids=[1], space="raw")["x"].tolist(), [5.0]
-        )
+        self.assertEqual(second.localizations.query(ids=[1], space="raw")["x"].tolist(), [5.0])
 
     def test_transaction_preserves_public_store_and_collection_references(self):
         dataset = model()
-        table, acquisitions = dataset.localizations, dataset.acquisitions
+        table, acquisitions = (dataset.localizations, dataset.acquisitions)
         transact(dataset, lambda staged: staged.localizations.move(1, x=3, y=4))
         self.assertIs(dataset.localizations, table)
         self.assertIs(dataset.acquisitions, acquisitions)
@@ -100,9 +87,7 @@ class MutationContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             transact(dataset, fail)
         self.assertEqual(events, [])
-        self.assertEqual(
-            dataset.localizations.query(ids=[1], space="raw")["x"].tolist(), [2.0]
-        )
+        self.assertEqual(dataset.localizations.query(ids=[1], space="raw")["x"].tolist(), [2.0])
 
     def test_subscriber_failure_does_not_turn_commit_into_failure(self):
         dataset = model()
@@ -112,9 +97,7 @@ class MutationContractTests(unittest.TestCase):
 
         dataset.subscribe(broken)
         dataset.localizations.move(1, x=3, y=4)
-        self.assertEqual(
-            dataset.localizations.query(ids=[1], space="raw")["x"].tolist(), [3.0]
-        )
+        self.assertEqual(dataset.localizations.query(ids=[1], space="raw")["x"].tolist(), [3.0])
 
 
 class RevisionContractTests(unittest.TestCase):
@@ -144,7 +127,7 @@ class RevisionContractTests(unittest.TestCase):
 
         with patch.object(dataset.localizations, "query", side_effect=concurrent_read):
             with self.assertRaises(StaleResultError):
-                measure_localizations(dataset, [1], cpu=InlineExecutor(), apply=False)
+                compute_scenario(measure_localizations, dataset, [1], cpu=InlineExecutor(), apply=False)
 
     def test_named_state_and_clone_lineage(self):
         dataset = model()
@@ -172,10 +155,9 @@ class RevisionContractTests(unittest.TestCase):
         snapshot = dataset.snapshot()
         expected = snapshot.dependencies("a", "image", components={"localizations"})
         expected.validate(dataset)
-        snapshot.localizations.move(1, x=3, y=4)
-        self.assertEqual(
-            dataset.localizations.query(ids=[1], space="raw")["x"].tolist(), [2.0]
-        )
+        with self.assertRaises(AttributeError):
+            snapshot.localizations.move(1, x=3, y=4)
+        self.assertEqual(dataset.localizations.query(ids=[1], space="raw")["x"].tolist(), [2.0])
 
 
 class ResultContractTests(unittest.TestCase):
@@ -194,9 +176,7 @@ class ResultContractTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             dataset.apply_all([first, object()])
         self.assertEqual(events, [])
-        self.assertEqual(
-            dataset.localizations.query(ids=[1], space="raw")["x"].tolist(), [2.0]
-        )
+        self.assertEqual(dataset.localizations.query(ids=[1], space="raw")["x"].tolist(), [2.0])
         dataset.apply_all([first])
         self.assertEqual(len(events), 1)
 
@@ -213,13 +193,8 @@ class ResultContractTests(unittest.TestCase):
         )
         applied = dataset.apply(result)
         self.assertIsNotNone(applied.localization_ids)
-        self.assertEqual(
-            dataset.localizations.query(acquisition_id="a")["frame"].tolist(), [1]
-        )
-        self.assertEqual(
-            dataset.processing.settings["localisation"]["a"]["image"]["backend"],
-            "custom-1",
-        )
+        self.assertEqual(dataset.localizations.query(acquisition_id="a")["frame"].tolist(), [1])
+        self.assertEqual(dataset.processing.settings["localisation"]["a"]["image"]["backend"], "custom-1")
         with self.assertRaises(StaleResultError):
             dataset.apply(result)
 

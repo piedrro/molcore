@@ -5,6 +5,7 @@ import unittest
 from concurrent.futures import CancelledError
 
 import numpy as np
+from scientific_helpers import compute_scenario
 
 from molcore import Acquisition, ArraySource, Dataset, StaleResultError, clustering
 from molcore.staging import state_token
@@ -17,16 +18,7 @@ class ClusterPointsTests(unittest.TestCase):
 
     def test_labels_and_centroids_preserve_input_order_and_noise(self):
         points = np.array(
-            [
-                [10, 10],
-                [0, 0],
-                [10.1, 10.1],
-                [0.1, 0.1],
-                [np.nan, 2],
-                [2, np.inf],
-                [5, 5],
-            ],
-            dtype=np.float32,
+            [[10, 10], [0, 0], [10.1, 10.1], [0.1, 0.1], [np.nan, 2], [2, np.inf], [5, 5]], dtype=np.float32
         )
         points.flags.writeable = False
         before = points.copy()
@@ -34,8 +26,8 @@ class ClusterPointsTests(unittest.TestCase):
         np.testing.assert_array_equal(labels, [0, 1, 0, 1, -1, -1, -1])
         np.testing.assert_array_equal(centroids["cluster"], [0, 1])
         np.testing.assert_array_equal(centroids["count"], [2, 2])
-        np.testing.assert_allclose(centroids["x"], [10.05, 0.05], rtol=1e-6)
-        np.testing.assert_allclose(centroids["y"], [10.05, 0.05], rtol=1e-6)
+        np.testing.assert_allclose(centroids["x"], [10.05, 0.05], rtol=1e-06)
+        np.testing.assert_allclose(centroids["y"], [10.05, 0.05], rtol=1e-06)
         self.assertEqual(labels.dtype, np.dtype("int64"))
         self.assertEqual(centroids["x"].dtype, np.dtype("float64"))
         labels[:] = 99
@@ -55,28 +47,15 @@ class ClusterPointsTests(unittest.TestCase):
         self.assertEqual(points, [["0", "0"], ["0.1", "0.1"]])
 
     def test_empty_and_all_nonfinite_inputs(self):
-        for points, expected in (
-            (np.empty((0, 2)), []),
-            ([[np.nan, 1], [0, np.inf]], [-1, -1]),
-        ):
+        for points, expected in ((np.empty((0, 2)), []), ([[np.nan, 1], [0, np.inf]], [-1, -1])):
             with self.subTest(points=points):
-                labels, centroids = clustering.cluster_points(
-                    points, settings=self.settings
-                )
+                labels, centroids = clustering.cluster_points(points, settings=self.settings)
                 np.testing.assert_array_equal(labels, expected)
                 self.assertEqual(set(centroids), {"cluster", "count", "x", "y"})
                 self.assertTrue(all(len(values) == 0 for values in centroids.values()))
 
     def test_bad_shape_and_non_numeric_inputs_are_rejected(self):
-        for points in (
-            [],
-            [1, 2],
-            1,
-            [[1]],
-            [[1, 2, 3]],
-            np.empty((2, 2, 2)),
-            [["bad", 1]],
-        ):
+        for points in ([], [1, 2], 1, [[1]], [[1, 2, 3]], np.empty((2, 2, 2)), [["bad", 1]]):
             with self.subTest(points=points), self.assertRaises(ValueError):
                 clustering.cluster_points(points, settings=self.settings)
 
@@ -93,7 +72,8 @@ class ClusterPointsTests(unittest.TestCase):
         )
         before = state_token(model)
         updates = []
-        native = clustering.cluster_localizations(
+        native = compute_scenario(
+            clustering.cluster_localizations,
             model,
             "a",
             "image",
@@ -101,8 +81,7 @@ class ClusterPointsTests(unittest.TestCase):
             progress=updates.append,
         )
         labels, centroids = clustering.cluster_points(
-            np.column_stack([native.columns["x"], native.columns["y"]]),
-            settings=self.settings,
+            np.column_stack([native.columns["x"], native.columns["y"]]), settings=self.settings
         )
         np.testing.assert_array_equal(native.columns["id"], [10, 20, 30, 40])
         np.testing.assert_array_equal(labels, [0, 0, 1, 1])
@@ -115,17 +94,15 @@ class ClusterPointsTests(unittest.TestCase):
     def test_native_cancellation_and_freshness_survive_extraction(self):
         model = Dataset()
         model.add_acquisition(Acquisition(ArraySource(np.ones((1, 9, 9))), id="a"))
-        ids = model.localizations.add(
-            acquisition_id="a", channel="image", frame=0, x=1, y=1
-        )
+        ids = model.localizations.add(acquisition_id="a", channel="image", frame=0, x=1, y=1)
         event = threading.Event()
         event.set()
         with self.assertRaises(CancelledError):
-            clustering.cluster_localizations(model, "a", "image", cancel_event=event)
+            compute_scenario(clustering.cluster_localizations, model, "a", "image", cancel_event=event)
 
         def edit(update):
             if update.percent == 100:
                 model.localizations.move(ids[0], x=2, y=2)
 
         with self.assertRaises(StaleResultError):
-            clustering.cluster_localizations(model, "a", "image", progress=edit)
+            compute_scenario(clustering.cluster_localizations, model, "a", "image", progress=edit)

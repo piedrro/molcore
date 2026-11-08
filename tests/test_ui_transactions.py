@@ -5,7 +5,6 @@ import unittest
 import numpy as np
 
 from molcore import Acquisition, ArraySource, Dataset, Segmentation
-from molcore.processing import apply_segmentations
 
 
 class TransactionTests(unittest.TestCase):
@@ -15,7 +14,7 @@ class TransactionTests(unittest.TestCase):
         first = Segmentation("one", "a", np.ones((5, 5), dtype=int))
         second = Segmentation("two", "a", np.ones((7, 7), dtype=int))
         with self.assertRaises(ValueError):
-            apply_segmentations(model, {"one": first, "two": second})
+            model.apply_all({"one": first, "two": second}.values())
         self.assertFalse(model.segmentations)
 
 

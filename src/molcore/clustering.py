@@ -8,22 +8,21 @@ import numpy as np
 
 from ._analysis import finish, partition, start
 from ._logging import logged
+from .execution import ExecutionContext, _record_execution
+from .snapshots import DatasetSnapshot, processor_model
 from .types.analysis import ClusteringResult, ClusteringSettings
+from .types.selections import PartitionSelection
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
-    from .types import CancelEvent, CoordinateSpace, Dataset, ProgressCallback
-
-
+    from .types import CoordinateSpace
 _DEFAULT_SETTINGS = ClusteringSettings()
 
 
 @logged
 def cluster_points(
-    points: ArrayLike,
-    *,
-    settings: ClusteringSettings = _DEFAULT_SETTINGS,
+    points: ArrayLike, *, settings: ClusteringSettings = _DEFAULT_SETTINGS
 ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     """Cluster N-by-2 coordinates with the native DBSCAN geometry.
 
@@ -51,9 +50,9 @@ def cluster_points(
     valid = np.isfinite(xy).all(axis=1)
     labels = np.full(len(xy), -1, dtype=np.int64)
     if valid.any():
-        labels[valid] = DBSCAN(
-            eps=settings.radius, min_samples=settings.min_samples, n_jobs=1
-        ).fit_predict(xy[valid])
+        labels[valid] = DBSCAN(eps=settings.radius, min_samples=settings.min_samples, n_jobs=1).fit_predict(
+            xy[valid]
+        )
     clusters = np.unique(labels[labels >= 0])
     centroids = {
         "cluster": clusters,
@@ -61,42 +60,43 @@ def cluster_points(
         "x": np.array([xy[labels == c, 0].mean() for c in clusters]),
         "y": np.array([xy[labels == c, 1].mean() for c in clusters]),
     }
-    return labels, centroids
+    return (labels, centroids)
 
 
 @logged
+@_record_execution
 def cluster_localizations(
-    dataset: Dataset,
-    acquisition_id: str,
-    channel: str,
+    dataset: DatasetSnapshot,
+    selection: PartitionSelection,
     *,
     settings: ClusteringSettings = _DEFAULT_SETTINGS,
     space: CoordinateSpace | str = "raw",
     ids: ArrayLike | None = None,
-    progress: ProgressCallback | None = None,
-    cancel_event: CancelEvent | None = None,
+    context: ExecutionContext | None = None,
 ) -> ClusteringResult:
     """Cluster a stable-ID-ordered partition; non-finite positions remain noise.
 
     Args:
+        selection: Explicit acquisition/channel or sequence/channel selection.
+        context: Execution policy, frame chunk size, progress and cancellation.
         dataset: Scientific model supplying acquisitions and result tables.
-        acquisition_id: Source acquisition identifier.
-        channel: Logical source channel name.
         settings: Validated settings controlling this operation.
         space: Coordinate space: raw channel pixels, registered reference or drift-corrected reference.
         ids: Stable entity IDs; None selects the available partition.
-        progress: Optional callback receiving structured progress updates.
-        cancel_event: Optional event whose is_set() requests cooperative cancellation.
-
     Returns:
         Computed ClusteringResult value.
     """
-    expected, space = start(dataset, space, progress, cancel_event)
+    if not isinstance(selection, PartitionSelection):
+        raise TypeError("Use PartitionSelection")
+    acquisition_id, channel = (selection.acquisition_id, selection.channel)
+    dataset = processor_model(dataset)
+    context = context or ExecutionContext()
+    context.check_cancelled()
+    progress, cancel_event = (context.progress, context.cancel_event)
+    expected, space = start(dataset, space, progress, cancel_event, acquisition_id, (channel,))
     _, rows = partition(dataset, acquisition_id, channel, space, ids)
     xy = np.column_stack((rows["x"], rows["y"]))
     labels, centroids = cluster_points(xy, settings=settings)
     rows["cluster"] = labels
     finish(dataset, expected, progress, cancel_event)
-    return ClusteringResult(
-        acquisition_id, channel, space, settings, rows, expected, centroids
-    )
+    return ClusteringResult(acquisition_id, channel, space, settings, rows, expected, centroids)

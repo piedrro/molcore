@@ -6,19 +6,16 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from ._logging import logged
-from .types import (
-    CoordinateSpace,
-    Dataset,
-    DiffusionFit,
-    SpatialUnit,
-    TrajectoryStatistics,
-)
+from .execution import ExecutionContext, _record_execution
+from .snapshots import DatasetSnapshot, processor_model
+from .types import CoordinateSpace, DiffusionFit, SpatialUnit, TrajectoryStatistics
 from .types.tables import identifiers
 
 
 @logged
+@_record_execution
 def trajectory_statistics(
-    dataset: Dataset,
+    dataset: DatasetSnapshot,
     track_id: int,
     *,
     ids: ArrayLike | None = None,
@@ -27,6 +24,7 @@ def trajectory_statistics(
     frame_interval: float | None = None,
     lag_bin_edges: ArrayLike | None = None,
     fit_lag_range: tuple[float, float] | None = None,
+    context: ExecutionContext | None = None,
 ) -> TrajectoryStatistics:
     """Compute steps, MSD and optional unweighted 2D diffusion fit for one track.
 
@@ -58,28 +56,27 @@ def trajectory_statistics(
     Returns:
         Computed TrajectoryStatistics value.
     """
+    dataset = processor_model(dataset)
+    context = context or ExecutionContext()
+    context.check_cancelled()
     if not isinstance(space, CoordinateSpace) or not isinstance(unit, SpatialUnit):
         raise TypeError("Use CoordinateSpace and SpatialUnit enums")
-    if frame_interval is not None and (
-        not np.isfinite(frame_interval) or frame_interval <= 0
-    ):
+    if frame_interval is not None and (not np.isfinite(frame_interval) or frame_interval <= 0):
         raise ValueError("frame_interval must be finite and positive")
     edges = None if lag_bin_edges is None else np.asarray(lag_bin_edges, dtype=float)
     if edges is not None and (
         edges.ndim != 1
         or len(edges) < 2
-        or not np.isfinite(edges).all()
-        or edges[0] < 0
+        or (not np.isfinite(edges).all())
+        or (edges[0] < 0)
         or np.any(np.diff(edges) <= 0)
     ):
-        raise ValueError(
-            "Lag bin edges must be finite, nonnegative and strictly increasing"
-        )
+        raise ValueError("Lag bin edges must be finite, nonnegative and strictly increasing")
     if fit_lag_range is not None and (
         len(fit_lag_range) != 2
         or not np.isfinite(fit_lag_range).all()
         or fit_lag_range[0] < 0
-        or fit_lag_range[1] <= fit_lag_range[0]
+        or (fit_lag_range[1] <= fit_lag_range[0])
     ):
         raise ValueError("Fit lag range must be finite and increasing")
     rows = dataset.tracks.query(track_id=track_id, space=space)
@@ -95,9 +92,8 @@ def trajectory_statistics(
     aggregates = {}
     duration = path_length = 0.0
     for acquisition_id in dict.fromkeys(rows["acquisition_id"]):
-        subset = {
-            k: v[rows["acquisition_id"] == acquisition_id] for k, v in rows.items()
-        }
+        context.check_cancelled()
+        subset = {k: v[rows["acquisition_id"] == acquisition_id] for k, v in rows.items()}
         order = np.argsort(subset["frame"], kind="stable")
         frames = subset["frame"][order]
         acquisition = dataset.acquisitions[acquisition_id]
@@ -106,9 +102,7 @@ def trajectory_statistics(
         elif frame_interval is not None:
             times = frames.astype(float) * frame_interval
         else:
-            raise ValueError(
-                "Recorded timestamps or explicit camera-frame interval are required"
-            )
+            raise ValueError("Recorded timestamps or explicit camera-frame interval are required")
         if not np.isfinite(times).all() or np.any(np.diff(times) <= 0):
             raise ValueError(
                 "Track timestamps must be finite and strictly increasing within each acquisition"
@@ -117,13 +111,12 @@ def trajectory_statistics(
         if unit == SpatialUnit.NANOMETRES:
             scale = acquisition.pixel_size
             if scale is None or not np.isfinite(scale) or scale <= 0:
-                raise ValueError(
-                    "Positive pixel calibration required for physical units"
-                )
+                raise ValueError("Positive pixel calibration required for physical units")
         positions = np.column_stack([subset["x"][order], subset["y"][order]]) * scale
         if len(frames):
             duration += float(times[-1] - times[0])
         for index in range(1, len(frames)):
+            context.check_cancelled()
             delta = positions[index] - positions[index - 1]
             distance = float(np.linalg.norm(delta))
             elapsed = float(times[index] - times[index - 1])
@@ -144,9 +137,11 @@ def trajectory_statistics(
                 )
             )
         for i in range(len(frames) - 1):
+            context.check_cancelled()
             lags = times[i + 1 :] - times[i]
             squared = np.sum((positions[i + 1 :] - positions[i]) ** 2, axis=1)
             for lag, value in zip(lags, squared, strict=True):
+                context.check_cancelled()
                 key = (
                     float(f"{lag:.12g}")
                     if edges is None
@@ -158,54 +153,31 @@ def trajectory_statistics(
                     if lag < edges[0] or lag > edges[-1]:
                         continue
                 count, total_lag, total_value = aggregates.get(key, (0, 0.0, 0.0))
-                aggregates[key] = (
-                    count + 1,
-                    total_lag + float(lag),
-                    total_value + float(value),
-                )
+                aggregates[key] = (count + 1, total_lag + float(lag), total_value + float(value))
     keys = sorted(aggregates) if edges is None else range(len(edges) - 1)
     msd_rows = []
     for key in keys:
+        context.check_cancelled()
         count, lag, value = aggregates.get(key, (0, 0.0, 0.0))
-        msd_rows.append(
-            (
-                lag / count if count else np.nan,
-                value / count if count else np.nan,
-                count,
-            )
-        )
+        msd_rows.append((lag / count if count else np.nan, value / count if count else np.nan, count))
     msd = {
         name: np.asarray([row[i] for row in msd_rows], dtype=dtype)
-        for i, (name, dtype) in enumerate(
-            (("lag", float), ("msd", float), ("count", np.int64))
-        )
+        for i, (name, dtype) in enumerate((("lag", float), ("msd", float), ("count", np.int64)))
     }
     fit = None
     if fit_lag_range is not None:
-        chosen = (
-            (msd["lag"] >= fit_lag_range[0])
-            & (msd["lag"] <= fit_lag_range[1])
-            & (msd["count"] > 0)
-        )
-        x, y = msd["lag"][chosen], msd["msd"][chosen]
+        chosen = (msd["lag"] >= fit_lag_range[0]) & (msd["lag"] <= fit_lag_range[1]) & (msd["count"] > 0)
+        x, y = (msd["lag"][chosen], msd["msd"][chosen])
         if len(x) < 2 or len(np.unique(x)) < 2:
-            raise ValueError(
-                "Diffusion fitting requires at least two distinct populated lags in range"
-            )
-        slope, intercept = np.linalg.lstsq(
-            np.column_stack([x, np.ones(len(x))]), y, rcond=None
-        )[0]
+            raise ValueError("Diffusion fitting requires at least two distinct populated lags in range")
+        slope, intercept = np.linalg.lstsq(np.column_stack([x, np.ones(len(x))]), y, rcond=None)[0]
         rss = float(np.sum((y - (slope * x + intercept)) ** 2))
         tss = float(np.sum((y - y.mean()) ** 2))
         fit = DiffusionFit(
             float(slope / 4),
             float(intercept),
             float(slope),
-            (
-                1.0 - rss / tss
-                if tss
-                else (1.0 if np.allclose(y, slope * x + intercept) else 0.0)
-            ),
+            1.0 - rss / tss if tss else 1.0 if np.allclose(y, slope * x + intercept) else 0.0,
             rss,
             len(x),
         )
@@ -226,6 +198,5 @@ def trajectory_statistics(
         name: np.asarray([row[i] for row in steps], dtype=dtype)
         for i, (name, dtype) in enumerate(step_fields)
     }
-    return TrajectoryStatistics(
-        int(track_id), space, unit, columns, msd, duration, path_length, fit
-    )
+    context.check_cancelled()
+    return TrajectoryStatistics(int(track_id), space, unit, columns, msd, duration, path_length, fit)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import field
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
@@ -10,7 +10,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._logging import logged
+from ..immutable import immutable_record
 from ..revisions import FreshnessToken
+from .results import ResultIdentity
 
 
 class ChannelName(StrEnum):
@@ -64,7 +66,7 @@ class StaleResultError(RuntimeError):
     """A derived result no longer matches its inputs."""
 
 
-@dataclass(frozen=True)
+@immutable_record
 class ChannelSpec:
     """Logical channel selection applied to original camera frames.
 
@@ -75,7 +77,7 @@ class ChannelSpec:
         frame_step: Spacing between candidate camera frames.
     """
 
-    roi: tuple[int, int, int, int] | None = None  # y0, y1, x0, x1
+    roi: tuple[int, int, int, int] | None = None
     excitation: str | None = None
     frame_start: int = 0
     frame_step: int = 1
@@ -85,9 +87,7 @@ class ChannelSpec:
         """Validate the immutable record after construction."""
         if self.frame_start < 0 or self.frame_step < 1:
             raise ValueError("Channel start/step must be nonnegative/positive")
-        if self.emission is not None and (
-            not isinstance(self.emission, str) or not self.emission
-        ):
+        if self.emission is not None and (not isinstance(self.emission, str) or not self.emission):
             raise ValueError("Emission must be a nonempty physical path label or None")
         if self.roi is not None:
             object.__setattr__(self, "roi", tuple(self.roi))
@@ -96,7 +96,7 @@ class ChannelSpec:
                 raise ValueError("ROI must have positive extent")
 
 
-@dataclass(frozen=True)
+@immutable_record
 class FrameInfo:
     """Provenance for one logical-channel image.
 
@@ -128,8 +128,23 @@ class ImageSource(Protocol):
         dtype: NumPy pixel dtype.
     """
 
-    shape: tuple[int, int, int]
-    dtype: np.dtype
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        """Source extent.
+
+        Returns:
+            Frame count, height and width.
+        """
+        ...
+
+    @property
+    def dtype(self) -> np.dtype:
+        """Source pixel dtype.
+
+        Returns:
+            The NumPy pixel dtype.
+        """
+        ...
 
     def __getitem__(self, key: Any) -> NDArray:
         """Getitem.
@@ -148,7 +163,7 @@ class ImageSource(Protocol):
         ...
 
 
-@dataclass(frozen=True)
+@immutable_record
 class Calibration:
     """Named invertible raw-channel to reference-channel projective calibration.
 
@@ -172,15 +187,10 @@ class Calibration:
             or np.linalg.matrix_rank(self.matrix) < 3
         ):
             raise ValueError("Registration must be an invertible 3x3 projective matrix")
-        # Immutable backing bytes also prevent callers re-enabling writeability.
-        object.__setattr__(
-            self,
-            "matrix",
-            np.frombuffer(matrix.tobytes(), dtype=matrix.dtype).reshape(3, 3),
-        )
+        object.__setattr__(self, "matrix", np.frombuffer(matrix.tobytes(), dtype=matrix.dtype).reshape(3, 3))
 
 
-@dataclass(frozen=True)
+@immutable_record
 class Crop:
     """Raw-channel pixels and provenance for one molecule/frame measurement.
 
@@ -201,13 +211,13 @@ class Crop:
     acquisition_id: str
     channel: str
     camera_frame: int
-    origin: tuple[int, int]  # x, y in channel space
+    origin: tuple[int, int]
     localization_id: int | None = None
     photon_sequence_id: str | None = None
     sample_index: int | None = None
 
 
-@dataclass
+@immutable_record
 class ProcessingMetadata:
     """Reproducibility settings and installed package versions.
 
@@ -220,8 +230,8 @@ class ProcessingMetadata:
     software: dict[str, str] = field(default_factory=dict)
 
 
-@dataclass
-class Segmentation:
+@immutable_record
+class Segmentation(ResultIdentity):
     """Static segmentation source, labels and spatial binding.
 
     Attributes:
@@ -248,20 +258,18 @@ class Segmentation:
     mask_path: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     expected: FreshnessToken | None = field(default=None, repr=False, compare=False)
+    target_revision: int | None = field(default=None, kw_only=True, repr=False, compare=False)
+    target_partition: tuple[str, str] | None = field(default=None, kw_only=True, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """Validate the immutable record after construction."""
-        self.labels = np.array(self.labels, copy=True)
-        if (
-            self.labels.ndim != 2
-            or self.labels.dtype.kind not in "biu"
-            or np.any(self.labels < 0)
-        ):
+        object.__setattr__(self, "labels", np.array(self.labels, copy=True))
+        if self.labels.ndim != 2 or self.labels.dtype.kind not in "biu" or np.any(self.labels < 0):
             raise ValueError("Labels must be a nonnegative integer 2D array")
         self.labels.flags.writeable = False
-        self.space = CoordinateSpace(self.space)
+        object.__setattr__(self, "space", CoordinateSpace(self.space))
         if self.source_image is not None:
-            self.source_image = np.array(self.source_image, copy=True)
+            object.__setattr__(self, "source_image", np.array(self.source_image, copy=True))
             if self.source_image.shape != self.labels.shape:
                 raise ValueError("Segmentation source and mask shapes must agree")
             self.source_image.flags.writeable = False

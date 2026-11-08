@@ -1,4 +1,5 @@
 import numpy as np
+from scientific_helpers import compute_scenario
 
 from molcore import Acquisition, ArraySource, ChannelSpec, Dataset, LocalisationSettings
 from molcore.localisation import detect
@@ -16,7 +17,8 @@ def test_detect_uses_working_pixels_and_camera_frames():
     )
     working = np.zeros((2, 13, 13), dtype=np.uint16)
     working[1, 6, 7] = 200
-    result = detect(
+    result = compute_scenario(
+        detect,
         dataset,
         "movie",
         "DD",

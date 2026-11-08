@@ -1,6 +1,6 @@
 [project]
 name = "molcore"
-version = "0.1.0"
+version = "0.2.0"
 description = "Core functionality for SMLM Apps"
 readme = "README.md"
 authors = [
@@ -42,6 +42,13 @@ dev = ["ruff", "mypy>=1.15", "black", "isort", "docformatter"]
 [tool.mypy]
 python_version = "3.12"
 files = [
+    "src/molcore/immutable.py",
+    "src/molcore/readers.py",
+    "src/molcore/snapshots.py",
+    "src/molcore/cpu.py",
+    "src/molcore/types/column_batch.py",
+    "src/molcore/types/results.py",
+    "src/molcore/types/selections.py",
     "src/molcore/backends.py",
     "src/molcore/execution.py",
     "src/molcore/revisions.py",

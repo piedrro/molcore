@@ -9,6 +9,7 @@ from uuid import uuid4
 import numpy as np
 
 from .._logging import logged
+from ..immutable import ImmutableObject, freeze_metadata
 from ._shared import AcquisitionMode, ChannelSpec, FrameInfo, ImageSource
 from .images import Source
 
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
 
-class ChannelView(Source):
+class ChannelView(ImmutableObject, Source):
     """Lazy spatial and temporal view of one acquisition channel.
 
     Args:
@@ -33,31 +34,22 @@ class ChannelView(Source):
             name: Identifier or field name used to address this value.
             spec: Spec used by this operation.
         """
-        self.acquisition, self.name, self.spec = acquisition, name, spec
-        self.roi = spec.roi or (
-            0,
-            acquisition.source.shape[1],
-            0,
-            acquisition.source.shape[2],
-        )
+        self.acquisition, self.name, self.spec = (acquisition, name, spec)
+        self.roi = spec.roi or (0, acquisition.source.shape[1], 0, acquisition.source.shape[2])
         y0, y1, x0, x1 = self.roi
         if y1 > acquisition.source.shape[1] or x1 > acquisition.source.shape[2]:
             raise ValueError("Channel ROI extends beyond camera frame")
-        frames = np.arange(
-            spec.frame_start, acquisition.source.shape[0], spec.frame_step
-        )
+        frames = np.arange(spec.frame_start, acquisition.source.shape[0], spec.frame_step)
         if spec.excitation is not None:
             if spec.excitation not in acquisition.excitation_sequence:
                 raise ValueError("Channel excitation missing from excitation sequence")
             excitation = np.asarray(acquisition.excitation_sequence)
-            frames = frames[
-                excitation[(frames + acquisition.phase) % len(excitation)]
-                == spec.excitation
-            ]
+            frames = frames[excitation[(frames + acquisition.phase) % len(excitation)] == spec.excitation]
         self.source_frames = frames
         self.source_frames.flags.writeable = False
         self.shape = (len(frames), y1 - y0, x1 - x0)
         self.dtype = acquisition.source.dtype
+        self._seal()
 
     def _frame(self, index: int) -> np.ndarray:
         """Read one original image frame from the bound source.
@@ -96,11 +88,7 @@ class ChannelView(Source):
             self.name,
             index,
             None if a.timestamps is None else float(a.timestamps[camera]),
-            cycle_index=(
-                (camera + a.phase) // len(a.excitation_sequence)
-                if a.excitation_sequence
-                else None
-            ),
+            cycle_index=(camera + a.phase) // len(a.excitation_sequence) if a.excitation_sequence else None,
         )
 
     @logged
@@ -116,7 +104,7 @@ class ChannelView(Source):
             Computed NumPy array value.
         """
         values = np.asarray(indices)
-        if values.ndim == 1 and not values.size:
+        if values.ndim == 1 and (not values.size):
             return np.array([], dtype=np.int64)
         if (
             values.ndim != 1
@@ -138,14 +126,12 @@ class ChannelView(Source):
             Computed NumPy array value.
         """
         values = np.asarray(frames)
-        if values.ndim == 1 and not values.size:
+        if values.ndim == 1 and (not values.size):
             return np.array([], dtype=np.int64)
         if values.ndim != 1 or values.dtype.kind not in "iu":
             raise ValueError("Camera frames must be a 1D integer array")
         indices = np.searchsorted(self.source_frames, values)
-        if np.any(indices >= len(self)) or not np.array_equal(
-            self.source_frames[indices], values
-        ):
+        if np.any(indices >= len(self)) or not np.array_equal(self.source_frames[indices], values):
             raise ValueError("Frame does not measure this channel")
         return indices
 
@@ -164,13 +150,11 @@ class ChannelView(Source):
         """
         index = int(np.searchsorted(self.source_frames, camera_frame))
         if index >= len(self) or self.source_frames[index] != camera_frame:
-            raise ValueError(
-                f"Camera frame {camera_frame} does not measure channel {self.name}"
-            )
+            raise ValueError(f"Camera frame {camera_frame} does not measure channel {self.name}")
         return index
 
 
-class Acquisition:
+class Acquisition(ImmutableObject):
     """One camera stream with explicit logical channel mappings.
 
     Args:
@@ -222,22 +206,15 @@ class Acquisition:
         self.pixel_size = pixel_size
         if pixel_size is not None and (not np.isfinite(pixel_size) or pixel_size <= 0):
             raise ValueError("Pixel size must be positive")
-        self.timestamps = (
-            None if timestamps is None else np.array(timestamps, dtype=float, copy=True)
-        )
+        self.timestamps = None if timestamps is None else np.array(timestamps, dtype=float, copy=True)
         if self.timestamps is not None:
-            if (
-                self.timestamps.shape != (source.shape[0],)
-                or not np.isfinite(self.timestamps).all()
-            ):
+            if self.timestamps.shape != (source.shape[0],) or not np.isfinite(self.timestamps).all():
                 raise ValueError("Expected one finite timestamp per camera frame")
             self.timestamps.flags.writeable = False
-        self.metadata = dict(metadata or {})
+        self.metadata = freeze_metadata(metadata or {})
         self.channel_specs = dict(channel_specs or {"image": ChannelSpec()})
-        self.channels = {
-            name: ChannelView(self, name, spec)
-            for name, spec in self.channel_specs.items()
-        }
+        self.channels = {name: ChannelView(self, name, spec) for name, spec in self.channel_specs.items()}
+        self._seal()
 
     @logged
     def close(self) -> None:
@@ -245,7 +222,7 @@ class Acquisition:
         self.source.close()
 
 
-class SequenceChannel(Source):
+class SequenceChannel(ImmutableObject, Source):
     """A lazy concatenation retaining acquisition-local camera provenance."""
 
     def __init__(self, sequence: AcquisitionSequence, name: str) -> None:
@@ -255,11 +232,12 @@ class SequenceChannel(Source):
             sequence: Sequence used by this operation.
             name: Identifier or field name used to address this value.
         """
-        self.sequence, self.name = sequence, name
+        self.sequence, self.name = (sequence, name)
         self.views = [a.channels[name] for a in sequence.acquisitions]
         self.ends = np.cumsum([len(view) for view in self.views])
         self.shape = (int(self.ends[-1]), *self.views[0].shape[1:])
         self.dtype = np.result_type(*(v.dtype for v in self.views))
+        self._seal()
 
     def _locate(self, index: int) -> tuple[ChannelView, int]:
         """Locate.
@@ -276,7 +254,7 @@ class SequenceChannel(Source):
             raise IndexError("Sequence frame out of range")
         part = int(np.searchsorted(self.ends, index, side="right"))
         local = index - (int(self.ends[part - 1]) if part else 0)
-        return part, local
+        return (part, local)
 
     def _frame(self, index: int) -> np.ndarray:
         """Read one original image frame from the bound source.
@@ -305,12 +283,11 @@ class SequenceChannel(Source):
         return replace(
             info,
             channel_frame=index,
-            sequence_frame=info.camera_frame
-            + self.sequence.offsets[info.acquisition_id],
+            sequence_frame=info.camera_frame + self.sequence.offsets[info.acquisition_id],
         )
 
 
-class AcquisitionSequence:
+class AcquisitionSequence(ImmutableObject):
     """Explicit ordering of recordings without invented time continuity.
 
     Args:
@@ -340,26 +317,16 @@ class AcquisitionSequence:
             reference: Reference used by this operation.
         """
         self.acquisitions = list(acquisitions)
-        if not self.acquisitions or len({a.id for a in self.acquisitions}) != len(
-            self.acquisitions
-        ):
+        if not self.acquisitions or len({a.id for a in self.acquisitions}) != len(self.acquisitions):
             raise ValueError("Sequence needs distinct acquisitions")
         first = self.acquisitions[0]
         for a in self.acquisitions[1:]:
-            if (
-                set(a.channels) != set(first.channels)
-                or a.pixel_size != first.pixel_size
-            ):
+            if set(a.channels) != set(first.channels) or a.pixel_size != first.pixel_size:
                 raise ValueError("Sequence channels and pixel scales must agree")
-            if any(
-                a.channels[c].shape[1:] != first.channels[c].shape[1:]
-                for c in first.channels
-            ):
+            if any(a.channels[c].shape[1:] != first.channels[c].shape[1:] for c in first.channels):
                 raise ValueError("Sequence channel geometry must agree")
-        if allow_cross_boundary_tracks and not reference:
-            raise ValueError(
-                "Cross-boundary tracking requires a shared reference identifier"
-            )
+        if allow_cross_boundary_tracks and (not reference):
+            raise ValueError("Cross-boundary tracking requires a shared reference identifier")
         self.id = str(id or uuid4())
         self.allow_cross_boundary_tracks = bool(allow_cross_boundary_tracks)
         self.reference = reference
@@ -369,3 +336,4 @@ class AcquisitionSequence:
             self.offsets[a.id] = offset
             offset += a.source.shape[0]
         self.channels = {name: SequenceChannel(self, name) for name in first.channels}
+        self._seal()

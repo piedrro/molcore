@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
 
+from ..immutable import immutable_record
+from .results import ResultIdentity
 
-@dataclass(frozen=True)
+
+@immutable_record
 class DatasetAlignmentSettings:
     """Fit corrected fiducial coordinates in reference-pixel units."""
 
@@ -19,22 +20,16 @@ class DatasetAlignmentSettings:
     def __post_init__(self) -> None:
         if self.model not in ("translation", "affine", "homography"):
             raise ValueError("Choose translation, affine or homography")
-        if self.match_radius is not None and (
-            not np.isfinite(self.match_radius) or self.match_radius <= 0
-        ):
+        if self.match_radius is not None and (not np.isfinite(self.match_radius) or self.match_radius <= 0):
             raise ValueError("Matching radius must be finite and positive")
         if not np.isfinite(self.ransac_threshold) or self.ransac_threshold <= 0:
             raise ValueError("RANSAC threshold must be finite and positive")
-        if (
-            isinstance(self.max_trials, bool)
-            or not isinstance(self.max_trials, int)
-            or self.max_trials < 1
-        ):
+        if isinstance(self.max_trials, bool) or not isinstance(self.max_trials, int) or self.max_trials < 1:
             raise ValueError("RANSAC trials must be a positive integer")
 
 
-@dataclass(frozen=True)
-class DatasetAlignmentResult:
+@immutable_record
+class DatasetAlignmentResult(ResultIdentity):
     """Source-corrected to reference-corrected registration and provenance."""
 
     source_dataset_id: str

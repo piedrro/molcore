@@ -29,7 +29,7 @@ class StateToken:
     observations: int
     calibrations: tuple
     segmentations: tuple
-    metadata: str
+    metadata: int
     processing: str
     acquisitions: tuple
     sequences: tuple
@@ -38,6 +38,7 @@ class StateToken:
     segmentation_outlines: tuple = ()
     bactfit_cells: tuple = ()
     bounding_boxes: int = 0
+    revision: int = 0
 
     @property
     def scientific_inputs(self) -> tuple:
@@ -69,7 +70,7 @@ class DependencyToken:
     components: frozenset[str]
     revisions: tuple[tuple[str, str, str, int], ...]
     bindings: tuple
-    metadata: str
+    metadata: int
 
     def validate(self, dataset: Dataset) -> None:
         """Reject changed inputs or a result from another model lineage.
@@ -81,15 +82,11 @@ class DependencyToken:
         from .types import StaleResultError
 
         try:
-            current = dependency_token(
-                dataset, self.partitions, components=self.components
-            )
+            current = dependency_token(dataset, self.partitions, components=self.components)
         except (KeyError, ValueError) as exc:
             raise StaleResultError("Result input partition no longer exists") from exc
         if current != self:
-            raise StaleResultError(
-                "Result inputs changed; compute a new preview before applying"
-            )
+            raise StaleResultError("Result inputs changed; compute a new preview before applying")
 
 
 FreshnessToken = StateToken | DependencyToken

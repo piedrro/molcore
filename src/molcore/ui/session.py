@@ -12,20 +12,13 @@ from qtpy.QtCore import QObject, QThread, Signal, Slot
 
 from .._logging import logged
 from ..cpu import CpuExecutor
-from ..staging import (
-    clone_dataset,
-    clone_experiment,
-    experiment_state_token,
-    state_token,
-)
+from ..staging import clone_dataset, clone_experiment, experiment_state_token, state_token
 from ..types import CoordinateSpace, Dataset, Experiment, StaleResultError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from qtpy.QtWidgets import QWidget
-
-# Keep threads alive even if a host destroys its dock widget during cancellation.
 _RUNNING = set()
 logger = logging.getLogger(__name__)
 
@@ -41,9 +34,9 @@ class _Job(QThread):
             model: Model or fitting method selected by the caller.
         """
         super().__init__()
-        self.compute, self.model = compute, model
+        self.compute, self.model = (compute, model)
         self.cancel_event = threading.Event()
-        self.result, self.failure = None, None
+        self.result, self.failure = (None, None)
         self.published = False
         self.publication_token = None
 
@@ -89,9 +82,7 @@ class UiSession(QObject):
     shutdown_finished = Signal()
     _model_change = Signal(object, object)
 
-    def __init__(
-        self, dataset: Dataset | Experiment | None = None, parent: QWidget | None = None
-    ) -> None:
+    def __init__(self, dataset: Dataset | Experiment | None = None, parent: QWidget | None = None) -> None:
         """Initialise the object and validate its configuration.
 
         Args:
@@ -105,17 +96,15 @@ class UiSession(QObject):
             self.experiment.add_dataset(dataset if dataset is not None else Dataset())
         self.dataset_id = next(iter(self.experiment.datasets), None)
         self.dataset = (
-            self.experiment.datasets[self.dataset_id]
-            if self.dataset_id is not None
-            else self._empty_dataset
+            self.experiment.datasets[self.dataset_id] if self.dataset_id is not None else self._empty_dataset
         )
         self._owned = dataset is None
-        self.acquisition_id, self.channel = None, None
+        self.acquisition_id, self.channel = (None, None)
         self.sequence_id = None
-        self.space, self.camera_frame = CoordinateSpace.CORRECTED, 0
+        self.space, self.camera_frame = (CoordinateSpace.CORRECTED, 0)
         self._num_cpus = None
         self._job = None
-        self._closing, self.dirty = False, False
+        self._closing, self.dirty = (False, False)
         self.publication_current = True
         self._unsubscribe_model = None
         self._model_change.connect(self._on_model_change)
@@ -126,13 +115,11 @@ class UiSession(QObject):
         if self._unsubscribe_model is not None:
             self._unsubscribe_model()
         model = self.dataset
-        self._unsubscribe_model = model.subscribe(
-            lambda change: self._model_change.emit(model, change)
-        )
+        self._unsubscribe_model = model.subscribe(lambda change: self._model_change.emit(model, change))
 
     @Slot(object, object)
     def _on_model_change(self, model: Dataset, change: Any) -> None:
-        if model is self.dataset and not self._closing:
+        if model is self.dataset and (not self._closing):
             self.changed()
 
     @property
@@ -166,7 +153,7 @@ class UiSession(QObject):
         Returns:
             Detached result produced by this background computation.
         """
-        CpuExecutor(num_cpus=value)  # Validate without starting any processes.
+        CpuExecutor(num_cpus=value)
         self._num_cpus = value
         self.options_changed.emit()
 
@@ -181,9 +168,7 @@ class UiSession(QObject):
         self.camera_frame = 0
         self.channel = None
         if self.acquisition_id is not None:
-            self.channel = next(
-                iter(self.dataset.acquisitions[self.acquisition_id].channels)
-            )
+            self.channel = next(iter(self.dataset.acquisitions[self.acquisition_id].channels))
             view = self.dataset.acquisitions[self.acquisition_id].channels[self.channel]
             self.camera_frame = int(view.source_frames[0]) if len(view) else 0
 
@@ -210,11 +195,7 @@ class UiSession(QObject):
             sequence = self.dataset.sequences[sequence_id]
             if acquisition_id not in sequence.offsets:
                 raise ValueError("Acquisition does not belong to the sequence")
-        self.acquisition_id, self.channel, self.sequence_id = (
-            acquisition_id,
-            channel,
-            sequence_id,
-        )
+        self.acquisition_id, self.channel, self.sequence_id = (acquisition_id, channel, sequence_id)
         if space is not None:
             self.space = CoordinateSpace(space)
         self.camera_frame = int(view.source_frames[0]) if len(view) else 0
@@ -238,9 +219,7 @@ class UiSession(QObject):
         self.dataset_changed.emit(self.dataset)
         self.selection_changed.emit()
 
-    def set_experiment(
-        self, experiment: Experiment, *, owns_experiment: bool = False
-    ) -> None:
+    def set_experiment(self, experiment: Experiment, *, owns_experiment: bool = False) -> None:
         """Replace the full experiment, closing only session-owned resources.
 
         Args:
@@ -249,27 +228,19 @@ class UiSession(QObject):
         """
         self._gui()
         if self.busy:
-            raise RuntimeError(
-                "Cancel and finish the active job before replacing the experiment"
-            )
+            raise RuntimeError("Cancel and finish the active job before replacing the experiment")
         if self._owned and self.experiment is not experiment:
-            retained = {
-                id(a.source)
-                for d in experiment.datasets.values()
-                for a in d.acquisitions.values()
-            }
+            retained = {id(a.source) for d in experiment.datasets.values() for a in d.acquisitions.values()}
             for dataset in self.experiment.datasets.values():
                 for acquisition in dataset.acquisitions.values():
                     if id(acquisition.source) not in retained:
                         acquisition.close()
-        self.experiment, self._owned = experiment, owns_experiment
+        self.experiment, self._owned = (experiment, owns_experiment)
         self.dataset_id = next(iter(experiment.datasets), None)
         self.dataset = (
-            experiment.datasets[self.dataset_id]
-            if self.dataset_id is not None
-            else self._empty_dataset
+            experiment.datasets[self.dataset_id] if self.dataset_id is not None else self._empty_dataset
         )
-        self.sequence_id, self.dirty = None, False
+        self.sequence_id, self.dirty = (None, False)
         self._subscribe_model()
         self._select_first()
         self.experiment_changed.emit(experiment)
@@ -295,9 +266,7 @@ class UiSession(QObject):
             camera_frame: Frame belonging to the selected logical channel.
         """
         self._gui()
-        self.dataset.acquisitions[self.acquisition_id].channels[
-            self.channel
-        ].channel_index(camera_frame)
+        self.dataset.acquisitions[self.acquisition_id].channels[self.channel].channel_index(camera_frame)
         self.camera_frame = int(camera_frame)
         self.frame_changed.emit()
 
@@ -334,40 +303,28 @@ class UiSession(QObject):
         """
         self._gui()
         if self.busy or self._closing:
-            raise RuntimeError(
-                "A session accepts one job at a time and cannot run after shutdown"
-            )
+            raise RuntimeError("A session accepts one job at a time and cannot run after shutdown")
         original = self.experiment if experiment_scope else self.dataset
         token = experiment_state_token if experiment_scope else state_token
         clone = clone_experiment if experiment_scope else clone_dataset
         expected = token(original)
-        job = _Job(compute, clone(original))
+        job = _Job(compute, clone(original) if publication or experiment_scope else original.snapshot())
         if publication:
 
             @contextmanager
             def _publish_guard() -> Any:
                 with original._lock, ExitStack() as stack:
                     if experiment_scope:
-                        for dataset in sorted(
-                            original.datasets.values(), key=lambda d: d.id
-                        ):
+                        for dataset in sorted(original.datasets.values(), key=lambda d: d.id):
                             stack.enter_context(dataset._lock)
                     current = self.experiment if experiment_scope else self.dataset
                     if current is not original or token(original) != expected:
-                        raise StaleResultError(
-                            "Live inputs changed; files were not published"
-                        )
+                        raise StaleResultError("Live inputs changed; files were not published")
                     if job.cancel_event.is_set():
                         raise CancelledError()
                     yield
-                    # Snapshot saves may have rebound sources/crops after replacing
-                    # the backing file. Adopt those descriptors before releasing
-                    # the live locks, even if cancellation arrives after commit.
                     pairs = (
-                        [
-                            (original.datasets[k], d)
-                            for k, d in job.model.datasets.items()
-                        ]
+                        [(original.datasets[k], d) for k, d in job.model.datasets.items()]
                         if experiment_scope
                         else [(original, job.model)]
                     )
@@ -375,21 +332,12 @@ class UiSession(QObject):
                         live.crops._saved = saved.crops._saved.copy()
                         live.crops._photon_saved = saved.crops._photon_saved.copy()
                         for key, acquisition in saved.acquisitions.items():
-                            live.acquisitions[key].source = acquisition.source
+                            live._replace_source(key, acquisition.source)
                     job.published = True
                     job.publication_token = token(original)
 
-            job.compute = lambda model, progress, cancel: compute(
-                model, progress, cancel, _publish_guard
-            )
-        self._completion = (
-            original,
-            expected,
-            commit,
-            completed,
-            check_stale,
-            experiment_scope,
-        )
+            job.compute = lambda model, progress, cancel: compute(model, progress, cancel, _publish_guard)
+        self._completion = (original, expected, commit, completed, check_stale, experiment_scope)
         self._job = job
         _RUNNING.add(job)
         job.update.connect(self.progress)
@@ -403,43 +351,32 @@ class UiSession(QObject):
     def _complete(self) -> None:
         """Complete."""
         job = self._job
-        original, expected, commit, completed, check_stale, experiment_scope = (
-            self._completion
-        )
+        original, expected, commit, completed, check_stale, experiment_scope = self._completion
         try:
             if job.failure is not None:
                 raise job.failure
-            if (job.cancel_event.is_set() or self._closing) and not job.published:
+            if (job.cancel_event.is_set() or self._closing) and (not job.published):
                 raise CancelledError()
             current = self.experiment if experiment_scope else self.dataset
             token = experiment_state_token if experiment_scope else state_token
             self.publication_current = (
-                current is original and token(original) == job.publication_token
-                if job.published
-                else True
+                current is original and token(original) == job.publication_token if job.published else True
             )
-            if check_stale and not job.published:
+            if check_stale and (not job.published):
                 if current is not original:
-                    raise StaleResultError(
-                        "Model changed during computation; results were discarded"
-                    )
+                    raise StaleResultError("Model changed during computation; results were discarded")
                 result_token = getattr(job.result, "expected", None)
                 from ..revisions import DependencyToken
 
-                if isinstance(result_token, DependencyToken) and isinstance(
-                    original, Dataset
-                ):
+                if isinstance(result_token, DependencyToken) and isinstance(original, Dataset):
                     result_token.validate(original)
                 elif token(original) != expected:
-                    raise StaleResultError(
-                        "Model changed during computation; results were discarded"
-                    )
+                    raise StaleResultError("Model changed during computation; results were discarded")
             if commit is not None:
                 revision = original.revision if isinstance(original, Dataset) else None
                 commit(original, job.result)
                 if revision is None or original.revision == revision:
                     self.changed()
-            # Job is now fully stopped; callbacks may replace the model.
             self._job = None
             if completed is not None:
                 completed(job.result)

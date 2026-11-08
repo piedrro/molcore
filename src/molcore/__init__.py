@@ -1,11 +1,12 @@
 """Shared, GUI-independent data foundation for single-molecule microscopy."""
 
 import logging
-from .types.boxes import BoundingBox, BoundingBoxStore
 
 from .backends import BackendRegistry, ProcessorBackend
-from .execution import ExecutionContext, Executor
+from .cpu import CpuExecutor
+from .execution import ExecutionContext, Executor, SerialExecutor, ThreadExecutor
 from .revisions import ChangeSet, DependencyToken, StateToken
+from .snapshots import DatasetSnapshot, ExperimentSnapshot
 from .types import (
     Acquisition,
     AcquisitionMode,
@@ -55,21 +56,12 @@ from .types.analysis import (
     RenderResult,
     RenderSettings,
 )
-from .types.contrast import (
-    ContrastMethod,
-    ContrastResult,
-    ContrastScope,
-    ContrastSettings,
-)
-from .types.images import (
-    ArraySource,
-    CachedSource,
-    FitsSource,
-    HDF5Source,
-    MissingSource,
-    TiffSource,
-)
+from .types.batches import ColumnBatch, ObservationBatch, TrackMembershipBatch
+from .types.boxes import BoundingBox, BoundingBoxStore
+from .types.contrast import ContrastMethod, ContrastResult, ContrastScope, ContrastSettings
+from .types.images import ArraySource, CachedSource, FitsSource, HDF5Source, MissingSource, TiffSource
 from .types.photons import PhotonSequence, PhotonSequenceStore, PhotonUnit
+from .types.results import ApplyReceipt, ResultIdentity, WriteScope
 from .types.scientific import (
     ApertureShape,
     BackgroundMethod,
@@ -77,16 +69,30 @@ from .types.scientific import (
     PhotometryResult,
     PhotometrySettings,
     PhotonSequenceResult,
+    SequenceTrackingResult,
     SpatialUnit,
     TraceMode,
     TrackingResult,
     TrackingSettings,
     TrajectoryStatistics,
 )
+from .types.selections import PartitionSelection, SequenceSelection
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 __all__ = [
+    "CpuExecutor",
+    "SequenceTrackingResult",
+    "DatasetSnapshot",
+    "ExperimentSnapshot",
+    "ResultIdentity",
+    "WriteScope",
+    "ApplyReceipt",
+    "PartitionSelection",
+    "SequenceSelection",
+    "ColumnBatch",
+    "ObservationBatch",
+    "TrackMembershipBatch",
     "AlignmentResult",
     "CameraSettings",
     "CellposeSettings",
@@ -130,17 +136,17 @@ __all__ = [
     "BactFitCell",
     "StaleResultError",
 ]
-
 __all__ += [
     "BackendRegistry",
     "ProcessorBackend",
     "ExecutionContext",
     "Executor",
+    "SerialExecutor",
+    "ThreadExecutor",
     "ChangeSet",
     "DependencyToken",
     "StateToken",
 ]
-
 __all__ += [
     "ApertureShape",
     "BackgroundMethod",
@@ -153,8 +159,6 @@ __all__ += [
     "TrackingSettings",
     "TrajectoryStatistics",
 ]
-
-
 __all__ += ["ContrastMethod", "ContrastResult", "ContrastScope", "ContrastSettings"]
 __all__ += ["PhotonSequence", "PhotonSequenceStore", "PhotonUnit"]
 __all__ += ["PhotonSequenceResult"]

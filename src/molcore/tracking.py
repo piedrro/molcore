@@ -2,44 +2,34 @@
 
 from __future__ import annotations
 
-from concurrent.futures import CancelledError
 from dataclasses import asdict, replace
 from importlib.metadata import version
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from ._logging import logged
 from ._processing import executor
-from .backends import (
-    BackendRegistry,
-    ProcessorBackend,
-    missing_backend,
-    resolve_backend,
-)
-from .cpu import CpuExecutor
-from .execution import ExecutionContext
+from .backends import BackendRegistry, TrackingBackend, missing_backend, resolve_backend
+from .execution import ExecutionContext, _record_execution
 from .revisions import FreshnessToken
+from .snapshots import DatasetSnapshot, processor_model
 from .staging import dependency_token, transact
-from .types import (
-    CancelEvent,
-    Dataset,
-    ProgressCallback,
-    TrackingResult,
-    TrackingSettings,
-)
+from .types import Dataset, TrackingResult, TrackingSettings
+from .types.scientific import SequenceTrackingResult
+from .types.selections import PartitionSelection, SequenceSelection
 from .types.tables import identifiers
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
-    from .cpu import WorkerProgress
-
+    from .execution import ProgressReporter
 _DEFAULT_SETTINGS = TrackingSettings()
+_SEQUENCE_SETTINGS = TrackingSettings(frame_clock="channel")
 
 
 @logged
-def _job(payload: tuple, reporter: WorkerProgress) -> tuple[np.ndarray, ...]:
+def _job(payload: tuple, reporter: ProgressReporter) -> tuple[np.ndarray, ...]:
     """Job.
 
     Args:
@@ -59,7 +49,7 @@ def _job(payload: tuple, reporter: WorkerProgress) -> tuple[np.ndarray, ...]:
         if not len(subset["id"]):
             continue
         frames = subset["frame"]
-        first, last = int(frames.min()), int(frames.max())
+        first, last = (int(frames.min()), int(frames.max()))
         frame_ids = {}
 
         def coordinates(
@@ -85,9 +75,7 @@ def _job(payload: tuple, reporter: WorkerProgress) -> tuple[np.ndarray, ...]:
                 reporter.check_cancelled()
                 indices = np.flatnonzero(frames == frame)
                 frame_ids[frame] = subset["id"][indices]
-                yield frame, np.column_stack(
-                    [subset["x"][indices], subset["y"][indices]]
-                )
+                yield (frame, np.column_stack([subset["x"][indices], subset["y"][indices]]))
 
         trajectories = {}
         for frame, particles in tp.link_iter(
@@ -100,9 +88,7 @@ def _job(payload: tuple, reporter: WorkerProgress) -> tuple[np.ndarray, ...]:
             for particle, lid in zip(particles, frame_ids.pop(frame), strict=True):
                 trajectories.setdefault(int(particle), []).append(lid)
             reporter.report(
-                group_index + (frame - first + 1) / (last - first + 1),
-                len(groups),
-                "Linking camera frames",
+                group_index + (frame - first + 1) / (last - first + 1), len(groups), "Linking camera frames"
             )
         output.extend(
             np.asarray(members, dtype=np.uint64)
@@ -113,21 +99,16 @@ def _job(payload: tuple, reporter: WorkerProgress) -> tuple[np.ndarray, ...]:
 
 
 @logged
+@_record_execution
 def track(
-    dataset: Dataset,
-    acquisition_id: str,
-    channel: str,
+    dataset: DatasetSnapshot,
+    selection: PartitionSelection,
     *,
     ids: ArrayLike | None = None,
     settings: TrackingSettings = _DEFAULT_SETTINGS,
     segmentation_id: str | None = None,
-    apply: bool = True,
-    cpu: CpuExecutor | None = None,
-    num_cpus: int | None = None,
-    progress: ProgressCallback | None = None,
-    cancel_event: CancelEvent | None = None,
     context: ExecutionContext | None = None,
-    backend: ProcessorBackend | str | None = None,
+    backend: TrackingBackend | str | None = None,
     registry: BackendRegistry | None = None,
 ) -> TrackingResult:
     """Link one acquisition/channel partition independently using Trackpy 0.7.
@@ -144,28 +125,28 @@ def track(
     tracks retain their IDs and metadata. Empty IDs select and replace nothing.
 
     Args:
+        selection: Explicit acquisition/channel or sequence/channel selection.
+        context: Execution policy, frame chunk size, progress and cancellation.
         dataset: Scientific model supplying acquisitions and result tables.
-        acquisition_id: Source acquisition identifier.
-        channel: Logical source channel name.
         ids: Stable localization IDs within this partition; None selects all.
         settings: Validated settings controlling this operation.
         segmentation_id: Optional segmentation identifier restricting the selected objects.
-        apply: Whether to commit successful results to the model.
-        cpu: Optional borrowed CPU executor; ownership remains with the caller.
-        num_cpus: Worker process count; None uses the executor default.
-        progress: Optional callback receiving structured progress updates.
-        cancel_event: Optional event whose is_set() requests cooperative cancellation.
-
     Returns:
         Computed TrackingResult value.
     """
-    options = (
-        (context or ExecutionContext())
-        .resolve(
-            cpu=cpu, num_cpus=num_cpus, progress=progress, cancel_event=cancel_event
-        )
-        .kwargs()
+    if not isinstance(selection, PartitionSelection):
+        raise TypeError("Use PartitionSelection")
+    acquisition_id, channel = (selection.acquisition_id, selection.channel)
+    dataset = processor_model(dataset)
+    context = context or ExecutionContext()
+    context.check_cancelled()
+    cpu, num_cpus, progress, cancel_event = (
+        context.cpu,
+        context.num_cpus,
+        context.progress,
+        context.cancel_event,
     )
+    options = (context or ExecutionContext()).resolve().kwargs()
     cpu, num_cpus, progress, cancel_event = (
         options[k] for k in ("cpu", "num_cpus", "progress", "cancel_event")
     )
@@ -187,15 +168,11 @@ def track(
             raise ValueError("Selected localization IDs must belong to the partition")
         keep = np.isin(rows["id"], selected_ids)
         rows = {name: values[keep] for name, values in rows.items()}
-        # Keep the detached replacement scope independent of caller-owned arrays.
         selected_ids.flags.writeable = False
     labels = np.ones(len(rows["id"]), dtype=np.int64)
     if segmentation_id is not None:
         raw = dataset.localizations.query(
-            acquisition_id=acquisition_id,
-            channel=channel,
-            ids=selected_ids,
-            space="raw",
+            acquisition_id=acquisition_id, channel=channel, ids=selected_ids, space="raw"
         )
         labels = dataset.segmentation_labels(segmentation_id, raw)
     if settings.frame_clock == "channel":
@@ -204,15 +181,10 @@ def track(
     from importlib.metadata import PackageNotFoundError
 
     try:
-        installed = (
-            version("trackpy") if selected_backend is None else selected_backend.version
-        )
+        installed = version("trackpy") if selected_backend is None else selected_backend.version
     except PackageNotFoundError as exc:
         raise missing_backend("trackpy") from exc
-    if selected_backend is None and tuple(int(p) for p in installed.split(".")[:2]) != (
-        0,
-        7,
-    ):
+    if selected_backend is None and tuple(int(p) for p in installed.split(".")[:2]) != (0, 7):
         raise ImportError(f"MolCore supports Trackpy >=0.7,<0.8; found {installed}")
     with executor(cpu, num_cpus) as runner:
         output = runner.map(
@@ -224,9 +196,7 @@ def track(
     expected.validate(dataset)
     memberships = tuple(identifiers(members) for members in output[0]) if output else ()
     if any(not np.isin(members, rows["id"]).all() for members in memberships):
-        raise ValueError(
-            "Tracking backend returned memberships outside the selected scope"
-        )
+        raise ValueError("Tracking backend returned memberships outside the selected scope")
     result = TrackingResult(
         acquisition_id,
         channel,
@@ -237,11 +207,11 @@ def track(
         segmentation_id,
         selected_ids=selected_ids,
     )
-    return apply_tracking(dataset, result) if apply else result
+    return result
 
 
 @logged
-def apply_tracking(
+def _apply_tracking(
     dataset: Dataset, result: TrackingResult, *, expected: FreshnessToken | None = None
 ) -> TrackingResult:
     """Apply detached memberships transactionally after checking the source state.
@@ -276,36 +246,32 @@ def apply_tracking(
             segmentation_id=result.segmentation_id,
             metadata={
                 "settings": asdict(result.settings),
+                "execution": dict(result.execution),
                 "backend": result.backend_version,
             },
         )
-        model.processing.settings.setdefault("tracking", {}).setdefault(
-            result.acquisition_id, {}
-        )[result.channel] = {
+        model._processing.settings.setdefault("tracking", {}).setdefault(result.acquisition_id, {})[
+            result.channel
+        ] = {
             "settings": asdict(result.settings),
+            "execution": dict(result.execution),
             "segmentation_id": result.segmentation_id,
             "backend": result.backend_version,
         }
         return replace(result, track_ids=ids)
 
-    return transact(
-        dataset, commit, expected=result.expected if expected is None else expected
-    )
+    return transact(dataset, commit, expected=result.expected if expected is None else expected)
 
 
 @logged
+@_record_execution
 def track_sequence(
-    dataset: Dataset,
-    sequence_id: str,
-    channel: str,
+    dataset: DatasetSnapshot,
+    selection: SequenceSelection,
     *,
-    settings: TrackingSettings = TrackingSettings(frame_clock="channel"),
-    apply: bool = True,
-    cpu: CpuExecutor | None = None,
-    num_cpus: int | None = None,
-    progress: ProgressCallback | None = None,
-    cancel_event: CancelEvent | None = None,
-) -> tuple[np.ndarray, ...]:
+    settings: TrackingSettings = _SEQUENCE_SETTINGS,
+    context: ExecutionContext | None = None,
+) -> SequenceTrackingResult:
     """Link one channel of an explicitly cross-boundary acquisition sequence.
 
     The selected frame clock is used only by the linker. Stored memberships
@@ -313,24 +279,31 @@ def track_sequence(
     tracks contained in the sequence/channel scope atomically.
 
     Args:
+        selection: Explicit acquisition/channel or sequence/channel selection.
+        context: Execution policy, frame chunk size, progress and cancellation.
         dataset: Model providing acquisitions and localisation IDs.
-        sequence_id: Registered sequence with cross-boundary tracking enabled.
-        channel: Logical channel shared by the sequence acquisitions.
         settings: Linker settings and the selected frame clock.
-        apply: Replace the tracks in this scope after successful linking.
-        cpu: Optional borrowed executor.
-        num_cpus: Worker count when creating an executor.
-        progress: Callback receiving progress updates.
-        cancel_event: Cooperative cancellation event.
-
     Returns:
         Ordered localisation IDs for each trajectory.
     """
+    if not isinstance(selection, SequenceSelection):
+        raise TypeError("Use SequenceSelection")
+    sequence_id, channel = (selection.sequence_id, selection.channel)
+    dataset = processor_model(dataset)
+    context = context or ExecutionContext()
+    context.check_cancelled()
+    cpu, num_cpus, progress, cancel_event = (
+        context.cpu,
+        context.num_cpus,
+        context.progress,
+        context.cancel_event,
+    )
     sequence = dataset.sequences[sequence_id]
     if not sequence.allow_cross_boundary_tracks:
         raise ValueError("The acquisition sequence must allow cross-boundary tracks")
     expected = dependency_token(
-        dataset, [(acquisition.id, channel) for acquisition in sequence.acquisitions],
+        dataset,
+        [(acquisition.id, channel) for acquisition in sequence.acquisitions],
         components={"localizations", "tracks", "transforms"},
     )
     parts = []
@@ -351,34 +324,59 @@ def track_sequence(
     labels = np.ones(len(columns["id"]), dtype=np.int64)
     with executor(cpu, num_cpus) as runner:
         output = runner.map(
-            _job, [(columns, labels, settings)] if len(labels) else [],
-            progress=progress, cancel_event=cancel_event,
+            _job,
+            [(columns, labels, settings)] if len(labels) else [],
+            progress=progress,
+            cancel_event=cancel_event,
         )
     memberships = tuple(output[0]) if output else ()
     expected.validate(dataset)
-    if not apply:
-        return memberships
+    return SequenceTrackingResult(
+        sequence_id, channel, memberships, columns["id"], settings, expected, version("trackpy")
+    )
 
-    def commit(model: Dataset) -> None:
-        """Replace the track memberships covered by this sequence result.
+
+def _apply_sequence_tracking(dataset: Any, result: Any) -> Any:
+    """Apply sequence tracking.
+
+    Args:
+        dataset: Dataset.
+        result: Result.
+
+
+    Returns:
+        The computed value.
+    """
+
+    def commit(model: Any) -> Any:
+        """Commit.
 
         Args:
-            model: Detached transaction model.
+            model: Model.
+
+
+        Returns:
+            The computed value.
         """
-        if cancel_event is not None and cancel_event.is_set():
-            raise CancelledError("Sequence tracking cancelled")
-        tracks = model.tracks.query(space="raw", channel=channel)
-        in_scope = np.isin(tracks["id"], columns["id"])
+        tracks = model.tracks.query(space="raw", channel=result.channel)
+        in_scope = np.isin(tracks["id"], result.selected_ids)
         replacing = np.unique(tracks["track_id"][in_scope])
         if np.isin(tracks["track_id"][~in_scope], replacing).any():
             raise ValueError("An existing track crosses the selected sequence scope")
         for identifier in replacing:
             model.tracks.delete(int(identifier))
-        for members in memberships:
+        ids = [
             model.tracks.add(
-                members, sequence_id=sequence_id,
-                metadata={"settings": asdict(settings), "backend": version("trackpy")},
+                members,
+                sequence_id=result.sequence_id,
+                metadata={
+                    "settings": asdict(result.settings),
+                    "execution": dict(result.execution),
+                    "backend": result.backend_version,
+                },
             )
+            for members in result.memberships
+        ]
+        return replace(result, track_ids=np.array(ids, dtype=np.uint64))
 
-    transact(dataset, commit, expected=expected)
-    return memberships
+    return transact(dataset, commit, expected=result.expected)

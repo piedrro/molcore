@@ -12,11 +12,11 @@ import numpy as np
 
 from ._logging import logged
 from ._processing import record
-from .photometry import apply_photometry as apply_photometry
-from .photon_sequences import apply_photon_sequences as apply_photon_sequences
+from .photometry import _apply_photometry
+from .photon_sequences import _apply_photon_sequences
 from .revisions import FreshnessToken
 from .staging import transact, validate_expected
-from .tracking import apply_tracking as apply_tracking
+from .tracking import _apply_sequence_tracking, _apply_tracking
 from .types import (
     AlignmentResult,
     Calibration,
@@ -29,6 +29,8 @@ from .types import (
     Segmentation,
     TrackingResult,
 )
+from .types.results import ApplyReceipt, ResultIdentity
+from .types.scientific import SequenceTrackingResult
 
 
 @logged
@@ -71,7 +73,7 @@ def apply_batch(
 
 
 @logged
-def apply_localisation(
+def _apply_localisation(
     dataset: Dataset,
     result: LocalisationResult,
     *,
@@ -89,19 +91,15 @@ def apply_localisation(
     Returns:
         Result containing the stable IDs allocated by the model.
     """
+    if result.source_space != "raw":
+        raise ValueError("Convert working-source coordinates to raw pixels before applying")
     if result.frame_range is not None:
-        raise ValueError(
-            "Subset processing is a preview and cannot replace a partition"
-        )
-    if result.failed_fits and not len(result.columns["frame"]):
-        raise ValueError(
-            "No localisation fits converged; active results were preserved"
-        )
+        raise ValueError("Subset processing is a preview and cannot replace a partition")
+    if result.failed_fits and (not len(result.columns["frame"])):
+        raise ValueError("No localisation fits converged; active results were preserved")
     camera = result.camera if camera is None else camera
     if camera is None:
-        raise ValueError(
-            "Localisation results require the camera calibration used during fitting"
-        )
+        raise ValueError("Localisation results require the camera calibration used during fitting")
 
     def commit(model: Dataset) -> Any:
         """Commit.
@@ -112,9 +110,7 @@ def apply_localisation(
         Returns:
             Result returned after updating the staged model.
         """
-        ids = model.localizations.replace(
-            result.acquisition_id, result.channel, **result.columns
-        )
+        ids = model.localizations.replace(result.acquisition_id, result.channel, **result.columns)
         record(
             model,
             "localisation",
@@ -122,6 +118,7 @@ def apply_localisation(
             result.channel,
             {
                 "settings": asdict(result.settings),
+                "execution": dict(result.execution),
                 "camera": asdict(camera),
                 "backend": result.backend_version,
                 "camera_frames": "all logical-channel frames",
@@ -130,17 +127,12 @@ def apply_localisation(
         )
         return replace(result, localization_ids=ids)
 
-    return transact(
-        dataset, commit, expected=result.expected if expected is None else expected
-    )
+    return transact(dataset, commit, expected=result.expected if expected is None else expected)
 
 
 @logged
-def apply_drift(
-    dataset: Dataset,
-    results: Mapping[str, DriftResult],
-    *,
-    expected: FreshnessToken | None = None,
+def _apply_drift(
+    dataset: Dataset, results: Mapping[str, DriftResult], *, expected: FreshnessToken | None = None
 ) -> dict[str, DriftResult]:
     """Apply one or more drift results atomically.
 
@@ -186,7 +178,7 @@ def apply_drift(
 
 
 @logged
-def apply_alignment(
+def _apply_alignment(
     dataset: Dataset,
     result: AlignmentResult,
     *,
@@ -243,31 +235,21 @@ def apply_alignment(
                     .channel_specs[result.source_channel]
                     .emission,
                     "source_shape": list(
-                        staged.acquisitions[result.acquisition_id]
-                        .channels[result.source_channel]
-                        .shape[1:]
+                        staged.acquisitions[result.acquisition_id].channels[result.source_channel].shape[1:]
                     ),
                     "source_roi": list(
-                        staged.acquisitions[result.acquisition_id]
-                        .channels[result.source_channel]
-                        .roi
+                        staged.acquisitions[result.acquisition_id].channels[result.source_channel].roi
                     ),
                     "target_emission": staged.acquisitions[result.acquisition_id]
                     .channel_specs[result.target_channel]
                     .emission,
                     "target_shape": list(
-                        staged.acquisitions[result.acquisition_id]
-                        .channels[result.target_channel]
-                        .shape[1:]
+                        staged.acquisitions[result.acquisition_id].channels[result.target_channel].shape[1:]
                     ),
                     "target_roi": list(
-                        staged.acquisitions[result.acquisition_id]
-                        .channels[result.target_channel]
-                        .roi
+                        staged.acquisitions[result.acquisition_id].channels[result.target_channel].roi
                     ),
-                    "pixel_size_nm": staged.acquisitions[
-                        result.acquisition_id
-                    ].pixel_size,
+                    "pixel_size_nm": staged.acquisitions[result.acquisition_id].pixel_size,
                 },
             )
         )
@@ -287,17 +269,12 @@ def apply_alignment(
         )
         return replace(result, calibration_name=name)
 
-    return transact(
-        dataset, commit, expected=result.expected if expected is None else expected
-    )
+    return transact(dataset, commit, expected=result.expected if expected is None else expected)
 
 
 @logged
-def apply_segmentations(
-    dataset: Dataset,
-    results: Mapping[str, Segmentation],
-    *,
-    expected: FreshnessToken | None = None,
+def _apply_segmentations(
+    dataset: Dataset, results: Mapping[str, Segmentation], *, expected: FreshnessToken | None = None
 ) -> dict[str, Segmentation]:
     """Validate and store every mask before exposing any part of a batch.
 
@@ -321,25 +298,28 @@ def apply_segmentations(
         """
         for value in results.values():
             validate_expected(model, getattr(value, "expected", None))
-        previous = model.processing.settings.get("cellpose", {})
+        previous = model._processing.settings.get("cellpose", {})
         if not isinstance(previous, dict):
             raise ValueError("Cellpose processing metadata must be a dictionary")
         for key, value in results.items():
             if key != value.id:
                 raise ValueError("Segmentation ID does not match its result key")
+            if (
+                value.target_revision is not None
+                and model._segmentation_revisions.get(value.id, 0) != value.target_revision
+            ):
+                from .types import StaleResultError
+
+                raise StaleResultError("Segmentation replacement target changed; compute a new preview")
             model.add_segmentation(deepcopy(value))
-        cellpose_values = [
-            v for v in results.values() if v.metadata.get("algorithm") == "cellpose"
-        ]
+        cellpose_values = [v for v in results.values() if v.metadata.get("algorithm") == "cellpose"]
         if cellpose_values:
-            model.processing.settings["cellpose"] = {
+            model._processing.settings["cellpose"] = {
                 **previous,
                 **{v.id: deepcopy(v.metadata) for v in cellpose_values},
             }
             for package in ("cellpose", "torch"):
-                model.processing.software[package] = cellpose_values[0].metadata[
-                    f"{package}_version"
-                ]
+                model._processing.software[package] = cellpose_values[0].metadata[f"{package}_version"]
         return {key: model.segmentations[key] for key in results}
 
     return transact(dataset, commit, expected=expected)
@@ -350,8 +330,8 @@ def _apply(result: Any, dataset: Dataset) -> Any:
     raise TypeError(f"No result handler registered for {type(result).__name__}")
 
 
-def register_result_handler[T](
-    result_type: type[T], handler: Callable[[T, Dataset], T]
+def register_result_handler[T: ResultIdentity](
+    result_type: type[T], handler: Callable[[T, Dataset], Mapping[str, object]]
 ) -> None:
     """Register application of an extension's detached result type.
 
@@ -362,73 +342,97 @@ def register_result_handler[T](
     _apply.register(result_type, handler)
 
 
-def apply_result[T](dataset: Dataset, result: T) -> T:
-    """Apply a detached result through the common transaction boundary.
+def _receipt(result: Any, applied: Any, revision: int) -> Any:
+    from .types.results import ApplyReceipt
 
-    Args:
-        dataset: Live model to update.
-        result: Self-contained scientific result with captured input dependencies.
-
-    Returns:
-        Applied result, preserving its concrete type.
-    """
-    return transact(
-        dataset,
-        lambda staged: _apply(result, staged),
-        expected=getattr(result, "expected", None),
+    identifiers = {
+        name: getattr(applied, name)
+        for name in (
+            "localization_ids",
+            "track_ids",
+            "observation_ids",
+            "sequence_ids",
+            "calibration_name",
+            "applied",
+        )
+        if getattr(applied, name, None) is not None
+    }
+    if isinstance(applied, Mapping):
+        identifiers = dict(applied)
+    return ApplyReceipt(
+        getattr(result, "result_id", getattr(result, "id", "external")), revision, identifiers
     )
 
 
-def apply_results(dataset: Dataset, results: Iterable[Any]) -> tuple[Any, ...]:
-    """Commit independent results atomically, validating each before application.
+def apply_result(dataset: Dataset, result: object) -> ApplyReceipt:
+    """Apply a detached result atomically, returning identifiers in a receipt.
 
     Args:
-        dataset: Live model to update.
-        results: Ordered results; an earlier write may invalidate a later result.
+        dataset: Dataset.
+        result: Result.
+
 
     Returns:
-        Applied results in the supplied order.
+        The computed value.
     """
-    results = tuple(results)
+    return apply_results(dataset, (result,))[0]
 
-    def commit(staged: Dataset) -> tuple[Any, ...]:
-        """Apply results to the isolated transaction model.
+
+def apply_results(dataset: Dataset, results: Iterable[object]) -> tuple[ApplyReceipt, ...]:
+    """One atomic boundary; staged handlers never clone again.
+
+    Args:
+        dataset: Dataset.
+        results: Results.
+
+
+    Returns:
+        The computed value.
+    """
+    from .staging import validate_expected
+
+    results = tuple(results)
+    if any(not isinstance(result, ResultIdentity) for result in results):
+        raise TypeError("Applicable results must inherit ResultIdentity")
+    if not results:
+        return ()
+
+    def commit(staged: Any) -> Any:
+        """Commit.
 
         Args:
-            staged: Detached destination.
+            staged: Staged.
+
 
         Returns:
-            Applied results in input order.
+            The computed value.
         """
         staged._batch_source_token = staged._transaction_source_token
-        return tuple(apply_result(staged, result) for result in results)
+        applied = []
+        for result in results:
+            validate_expected(staged, getattr(result, "expected", None))
+            applied.append(_apply(result, staged))
+        return tuple(applied)
 
-    return transact(dataset, commit)
+    return transact(
+        dataset,
+        commit,
+        _finish=lambda applied, revision: tuple(
+            (_receipt(result, value, revision) for result, value in zip(results, applied, strict=True))
+        ),
+    )
 
 
-_apply.register(
-    LocalisationResult, lambda result, dataset: apply_localisation(dataset, result)
-)
+_apply.register(LocalisationResult, lambda result, dataset: _apply_localisation(dataset, result))
 _apply.register(
     DriftResult,
-    lambda result, dataset: apply_drift(dataset, {result.acquisition_id: result})[
-        result.acquisition_id
-    ],
+    lambda result, dataset: _apply_drift(dataset, {result.acquisition_id: result})[result.acquisition_id],
 )
+_apply.register(AlignmentResult, lambda result, dataset: _apply_alignment(dataset, result))
+_apply.register(TrackingResult, lambda result, dataset: _apply_tracking(dataset, result))
+_apply.register(PhotometryResult, lambda result, dataset: _apply_photometry(dataset, result))
+_apply.register(PhotonSequenceResult, lambda result, dataset: _apply_photon_sequences(dataset, result))
 _apply.register(
-    AlignmentResult, lambda result, dataset: apply_alignment(dataset, result)
+    Segmentation, lambda result, dataset: _apply_segmentations(dataset, {result.id: result})[result.id]
 )
-_apply.register(TrackingResult, lambda result, dataset: apply_tracking(dataset, result))
-_apply.register(
-    PhotometryResult, lambda result, dataset: apply_photometry(dataset, result)
-)
-_apply.register(
-    PhotonSequenceResult,
-    lambda result, dataset: apply_photon_sequences(dataset, result),
-)
-_apply.register(
-    Segmentation,
-    lambda result, dataset: apply_segmentations(dataset, {result.id: result})[
-        result.id
-    ],
-)
+_apply.register(SequenceTrackingResult, lambda result, dataset: _apply_sequence_tracking(dataset, result))

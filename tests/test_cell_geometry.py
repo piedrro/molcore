@@ -31,7 +31,6 @@ class CellGeometryTests(unittest.TestCase):
         model.add_segmentation_outline(outline)
         model.add_segmentation_outline(global_outline)
         transact(model, lambda staged: staged.add_bactfit_cell(fit))
-
         with tempfile.TemporaryDirectory() as tmp:
             for layout in ("hdf5", "directory"):
                 path = Path(tmp) / layout
@@ -74,7 +73,7 @@ class CellGeometryTests(unittest.TestCase):
         self.assertFalse(model.segmentation_outlines)
         self.assertFalse(model.bactfit_cells)
 
-    def test_version_four_experiment_loads_without_vector_geometry(self):
+    def test_version_four_experiment_is_rejected(self):
         experiment = Experiment()
         experiment.add_dataset(Dataset(id="round"))
         with tempfile.TemporaryDirectory() as tmp:
@@ -86,7 +85,7 @@ class CellGeometryTests(unittest.TestCase):
                 group.attrs["format_version"] = 4
                 del group["segmentation_outlines"]
                 del group["bactfit_cells"]
-            with Experiment.open(path) as restored:
+            with self.assertRaises(ValueError), Experiment.open(path) as restored:
                 dataset = restored.datasets["round"]
                 self.assertFalse(dataset.segmentation_outlines)
                 self.assertFalse(dataset.bactfit_cells)

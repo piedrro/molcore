@@ -33,9 +33,9 @@ def main() -> None:
             },
         )
     )
-    per_channel = autocontrast_channels(dataset, "recording")
+    per_channel = autocontrast_channels(dataset.snapshot(), "recording")
     shared = autocontrast_channels(
-        dataset,
+        dataset.snapshot(),
         "recording",
         scope=ContrastScope.SHARED,
         settings=ContrastSettings(method=ContrastMethod.MIN_MAX, max_frames=None),

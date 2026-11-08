@@ -1,0 +1,79 @@
+{
+  "baseline_commit": "db67aa9099a89e6b05dfdece736108a452ae3268",
+  "python": "3.14.9",
+  "platform": "Windows",
+  "baseline": {
+    "rows": 1000000,
+    "numpy": "2.5.4",
+    "id_query": {
+      "median_seconds": 0.0009170999983325601,
+      "peak_bytes": 8727
+    },
+    "frame_query": {
+      "median_seconds": 0.11677750002127141,
+      "peak_bytes": 2013340
+    },
+    "snapshot": {
+      "median_seconds": 0.05211189994588494,
+      "peak_bytes": 104159738
+    },
+    "small_commit": {
+      "median_seconds": 0.06921800004784018,
+      "peak_bytes": 108118889
+    },
+    "many_short_tracks": {
+      "median_seconds": 0.14972619991749525,
+      "peak_bytes": 358882
+    },
+    "repeated_photometry": {
+      "median_seconds": 0.0664404999697581,
+      "peak_bytes": 105696
+    },
+    "photometry_intensity_sum": 1800.0,
+    "compressed_hdf5_read": {
+      "median_seconds": 0.02130559994839132,
+      "peak_bytes": 410848
+    },
+    "compressed_tiff_read": {
+      "median_seconds": 0.26259589998517185,
+      "peak_bytes": 839551
+    }
+  },
+  "current": {
+    "rows": 1000000,
+    "numpy": "2.5.4",
+    "id_query": {
+      "median_seconds": 0.0019123000092804432,
+      "peak_bytes": 8796
+    },
+    "frame_query": {
+      "median_seconds": 0.010962900007143617,
+      "peak_bytes": 2013460
+    },
+    "snapshot": {
+      "median_seconds": 0.004701700061559677,
+      "peak_bytes": 48994
+    },
+    "small_commit": {
+      "median_seconds": 0.03728600009344518,
+      "peak_bytes": 32063058
+    },
+    "many_short_tracks": {
+      "median_seconds": 0.20756849995814264,
+      "peak_bytes": 440897
+    },
+    "repeated_photometry": {
+      "median_seconds": 0.07684970006812364,
+      "peak_bytes": 134614
+    },
+    "photometry_intensity_sum": 1800.0,
+    "compressed_hdf5_read": {
+      "median_seconds": 0.002992199966683984,
+      "peak_bytes": 204272
+    },
+    "compressed_tiff_read": {
+      "median_seconds": 0.017766400007531047,
+      "peak_bytes": 375913
+    }
+  }
+}

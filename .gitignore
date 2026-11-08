@@ -13,4 +13,5 @@ wheels/
 
 .idea/
 /docs/superpowers/
+/.superpowers/api-overhaul/
 /tests/test_data/

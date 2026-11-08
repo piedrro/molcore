@@ -1,12 +1,12 @@
 """Editable segmentation outlines and detached bacterial cell fits."""
 
-from dataclasses import dataclass
 from math import isfinite
 from operator import index
 
 import numpy as np
 from numpy.typing import ArrayLike
 
+from ..immutable import immutable_record
 from ._shared import CoordinateSpace
 
 Points = tuple[tuple[float, float], ...]
@@ -18,10 +18,10 @@ def _points(values: ArrayLike, name: str, minimum: int) -> Points:
         coordinates.ndim != 2
         or coordinates.shape[1] != 2
         or len(coordinates) < minimum
-        or not np.all(np.isfinite(coordinates))
+        or (not np.all(np.isfinite(coordinates)))
     ):
         raise ValueError(f"{name} requires at least {minimum} finite (x, y) points")
-    return tuple((float(x), float(y)) for x, y in coordinates)
+    return tuple(((float(x), float(y)) for x, y in coordinates))
 
 
 def _positive(value: float, name: str) -> float:
@@ -48,7 +48,7 @@ def _identifier(value: str, name: str) -> None:
         raise ValueError(f"{name} must be a nonempty string")
 
 
-@dataclass(frozen=True)
+@immutable_record
 class SegmentationOutline:
     """One editable polygon in subpixel (x, y) order.
 
@@ -82,7 +82,7 @@ class SegmentationOutline:
             object.__setattr__(self, "pixel_size", _positive(self.pixel_size, "Pixel size"))
 
 
-@dataclass(frozen=True)
+@immutable_record
 class BactFitCell:
     """Fitted cell geometry in subpixel (x, y) order, with radius in pixels.
 

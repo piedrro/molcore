@@ -5,19 +5,21 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, field, replace
+from datetime import UTC, datetime
 from math import isfinite
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
-from datetime import datetime, timezone
 
+from .._changes import mutation_scope
 from .._locking import model_locked, model_mutated
+from ..immutable import immutable_record
 
 if TYPE_CHECKING:
     from .dataset import Dataset
 
 
-@dataclass(frozen=True)
+@immutable_record
 class BoundingBox:
     """One stationary measurement region in explicitly named pixel coordinates.
 
@@ -125,10 +127,10 @@ class BoundingBoxStore:
             Definitions in insertion order.
         """
         return tuple(
-            replace(box) for key, box in self._data.items() if include_deleted or key not in self._deleted
+            (replace(box) for key, box in self._data.items() if include_deleted or key not in self._deleted)
         )
 
-    @model_mutated
+    @model_mutated(scope=lambda self, box: mutation_scope(self))
     def set(self, box: BoundingBox) -> BoundingBox:
         """Create or edit a definition, preserving identity and advancing its revision.
 
@@ -144,14 +146,14 @@ class BoundingBoxStore:
             self.dataset.acquisitions[box.acquisition_id].channels[box.channel]
         previous = self._data.get(box.id)
         if previous is not None and box.id not in self._deleted:
-            before, after = asdict(previous), asdict(box)
+            before, after = (asdict(previous), asdict(box))
             for key in ("revision", "created_at", "updated_at"):
                 before.pop(key)
                 after.pop(key)
             if before == after:
                 return replace(previous)
         revision = 1 if previous is None else previous.revision + 1
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         stored = replace(
             box,
             revision=revision,
@@ -164,7 +166,7 @@ class BoundingBoxStore:
         self.revision += 1
         return replace(stored)
 
-    @model_mutated
+    @model_mutated(scope=lambda self, id: mutation_scope(self))
     def remove(self, id: str) -> None:
         """Delete an active definition while preserving its history and derived samples.
 
@@ -172,9 +174,7 @@ class BoundingBoxStore:
             id: Stable box identifier whose dependent sequences become stale.
         """
         box = self[id]
-        self._data[id] = replace(
-            box, revision=box.revision + 1, updated_at=datetime.now(timezone.utc).isoformat()
-        )
+        self._data[id] = replace(box, revision=box.revision + 1, updated_at=datetime.now(UTC).isoformat())
         self._deleted.add(id)
         self.dataset.photon_sequences._invalidate_bounding_boxes({id})
         self.revision += 1

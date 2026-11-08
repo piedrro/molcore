@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import wraps
+from typing import Any
 
 
 def model_locked[**P, R](function: Callable[P, R]) -> Callable[P, R]:
@@ -27,14 +28,16 @@ def model_locked[**P, R](function: Callable[P, R]) -> Callable[P, R]:
         Returns:
             Computed R value.
         """
-        owner = getattr(args[0], "dataset", args[0])
+        from .snapshots import read_model
+
+        owner = read_model(getattr(args[0], "dataset", args[0]))
         with owner._lock:
             return function(*args, **kwargs)
 
     return wrapped
 
 
-def model_mutated[**P, R](function: Callable[P, R]) -> Callable[P, R]:
+def model_mutated(function: Any = None, *, scope: Any = None) -> Any:
     """Serialize a mutator and publish one change after the outer operation succeeds.
 
     Args:
@@ -43,9 +46,11 @@ def model_mutated[**P, R](function: Callable[P, R]) -> Callable[P, R]:
     Returns:
         Wrapped operation retaining its original signature.
     """
+    if function is None:
+        return lambda target: model_mutated(target, scope=scope)
 
     @wraps(function)
-    def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
         """Run a mutation and deliver its committed change.
 
         Args:
@@ -55,22 +60,23 @@ def model_mutated[**P, R](function: Callable[P, R]) -> Callable[P, R]:
         Returns:
             Original mutator result.
         """
-        from ._changes import partitions, versions
+        from ._changes import mutation_scope, versions
 
         receiver = args[0]
         owner = getattr(receiver, "dataset", receiver)
         change = None
         with owner._lock:
-            # Temporary validation tables must not publish changes to their owner.
-            if receiver is not owner and not any(
-                receiver is getattr(owner, name)
-                for name in (
-                    "localizations",
-                    "tracks",
-                    "observations",
-                    "photon_sequences",
-                    "bounding_boxes",
-                    "transforms",
+            if receiver is not owner and (
+                not any(
+                    receiver is getattr(owner, name)
+                    for name in (
+                        "localizations",
+                        "tracks",
+                        "observations",
+                        "photon_sequences",
+                        "bounding_boxes",
+                        "transforms",
+                    )
                 )
             ):
                 return function(*args, **kwargs)
@@ -78,17 +84,23 @@ def model_mutated[**P, R](function: Callable[P, R]) -> Callable[P, R]:
             if outer:
                 before = versions(owner)
                 owner._mutation_partitions = set()
-            owner._mutation_partitions.update(partitions(owner, function, args, kwargs))
+            owner._mutation_partitions.update(scope(*args, **kwargs) if scope else mutation_scope(owner))
             owner._mutation_depth += 1
             try:
                 result = function(*args, **kwargs)
                 if outer:
+                    from .immutable import immutable_array
+
+                    for name in ("localizations", "observations"):
+                        table = getattr(owner, name)
+                        table._data = {key: immutable_array(value) for key, value in table._data.items()}
+                    owner.tracks._members = {
+                        key: immutable_array(value) for key, value in owner.tracks._members.items()
+                    }
                     after = versions(owner)
                     changed = frozenset(k for k in before if before[k] != after[k])
                     if changed:
-                        change = owner._record_change(
-                            changed, frozenset(owner._mutation_partitions)
-                        )
+                        change = owner._record_change(changed, frozenset(owner._mutation_partitions))
             finally:
                 owner._mutation_depth -= 1
         if change is not None:

@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 
 from .._logging import logged
+from ..immutable import immutable_record
 from ..revisions import FreshnessToken
 from ._shared import CoordinateSpace
 from .processing import ProgressUpdate
+from .results import ResultIdentity
 
 if TYPE_CHECKING:
     from ..types import ProgressCallback
@@ -56,7 +57,7 @@ class SpatialUnit(StrEnum):
     NANOMETRES = "nm"
 
 
-@dataclass(frozen=True)
+@immutable_record
 class PhotometrySettings:
     """Apertures in target-channel pixels; circle radius is spot_size / 2.
 
@@ -81,17 +82,13 @@ class PhotometrySettings:
                 raise ValueError(f"{name} must be an integer >= {minimum}")
         if self.spot_size % 2 != 1:
             raise ValueError("spot_size must be odd")
-        if not isinstance(self.shape, ApertureShape) or not isinstance(
-            self.background, BackgroundMethod
-        ):
+        if not isinstance(self.shape, ApertureShape) or not isinstance(self.background, BackgroundMethod):
             raise TypeError("Use ApertureShape and BackgroundMethod enums")
-        if not isinstance(self.exclude_neighbours, bool) or not isinstance(
-            self.follow_drift, bool
-        ):
+        if not isinstance(self.exclude_neighbours, bool) or not isinstance(self.follow_drift, bool):
             raise TypeError("Photometry flags must be booleans")
 
 
-@dataclass(frozen=True)
+@immutable_record
 class FixedApertureSettings:
     """Fixed mask geometry with separate window and masked-ring summaries."""
 
@@ -115,13 +112,13 @@ class FixedApertureSettings:
             isinstance(self.psf_box_size, bool)
             or not isinstance(self.psf_box_size, int)
             or self.psf_box_size < 3
-            or self.psf_box_size % 2 != 1
+            or (self.psf_box_size % 2 != 1)
         ):
             raise ValueError("PSF box size must be an odd integer of at least 3")
 
 
-@dataclass(frozen=True)
-class PhotometryResult:
+@immutable_record
+class PhotometryResult(ResultIdentity):
     """Detached localisation-measurement columns, source state token and observation IDs.
 
     Intensity units are original image units summed over valid aperture pixels.
@@ -136,8 +133,8 @@ class PhotometryResult:
     observation_ids: np.ndarray | None = None
 
 
-@dataclass(frozen=True)
-class PhotonSequenceResult:
+@immutable_record
+class PhotonSequenceResult(ResultIdentity):
     """Detached trace output whose primary records are photon sequences.
 
     Attributes:
@@ -168,7 +165,7 @@ class PhotonSequenceResult:
         return to_columns(self.sequences)
 
 
-@dataclass(frozen=True)
+@immutable_record
 class TrackingSettings:
     """Trackpy distances in selected coordinate pixels and explicit frame-clock memory.
 
@@ -191,17 +188,14 @@ class TrackingSettings:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
                 raise ValueError(f"{name} must be an integer >= {minimum}")
-        if not isinstance(self.frame_clock, str) or self.frame_clock not in (
-            "camera",
-            "channel",
-        ):
+        if not isinstance(self.frame_clock, str) or self.frame_clock not in ("camera", "channel"):
             raise ValueError("frame_clock must be camera or channel")
         if not isinstance(self.space, CoordinateSpace):
             raise TypeError("Use CoordinateSpace enum")
 
 
-@dataclass(frozen=True)
-class TrackingResult:
+@immutable_record
+class TrackingResult(ResultIdentity):
     """Stable localization memberships independent of Trackpy particle labels.
 
     selected_ids is the exact replacement scope; None means the whole partition.
@@ -219,7 +213,19 @@ class TrackingResult:
     selected_ids: np.ndarray | None = None
 
 
-@dataclass(frozen=True)
+@immutable_record
+class SequenceTrackingResult(ResultIdentity):
+    sequence_id: str
+    channel: str
+    memberships: tuple[np.ndarray, ...]
+    selected_ids: np.ndarray
+    settings: TrackingSettings
+    expected: FreshnessToken
+    backend_version: str
+    track_ids: np.ndarray | None = None
+
+
+@immutable_record
 class DiffusionFit:
     """Unweighted 2D linear fit; diffusion units are spatial_unit squared / second."""
 
@@ -231,7 +237,7 @@ class DiffusionFit:
     lag_count: int
 
 
-@dataclass(frozen=True)
+@immutable_record
 class TrajectoryStatistics:
     """Per-step and MSD columns with explicit spatial units and seconds timing.
 

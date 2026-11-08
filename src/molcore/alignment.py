@@ -8,6 +8,8 @@ import numpy as np
 
 from ._logging import logged
 from ._processing import check_snapshot, executor, snapshot
+from .execution import ExecutionContext, _record_execution
+from .snapshots import DatasetSnapshot, processor_model
 from .transforms import project_points
 from .types._shared import Calibration
 from .types.dataset import Dataset
@@ -17,28 +19,26 @@ from .types.tables import identifiers
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
-    from .cpu import CpuExecutor, WorkerProgress
+    from .cpu import CpuExecutor, ProgressReporter
     from .types import CancelEvent, ProgressCallback
 
 
 def _homography(source: np.ndarray, target: np.ndarray) -> np.ndarray:
     """Fit a normalized DLT homography, rejecting degenerate correspondences."""
-    normalized, transforms = [], []
+    normalized, transforms = ([], [])
     for points in (source, target):
         center = points.mean(axis=0)
         radius = np.sqrt(np.mean(np.sum((points - center) ** 2, axis=1)))
         if radius <= np.finfo(float).eps:
             raise ValueError("Homography fiducials are degenerate")
         scale = np.sqrt(2) / radius
-        transform = np.array(
-            [[scale, 0, -scale * center[0]], [0, scale, -scale * center[1]], [0, 0, 1]]
-        )
+        transform = np.array([[scale, 0, -scale * center[0]], [0, scale, -scale * center[1]], [0, 0, 1]])
         transforms.append(transform)
         normalized.append(project_points(transform, points))
     src, dst = normalized
     x, y = src.T
     u, v = dst.T
-    zero, one = np.zeros(len(x)), np.ones(len(x))
+    zero, one = (np.zeros(len(x)), np.ones(len(x)))
     design = np.vstack(
         [
             np.column_stack([-x, -y, -one, zero, zero, zero, u * x, u * y, u]),
@@ -89,25 +89,23 @@ def fit_transform(
     Returns:
         Fitted homogeneous matrix, pair residuals and inlier mask.
     """
-    source, target = np.asarray(source, dtype=float), np.asarray(target, dtype=float)
+    source, target = (np.asarray(source, dtype=float), np.asarray(target, dtype=float))
     if source.ndim != 2 or source.shape[1:] != (2,) or target.shape != source.shape:
         raise ValueError("Expected matching (n, 2) point arrays")
     if not np.isfinite(source).all() or not np.isfinite(target).all():
         raise ValueError("Fiducials must be finite")
     minimum = {"translation": 1, "affine": 3, "homography": 4}.get(model)
     if minimum is None or len(source) < minimum:
-        raise ValueError(
-            "Choose translation (1+), affine (3+), or homography (4+) fiducial pairs"
-        )
+        raise ValueError("Choose translation (1+), affine (3+), or homography (4+) fiducial pairs")
     if (
         not np.isfinite(ransac_threshold)
         or ransac_threshold <= 0
-        or not isinstance(max_trials, int)
-        or max_trials < 1
+        or (not isinstance(max_trials, int))
+        or (max_trials < 1)
     ):
         raise ValueError("RANSAC threshold and trials must be positive")
     rng = np.random.default_rng(0)
-    best, best_score = None, (-1, -np.inf)
+    best, best_score = (None, (-1, -np.inf))
     for _ in range(max_trials if len(source) > minimum else 1):
         sample = rng.choice(len(source), minimum, replace=False)
         try:
@@ -118,7 +116,7 @@ def fit_transform(
         selected = np.isfinite(residuals) & (residuals <= ransac_threshold)
         score = (int(selected.sum()), -float(np.sum(residuals[selected] ** 2)))
         if score > best_score:
-            best, best_score = selected, score
+            best, best_score = (selected, score)
         if selected.all():
             break
     if best is None or best.sum() < minimum:
@@ -133,11 +131,11 @@ def fit_transform(
         inliers = selected
     matrix = _fit_model(source[inliers], target[inliers], model)
     residuals = np.linalg.norm(project_points(matrix, source) - target, axis=1)
-    return matrix, residuals, inliers
+    return (matrix, residuals, inliers)
 
 
 @logged
-def _job(payload: tuple, reporter: WorkerProgress) -> tuple:
+def _job(payload: tuple, reporter: ProgressReporter) -> tuple:
     """Job.
 
     Args:
@@ -147,34 +145,22 @@ def _job(payload: tuple, reporter: WorkerProgress) -> tuple:
     Returns:
         Computed tuple value.
     """
-    (
-        source,
-        target,
-        source_ids,
-        target_ids,
-        model,
-        match_radius,
-        matched,
-        threshold,
-        trials,
-    ) = payload
+    source, target, source_ids, target_ids, model, match_radius, matched, threshold, trials = payload
     reporter.report(0, 1, "Matching channel fiducials")
     if not matched:
         from scipy.spatial import cKDTree
 
         distances, nearest = cKDTree(target).query(source)
         _, reverse = cKDTree(source).query(target)
-        keep = (distances <= match_radius) & (
-            reverse[nearest] == np.arange(len(source))
-        )
-        source, source_ids = source[keep], source_ids[keep]
-        target, target_ids = target[nearest[keep]], target_ids[nearest[keep]]
+        keep = (distances <= match_radius) & (reverse[nearest] == np.arange(len(source)))
+        source, source_ids = (source[keep], source_ids[keep])
+        target, target_ids = (target[nearest[keep]], target_ids[nearest[keep]])
     reporter.report(0.5, 1, "Estimating channel transform")
     matrix, residuals, inliers = fit_transform(
         source, target, model=model, ransac_threshold=threshold, max_trials=trials
     )
     reporter.report(1, 1, "Channel alignment complete")
-    return matrix, residuals, source_ids, target_ids, inliers
+    return (matrix, residuals, source_ids, target_ids, inliers)
 
 
 def _rows(
@@ -191,21 +177,17 @@ def _rows(
     Returns:
         Detached named result columns.
     """
-    rows = dataset.localizations.query(
-        acquisition_id=acquisition_id, channel=channel, ids=ids, space="raw"
-    )
+    rows = dataset.localizations.query(acquisition_id=acquisition_id, channel=channel, ids=ids, space="raw")
     if len(rows["id"]) == 0:
         raise ValueError("No fiducial localizations in selected channel")
     if ids is not None:
         ids = identifiers(ids)
         if len(np.unique(ids)) != len(ids) or len(rows["id"]) != len(ids):
-            raise ValueError(
-                "Fiducial IDs must exist, be unique, and belong to the selected channel"
-            )
+            raise ValueError("Fiducial IDs must exist, be unique, and belong to the selected channel")
         positions = {int(value): i for i, value in enumerate(rows["id"])}
         order = [positions[int(value)] for value in ids]
         rows = {k: v[order] for k, v in rows.items()}
-    return np.column_stack([rows["x"], rows["y"]]), rows["id"]
+    return (np.column_stack([rows["x"], rows["y"]]), rows["id"])
 
 
 @logged
@@ -222,7 +204,6 @@ def _run(
     ransac_threshold: float,
     max_trials: int,
     name: str,
-    apply: bool,
     num_cpus: int | None,
     cpu: CpuExecutor | None,
     progress: ProgressCallback | None,
@@ -249,41 +230,22 @@ def _run(
     Returns:
         Result retaining the input format or backend-specific representation.
     """
-    if source_channel == target_channel or model not in (
-        "translation",
-        "affine",
-        "homography",
-    ):
-        raise ValueError(
-            "Choose distinct channels and translation, affine or homography alignment"
-        )
+    if source_channel == target_channel or model not in ("translation", "affine", "homography"):
+        raise ValueError("Choose distinct channels and translation, affine or homography alignment")
     matched = source_ids is not None and target_ids is not None
     if (source_ids is None) != (target_ids is None):
         raise ValueError("Supply both source_ids and target_ids, or neither")
-    if not matched and (
-        match_radius is None or not np.isfinite(match_radius) or match_radius <= 0
-    ):
-        raise ValueError(
-            "Automatic matching requires an explicit positive match_radius"
-        )
+    if not matched and (match_radius is None or not np.isfinite(match_radius) or match_radius <= 0):
+        raise ValueError("Automatic matching requires an explicit positive match_radius")
     acquisition = dataset.acquisitions[acquisition_id]
-    if (
-        source_channel not in acquisition.channels
-        or target_channel not in acquisition.channels
-    ):
+    if source_channel not in acquisition.channels or target_channel not in acquisition.channels:
         raise ValueError("Unknown alignment channel")
     source_emission = acquisition.channel_specs[source_channel].emission
     target_emission = acquisition.channel_specs[target_channel].emission
     if source_emission is not None and source_emission == target_emission:
         raise ValueError("Choose distinct physical emission paths")
-    if (
-        acquisition.mode in ("fret", "alex")
-        and source_emission == "D"
-        and target_emission == "A"
-    ):
-        raise ValueError(
-            "Donor emission is the optical reference; align acceptor into donor"
-        )
+    if acquisition.mode in ("fret", "alex") and source_emission == "D" and (target_emission == "A"):
+        raise ValueError("Donor emission is the optical reference; align acceptor into donor")
     expected = snapshot(dataset, acquisition_id)
     source, source_ids = _rows(dataset, acquisition_id, source_channel, source_ids)
     target, target_ids = _rows(dataset, acquisition_id, target_channel, target_ids)
@@ -305,9 +267,7 @@ def _run(
             _job, [payload], progress=progress, cancel_event=cancel_event
         )[0]
     check_snapshot(dataset, acquisition_id, expected)
-    reference_matrix = (
-        dataset.transforms._registration(acquisition_id, target_channel) @ matrix
-    )
+    reference_matrix = dataset.transforms._registration(acquisition_id, target_channel) @ matrix
     result = AlignmentResult(
         acquisition_id,
         str(source_channel),
@@ -324,12 +284,13 @@ def _run(
         match_radius=match_radius,
         requested_name=name,
     )
-    return dataset.apply(result) if apply else result
+    return result
 
 
 @logged
+@_record_execution
 def estimate_alignment(
-    dataset: Dataset,
+    dataset: DatasetSnapshot,
     acquisition_id: str,
     source_channel: str,
     target_channel: str,
@@ -340,14 +301,12 @@ def estimate_alignment(
     match_radius: float | None = None,
     ransac_threshold: float = 1.0,
     max_trials: int = 1000,
-    num_cpus: int | None = None,
-    cpu: CpuExecutor | None = None,
-    progress: ProgressCallback | None = None,
-    cancel_event: CancelEvent | None = None,
+    context: ExecutionContext | None = None,
 ) -> AlignmentResult:
     """Fit channel correspondences without changing the calibration selection.
 
     Args:
+        context: Execution policy, frame chunk size, progress and cancellation.
         dataset: Dataset supplying raw effective localization coordinates.
         acquisition_id: Acquisition containing both logical channels.
         source_channel: Channel to transform.
@@ -356,14 +315,18 @@ def estimate_alignment(
         target_ids: Corresponding target IDs in matching order.
         model: Translation, affine, or homography fit.
         match_radius: Maximum mutual-nearest distance when IDs are not paired.
-        num_cpus: Positive worker count or None for the CPU default.
-        cpu: Optional reusable CpuExecutor.
-        progress: Parent-process ProgressUpdate callback.
-        cancel_event: Optional caller cancellation event.
-
     Returns:
         Source-to-target matrix, composed reference matrix and pair residuals.
     """
+    dataset = processor_model(dataset)
+    context = context or ExecutionContext()
+    context.check_cancelled()
+    cpu, num_cpus, progress, cancel_event = (
+        context.cpu,
+        context.num_cpus,
+        context.progress,
+        context.cancel_event,
+    )
     return _run(
         dataset,
         acquisition_id,
@@ -376,7 +339,6 @@ def estimate_alignment(
         ransac_threshold=ransac_threshold,
         max_trials=max_trials,
         name=None,
-        apply=False,
         num_cpus=num_cpus,
         cpu=cpu,
         progress=progress,
@@ -385,8 +347,9 @@ def estimate_alignment(
 
 
 @logged
+@_record_execution
 def align_channels(
-    dataset: Dataset,
+    dataset: DatasetSnapshot,
     acquisition_id: str,
     source_channel: str,
     target_channel: str,
@@ -398,14 +361,12 @@ def align_channels(
     ransac_threshold: float = 1.0,
     max_trials: int = 1000,
     name: str | None = None,
-    num_cpus: int | None = None,
-    cpu: CpuExecutor | None = None,
-    progress: ProgressCallback | None = None,
-    cancel_event: CancelEvent | None = None,
+    context: ExecutionContext | None = None,
 ) -> AlignmentResult:
     """Estimate and select a named source-channel registration calibration.
 
     Args:
+        context: Execution policy, frame chunk size, progress and cancellation.
         dataset: Dataset to receive a non-destructive calibration.
         acquisition_id: Acquisition identifier.
         source_channel: Channel to align.
@@ -415,14 +376,18 @@ def align_channels(
         model: Translation, affine, or homography fit.
         match_radius: Required maximum matching distance for unpaired tables.
         name: New calibration name; existing names are not overwritten.
-        num_cpus: Positive CPU count or None for the default.
-        cpu: Optional reusable CpuExecutor.
-        progress: Parent-process ProgressUpdate callback.
-        cancel_event: Optional caller cancellation event.
-
     Returns:
         AlignmentResult including the selected calibration name.
     """
+    dataset = processor_model(dataset)
+    context = context or ExecutionContext()
+    context.check_cancelled()
+    cpu, num_cpus, progress, cancel_event = (
+        context.cpu,
+        context.num_cpus,
+        context.progress,
+        context.cancel_event,
+    )
     return _run(
         dataset,
         acquisition_id,
@@ -435,7 +400,6 @@ def align_channels(
         ransac_threshold=ransac_threshold,
         max_trials=max_trials,
         name=name,
-        apply=True,
         num_cpus=num_cpus,
         cpu=cpu,
         progress=progress,

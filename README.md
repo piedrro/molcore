@@ -90,7 +90,7 @@ Google-style docstrings.
 - Queries return detached NumPy columns. Extra measurement columns are accepted.
   Localisation queries return immutable `LocalizationBatch` mappings with coordinate,
   frame and schema context; use `.to_columns()` for writable arrays.
-  Missing numeric measurements become NaN when new rows omit them.
+  Nullable columns preserve native dtypes and expose explicit validity masks; floating scientific values retain NaN conventions.
 - Localization and track queries default to `space="corrected"`: manual edits,
   selected channel registration/alignment and drift correction apply automatically
   without modifying stored coordinates. Use `space="raw"` for effective channel
@@ -127,11 +127,10 @@ out-of-bounds positions have label zero. Localization queries accept
 
 ## Images, crops and saving
 
-`ArraySource` wraps RAM arrays; `TiffSource`, `FitsSource`, and `HDF5Source` read
+`ArraySource` owns an immutable RAM copy; `ArraySource.borrow` explicitly borrows stable pixels; `TiffSource`, `FitsSource`, and `HDF5Source` read
 requested frames. TIFFs must be frame-addressable or memory-mappable.
 `CachedSource(source, max_bytes=...)` adds a process-local LRU cache. Sources
-support `materialize()` and `as_dask()`. File descriptors reopen for
-each read, including in spawned processes.
+support `materialize()` and `as_dask()`. Worker-local bulk readers reuse file handles within a context, including in spawned processes.
 
 `Dataset.save` accepts `layout="hdf5"` or `layout="directory"`, and:
 
@@ -161,8 +160,8 @@ widths. Segmentation source images are saved independently of movie policy.
 
 Saves are single-writer snapshots replaced atomically after successful writing.
 The versioned format uses JSON metadata and typed HDF5 datasets, never pickle.
-MolCore writes format version 5. Standalone datasets can still read format versions 1–4,
-and experiment snapshots can still read version 4.
+MolCore writes and reads format version 7 only. See the
+[0.2 migration guide](docs/api-migration.md) before upgrading applications or files.
 Processing settings and package-version manifests round-trip with the dataset.
 
 ## CPU processing
@@ -185,90 +184,72 @@ Use an executor context manager and a main guard in standalone programs. See
 [examples/processing.py](examples/processing.py) for a runnable workflow:
 
 ```python
-from molcore.cpu import CpuExecutor
+from molcore import CpuExecutor, ExecutionContext, PartitionSelection
 from molcore.localisation import localise
-from molcore.types import CameraSettings, LocalisationSettings
 
-def run_processing(dataset):
-    with CpuExecutor(num_cpus=4) as cpu:
-        return localise(
-            dataset, "recording", "image",
-            camera=CameraSettings(baseline=100, sensitivity=1, gain=1),
-            settings=LocalisationSettings(min_net_gradient=1000, fit_method="mle"),
-            cpu=cpu,
-            progress=lambda update: print(update.percent, update.description),
+def run_processing(dataset, camera):
+    with CpuExecutor(num_cpus=4) as executor:
+        result = localise(
+            dataset.snapshot(), PartitionSelection("recording", "image"),
+            camera=camera,
+            context=ExecutionContext(cpu=executor, chunk_size=16),
         )
+    return dataset.apply(result)
 ```
 
-The camera values above are examples; supply the calibration for the actual
-camera. `localisation.detect()` returns typed candidates without changing active
-results; `fit()` fits them; `localise()` combines both stages. Full successful
-runs replace the selected acquisition/channel partition. Rejected fits are counted
-in `LocalisationResult.failed_fits` and processing metadata; if all detected
-candidates fail, an applying run raises and preserves existing data. A `frame_range` is a
-camera-frame preview and requires `apply=False`. Inputs and ALEX frame provenance
-come from the existing MolCore models; in-memory image chunks are streamed rather
-than sending an entire movie with every job.
+`detect()` returns typed candidates; `fit()` fits them; `localise()` combines both
+stages. All compute from snapshots and return detached results. Applying a full
+successful localisation replaces the selected partition and returns allocated IDs
+in an `ApplyReceipt`. Partial frame-range previews cannot replace full tables.
+Rejected fits are counted; all-failed fits preserve existing data.
 
-`undrifting.estimate_drift()` computes a `DriftResult`; `undrift()` also stores it
-in `TransformManager`. Choose RCC or AIM through `DriftSettings(method=...,
-segment_frames=...)`. Both require at least four populated temporal segments.
-Coordinates are estimated in registered reference pixels. Camera-frame drift is
-interpolated only within observed reference-channel coverage; original pixels
-and localization coordinates remain unchanged. RCC uses a one-pixel Gaussian
-rendering kernel. `undrift_many(dataset, {acquisition_id: channel, ...},
-num_cpus=4)` processes independent acquisitions concurrently. Each estimator's
-temporal passes remain sequential inside its worker.
+`undrifting.undrift()` and `undrift_many()` return detached drift results.
+`alignment.align_channels()` returns a detached calibration result. Apply them
+explicitly with `dataset.apply` or `dataset.apply_all`. Drift uses registered
+reference pixels and is interpolated only within observed coverage. Alignment
+supports translation, affine and homography correspondences; results include
+residuals and compose through the target channel's registration.
 
-`alignment.estimate_alignment()` fits translation or affine correspondences;
-`align_channels()` also selects a new named calibration. Pass paired localization
-IDs, or an explicit `match_radius` for mutual-nearest matching. Affine fits need
-three non-collinear pairs. Results include pair residuals and compose through the
-target channel's existing registration. Homography and GPU processing are outside
-this increment.
+Scientific parameters stay in settings; executor, CPU count, progress,
+cancellation and chunk size belong in `ExecutionContext`. Failed, cancelled and
+stale commits preserve active results. Scientific settings, backend versions and
+execution provenance persist separately. Core imports remain independent of
+Picasso, Qt and napari.
 
-See [application integration contracts](docs/api-contracts.md) for stable model
-handles, automatic change notifications, scoped input dependencies and the common
-`dataset.snapshot()` / `dataset.apply(result)` workflow.
-
-All processors accept `num_cpus`, a reusable `cpu` executor, `progress`, and
-`cancel_event`. Workers return detached results; the caller validates model
-revisions before committing. Failed, cancelled, and stale runs preserve active
-results. Processing parameters, camera settings and backend versions persist in
-the dataset. Core model imports remain independent of Picasso, Qt and napari.
-The processing backend currently targets the verified Picasso 0.11 API series.
+See [integration contracts](docs/api-contracts.md), [typed backend interfaces](docs/backends.md),
+[migration](docs/api-migration.md) and [measured performance](docs/performance.md).
 
 ## Cellpose 3 segmentation
 
 `molcore.cellpose.segment()` segments one model-bound 2D source frame and returns
 the existing `Segmentation` type. It stores the exact source pixels, instance
 labels, camera-frame/channel binding, coordinate space and backend provenance.
-`segment_many()` accepts `SegmentationRequest` objects and applies results only
-after every job and stale-input check succeeds.
+`segment_many()` accepts `SegmentationRequest` objects and returns detached results.
+Use `dataset.apply_all(results.values())` for one atomic commit.
 
 ```python
+from molcore import ExecutionContext, PartitionSelection
 from molcore.cellpose import segment
 from molcore.types import CellposeSettings
 
 def segment_cells(dataset):
-    return segment(
-        dataset, "recording", "image", segmentation_id="cells",
+    result = segment(
+        dataset.snapshot(), PartitionSelection("recording", "image"), segmentation_id="cells",
         settings=CellposeSettings(pretrained_model="cyto3", min_size=15),
-        num_cpus=1,
-        progress=lambda update: print(update.percent, update.description),
+        context=ExecutionContext(num_cpus=1),
     )
+    return dataset.apply(result)
 ```
 
 As with other spawned processing calls, use a main guard in standalone scripts.
 The default frame is the first actual camera frame in the logical channel, so
 alternating excitation channels retain their original frame identity. Pass
-`space="registered"` or `"corrected"` to segment those coordinate views, and
-`apply=False` for a detached preview. Source images remain saved even when raw
+`space="registered"` or `"corrected"` to segment those coordinate views. Source images remain saved even when raw
 movie pixels are excluded from an dataset snapshot.
 
 Cellpose uses one CPU worker by default to avoid replicating a large neural
 network across all available CPUs. A reusable `CpuExecutor` amortizes model
-loading; each worker caches one model. Explicit `num_cpus` controls batch
+loading; each worker caches one model. `ExecutionContext(num_cpus=...)` controls batch
 parallelism. `CellposeSettings(gpu=True)` requests CUDA or MPS and requires
 exactly one worker; unavailable hardware raises an error rather than silently
 switching to CPU. Progress is stage-based, and cancellation is cooperative at

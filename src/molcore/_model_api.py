@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .snapshots import DatasetSnapshot
+    from .types.results import ApplyReceipt
 import logging
 from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
-from typing import Any, Self
+from typing import Any
 
+from ._changes import mutation_scope
 from ._locking import model_mutated
 from .revisions import ChangeSet, DependencyToken
 
@@ -16,6 +22,28 @@ _UNSET = object()
 
 class DatasetServices:
     """Subscriptions, explicit snapshots and result application for datasets."""
+
+    @model_mutated(scope=lambda self, settings, **kwargs: mutation_scope(self))
+    def update_processing(
+        self, settings: Mapping[str, Any], *, software: Mapping[str, str] | None = None, replace: bool = False
+    ) -> None:
+        """Validate and replace processing provenance through the mutation boundary.
+
+        Args:
+            settings: Stage settings to merge, or the complete settings when replacing.
+            software: Optional distribution versions to merge.
+            replace: Replace all stage settings instead of merging.
+        """
+        from .storage import _json
+
+        updated = deepcopy(dict(settings) if replace else {**self._processing.settings, **settings})
+        versions = {**self._processing.software, **(software or {})}
+        _json(updated)
+        _json(versions)
+        if any((not isinstance(key, str) or not isinstance(value, str) for key, value in versions.items())):
+            raise TypeError("Software names and versions must be strings")
+        self._processing.settings, self._processing.software = (updated, versions)
+        self._processing_revision += 1
 
     def subscribe(self, callback: Callable[[ChangeSet], None]) -> Callable[[], None]:
         """Receive successful changes on the committing thread.
@@ -37,16 +65,12 @@ class DatasetServices:
 
         return unsubscribe
 
-    def _record_change(
-        self, components: frozenset[str], partitions: frozenset[tuple[str, str]]
-    ) -> ChangeSet:
+    def _record_change(self, components: frozenset[str], partitions: frozenset[tuple[str, str]]) -> ChangeSet:
         self.revision += 1
         for component in components:
             for acquisition, channel in partitions:
-                key = component, acquisition, channel
-                self._partition_revisions[key] = (
-                    self._partition_revisions.get(key, 0) + 1
-                )
+                key = (component, acquisition, channel)
+                self._partition_revisions[key] = self._partition_revisions.get(key, 0) + 1
         return ChangeSet(self.revision, components, partitions)
 
     def _publish_change(self, change: ChangeSet) -> None:
@@ -57,11 +81,10 @@ class DatasetServices:
                 callback(change)
             except Exception:
                 logger.exception(
-                    "Model change subscriber failed after revision %s committed",
-                    change.revision,
+                    "Model change subscriber failed after revision %s committed", change.revision
                 )
 
-    def snapshot(self) -> Self:
+    def snapshot(self) -> DatasetSnapshot:
         """Detach scientific state while borrowing immutable image sources.
 
         Returns:
@@ -70,19 +93,16 @@ class DatasetServices:
         from .staging import clone_dataset
 
         with self._lock:
-            return clone_dataset(self)
+            from .snapshots import DatasetSnapshot
+
+            return DatasetSnapshot(clone_dataset(self))
 
     def dependencies(
         self,
         acquisition_id: str | None = None,
         channel: str | None = None,
         *,
-        components: Iterable[str] = (
-            "localizations",
-            "tracks",
-            "transforms",
-            "segmentations",
-        ),
+        components: Iterable[str] = ("localizations", "tracks", "transforms", "segmentations"),
     ) -> DependencyToken:
         """Capture only revisions relevant to a scientific operation.
 
@@ -105,43 +125,39 @@ class DatasetServices:
             selected = []
             for key, acquisition in acquisitions.items():
                 channels = (
-                    acquisition.channels
-                    if channel is None
-                    else {channel: acquisition.channels[channel]}
+                    acquisition.channels if channel is None else {channel: acquisition.channels[channel]}
                 )
                 selected.extend((key, c) for c in channels)
             return dependency_token(self, selected, components=components)
 
-    def apply[T](self, result: T) -> T:
+    def apply(self, result: object) -> ApplyReceipt:
         """Atomically apply one self-contained detached processing result.
 
         Args:
             result: Supported localisation, drift, alignment, tracking, photometry or segmentation result.
 
         Returns:
-            Applied result including allocated stable identifiers where appropriate.
+            Receipt containing the result identity, committed revision and allocated identifiers.
         """
         from .processing import apply_result
 
         return apply_result(self, result)
 
-    def apply_all(self, results: Iterable[Any]) -> tuple[Any, ...]:
+    def apply_all(self, results: Iterable[object]) -> tuple[ApplyReceipt, ...]:
         """Apply independent results in one transaction or preserve all live state.
 
         Args:
             results: Detached results; earlier writes must not invalidate later inputs.
 
         Returns:
-            Applied results in input order.
+            Immutable application receipts in input order, sharing the committed revision.
         """
         from .processing import apply_results
 
         return apply_results(self, results)
 
-    @model_mutated
-    def update_metadata(
-        self, values: Mapping[str, Any], *, replace: bool = False
-    ) -> None:
+    @model_mutated(scope=lambda self, values, *, replace=False: mutation_scope(self))
+    def update_metadata(self, values: Mapping[str, Any], *, replace: bool = False) -> None:
         """Validate and copy JSON metadata before publishing one change.
 
         Args:
@@ -152,11 +168,16 @@ class DatasetServices:
 
         updated = deepcopy(dict(values) if replace else {**self.metadata, **values})
         _json(updated)
-        self.metadata.clear()
-        self.metadata.update(updated)
+        from .immutable import freeze_metadata
+
+        self._metadata = freeze_metadata(updated)
         self._metadata_revision += 1
 
-    @model_mutated
+    @model_mutated(
+        scope=lambda self, acquisition_id, *, pixel_size=_UNSET, timestamps=_UNSET, metadata=None: (
+            mutation_scope(self, acquisition=acquisition_id, channel=None)
+        )
+    )
     def update_acquisition(
         self,
         acquisition_id: str,
@@ -194,10 +215,7 @@ class DatasetServices:
         for key, sequence in self.sequences.items():
             if acquisition_id in sequence.offsets:
                 sequences[key] = AcquisitionSequence(
-                    [
-                        replacement if a.id == acquisition_id else a
-                        for a in sequence.acquisitions
-                    ],
+                    [replacement if a.id == acquisition_id else a for a in sequence.acquisitions],
                     id=key,
                     allow_cross_boundary_tracks=sequence.allow_cross_boundary_tracks,
                     reference=sequence.reference,
@@ -206,11 +224,9 @@ class DatasetServices:
         self._sequences.update(sequences)
         self.observations._invalidate_partition(acquisition_id)
         self.photon_sequences._invalidate(acquisition_id=acquisition_id)
-        self.crops.invalidate(
-            self.localizations.query(acquisition_id=acquisition_id, space="raw")["id"]
-        )
+        self.crops.invalidate(self.localizations.query(acquisition_id=acquisition_id, space="raw")["id"])
 
-    @model_mutated
+    @model_mutated(scope=lambda self, segmentation_id: mutation_scope(self, segmentation_id=segmentation_id))
     def remove_segmentation(self, segmentation_id: str) -> None:
         """Remove a mask and invalidate observations derived from its partition.
 
@@ -218,4 +234,8 @@ class DatasetServices:
             segmentation_id: Existing mask identifier.
         """
         segmentation = self._segmentations.pop(segmentation_id)
+        self._segmentation_revisions = {
+            **self._segmentation_revisions,
+            segmentation_id: self._segmentation_revisions.get(segmentation_id, 0) + 1,
+        }
         self.observations._invalidate_partition(segmentation.acquisition_id)

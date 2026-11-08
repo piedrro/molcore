@@ -5,6 +5,7 @@ import unittest
 from concurrent.futures import CancelledError
 
 import numpy as np
+from scientific_helpers import compute_scenario
 
 from molcore import Acquisition, ArraySource, ChannelSpec, Dataset
 from molcore.contrast import autocontrast, autocontrast_channels
@@ -24,9 +25,7 @@ class ContrastTests(unittest.TestCase):
     def test_masks_nonfinite_and_minmax(self):
         image = np.array([[np.nan, -5.0, 1.0], [np.inf, 8.0, 100.0]])
         mask = np.array([[True, True, True], [True, True, False]])
-        result = autocontrast(
-            image, mask=mask, settings=ContrastSettings(method=ContrastMethod.MIN_MAX)
-        )
+        result = autocontrast(image, mask=mask, settings=ContrastSettings(method=ContrastMethod.MIN_MAX))
         self.assertEqual((result.lower, result.upper), (-5.0, 8.0))
         self.assertEqual(result.valid_pixel_count, 3)
         with self.assertRaises(ValueError):
@@ -68,9 +67,7 @@ class ContrastTests(unittest.TestCase):
         self.assertEqual(first.valid_pixel_count, 300)
         exact = autocontrast(
             movie,
-            settings=ContrastSettings(
-                method=ContrastMethod.MIN_MAX, max_frames=None, max_pixels_per_frame=1
-            ),
+            settings=ContrastSettings(method=ContrastMethod.MIN_MAX, max_frames=None, max_pixels_per_frame=1),
         )
         self.assertEqual((exact.lower, exact.upper), (0.0, 1999.0))
 
@@ -81,27 +78,25 @@ class ContrastTests(unittest.TestCase):
             Acquisition(
                 ArraySource(movie),
                 id="a",
-                channel_specs={
-                    "d": ChannelSpec(excitation="d"),
-                    "a": ChannelSpec(excitation="a"),
-                },
+                channel_specs={"d": ChannelSpec(excitation="d"), "a": ChannelSpec(excitation="a")},
                 excitation_sequence=("d", "a"),
             )
         )
         settings = ContrastSettings(method=ContrastMethod.MIN_MAX)
-        result = autocontrast_channels(exp, "a", settings=settings)
+        result = compute_scenario(autocontrast_channels, exp, "a", settings=settings)
         self.assertEqual((result["d"].lower, result["d"].upper), (0.0, 10.0))
         self.assertEqual(result["d"].frames, (0, 2))
         self.assertEqual(result["a"].frames, (1, 3))
-        shared = autocontrast_channels(
-            exp, "a", settings=settings, scope=ContrastScope.SHARED
+        shared = compute_scenario(
+            autocontrast_channels, exp, "a", settings=settings, scope=ContrastScope.SHARED
         )
         for limits in shared.values():
             self.assertEqual((limits.lower, limits.upper), (0.0, 110.0))
         with self.assertRaises(ValueError):
-            autocontrast_channels(exp, "a", frame_range=(4, 5))
+            compute_scenario(autocontrast_channels, exp, "a", frame_range=(4, 5))
 
     def test_lazy_reads_and_cancellation(self):
+
         class CountingSource(ArraySource):
             def __init__(self, data):
                 super().__init__(data)
@@ -114,12 +109,12 @@ class ContrastTests(unittest.TestCase):
         source = CountingSource(np.ones((20, 3, 3)))
         exp = Dataset()
         exp.add_acquisition(Acquisition(source, id="a"))
-        autocontrast_channels(exp, "a", settings=ContrastSettings(max_frames=3))
+        compute_scenario(autocontrast_channels, exp, "a", settings=ContrastSettings(max_frames=3))
         self.assertEqual(source.reads, [0, 9, 19])
         event = threading.Event()
         event.set()
         with self.assertRaises(CancelledError):
-            autocontrast_channels(exp, "a", cancel_event=event)
+            compute_scenario(autocontrast_channels, exp, "a", cancel_event=event)
         self.assertEqual(source.reads, [0, 9, 19])
 
 
@@ -130,16 +125,14 @@ class ContrastEdgeTests(unittest.TestCase):
             Acquisition(
                 ArraySource(np.array([[[0.0, 0.0, 100.0, 100.0]]])),
                 id="a",
-                channel_specs={
-                    "d": ChannelSpec(roi=(0, 1, 0, 2)),
-                    "a": ChannelSpec(roi=(0, 1, 2, 4)),
-                },
+                channel_specs={"d": ChannelSpec(roi=(0, 1, 0, 2)), "a": ChannelSpec(roi=(0, 1, 2, 4))},
             )
         )
         from molcore.staging import state_token
 
         before = state_token(exp)
-        result = autocontrast_channels(
+        result = compute_scenario(
+            autocontrast_channels,
             exp,
             "a",
             scope=ContrastScope.SHARED,
@@ -151,12 +144,11 @@ class ContrastEdgeTests(unittest.TestCase):
 
     def test_range_and_time_dependent_mask(self):
         exp = Dataset()
-        exp.add_acquisition(
-            Acquisition(ArraySource(np.arange(12).reshape(3, 2, 2)), id="a")
-        )
+        exp.add_acquisition(Acquisition(ArraySource(np.arange(12).reshape(3, 2, 2)), id="a"))
         mask = np.zeros((3, 2, 2), dtype=bool)
         mask[1:, 0, 0] = True
-        result = autocontrast_channels(
+        result = compute_scenario(
+            autocontrast_channels,
             exp,
             "a",
             frame_range=(1, 3),
@@ -175,9 +167,7 @@ class ContrastEdgeTests(unittest.TestCase):
             for value in (np.finfo(float).max, -np.finfo(float).max):
                 result = autocontrast(np.full((2, 2), value))
                 self.assertTrue(np.isfinite(result.limits).all())
-            result = autocontrast(
-                np.array([[-np.finfo(float).max, np.finfo(float).max]])
-            )
+            result = autocontrast(np.array([[-np.finfo(float).max, np.finfo(float).max]]))
             self.assertTrue(np.isfinite(result.limits).all())
             self.assertLess(result.lower, result.upper)
 
@@ -191,17 +181,17 @@ class ContrastEdgeTests(unittest.TestCase):
         with self.assertRaises(CancelledError):
             autocontrast(image, cancel_event=event, progress=lambda _: event.set())
 
-    def test_stale_channel_input_rejected(self):
-        from molcore import StaleResultError
-
+    def test_snapshot_contrast_is_independent_of_later_metadata_edits(self):
         exp = Dataset()
-        exp.add_acquisition(Acquisition(ArraySource(np.ones((3, 2, 2))), id="a"))
+        exp.add_acquisition(Acquisition(ArraySource(np.ones((3, 3, 3))), id="a"))
+        expected = compute_scenario(autocontrast_channels, exp, "a")
 
-        def progress(_):
-            exp.metadata["edited"] = True
+        def progress(update):
+            exp.update_metadata({"edited": True})
 
-        with self.assertRaises(StaleResultError):
-            autocontrast_channels(exp, "a", progress=progress)
+        actual = compute_scenario(autocontrast_channels, exp, "a", progress=progress)
+        self.assertEqual(actual, expected)
+        self.assertTrue(exp.metadata["edited"])
 
 
 class PercentilePrecisionTests(unittest.TestCase):

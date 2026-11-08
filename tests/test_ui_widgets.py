@@ -6,7 +6,6 @@ import unittest
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
 import numpy as np
 from qtpy.QtWidgets import QApplication
 
@@ -57,8 +56,9 @@ class WidgetTests(unittest.TestCase):
     def test_full_detection_cached_and_settings_change_invalidates(self):
         widget = LocalisationWidget(self.session)
 
-        def detect(model, acquisition_id, channel, **kwargs):
-            self.assertEqual(kwargs["num_cpus"], 2)
+        def detect(model, selection, **kwargs):
+            acquisition_id, channel = selection.acquisition_id, selection.channel
+            self.assertEqual(kwargs["context"].num_cpus, 2)
             return DetectionResult(
                 acquisition_id,
                 channel,

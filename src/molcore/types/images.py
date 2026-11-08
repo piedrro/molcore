@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from .._logging import logged
+from ..immutable import ImmutableObject, immutable_array
 from ._shared import ImageUnavailableError
 
 if TYPE_CHECKING:
@@ -37,9 +38,7 @@ def _shape(shape: tuple[int, ...]) -> tuple[int, int, int]:
 
 
 @logged
-def selection(
-    key: int | slice | ArrayLike, length: int
-) -> tuple[np.ndarray, bool, tuple]:
+def selection(key: int | slice | ArrayLike, length: int) -> tuple[np.ndarray, bool, tuple]:
     """Selection.
 
     Args:
@@ -53,9 +52,7 @@ def selection(
     parts = parts or (slice(None),)
     ellipses = [i for i, part in enumerate(parts) if part is Ellipsis]
     if len(ellipses) > 1 or len(parts) > 3 or any(part is None for part in parts):
-        raise IndexError(
-            "Use at most three indices and one ellipsis; new axes are unsupported"
-        )
+        raise IndexError("Use at most three indices and one ellipsis; new axes are unsupported")
     if ellipses:
         index = ellipses[0]
         parts = parts[:index] + (slice(None),) * (4 - len(parts)) + parts[index + 1 :]
@@ -78,15 +75,27 @@ def selection(
             indices = np.flatnonzero(indices)
         elif indices.ndim != 1 or indices.dtype.kind not in "iu":
             raise IndexError("Expected integer, slice or 1D frame indices")
+        if indices.dtype.kind == "u" and np.any(indices >= length):
+            raise IndexError("Frame index out of range")
         indices = indices.astype(np.int64, copy=True)
         indices[indices < 0] += length
         if np.any((indices < 0) | (indices >= length)):
             raise IndexError("Frame index out of range")
-    return indices, scalar, parts[1:]
+    return (indices, scalar, parts[1:])
 
 
 class Source:
     """Common lazy indexing for stacks with frame-addressable pixels."""
+
+    def open_reader(self) -> Any:
+        """Open a worker-local reader for repeated frame and ROI reads.
+
+        Returns:
+            The computed value.
+        """
+        from ..readers import open_reader
+
+        return open_reader(self)
 
     def __getitem__(self, key: int | slice | ArrayLike) -> np.ndarray:
         """Getitem.
@@ -100,13 +109,9 @@ class Source:
         indices, scalar, spatial = selection(key, self.shape[0])
         if scalar:
             return self._frame(int(indices[0]))[spatial or (...,)]
-        frames = [self._frame(int(i)) for i in indices]
-        data = (
-            np.stack(frames)
-            if frames
-            else np.empty((0, *self.shape[1:]), dtype=self.dtype)
-        )
-        return data[(slice(None), *spatial)]
+        with self.open_reader() as reader:
+            data = reader.read_frames(indices)
+        return data[slice(None), *spatial]
 
     @logged
     def close(self) -> None:
@@ -137,9 +142,7 @@ class Source:
         try:
             import dask.array as da
         except ImportError as exc:
-            raise ImportError(
-                "Dask is missing; reinstall MolCore with its runtime dependencies"
-            ) from exc
+            raise ImportError("Dask is missing; reinstall MolCore with its runtime dependencies") from exc
         return da.from_array(
             self,
             chunks=chunks or (1, *self.shape[1:]),
@@ -167,8 +170,10 @@ class Source:
         return self.shape[0]
 
 
-class ArraySource(Source):
-    """Memory-backed image stack wrapping a NumPy array without copying it.
+class ArraySource(ImmutableObject, Source):
+    """Memory-backed image stack owning an immutable copy of input pixels.
+
+    Use ArraySource.borrow() only when the caller can preserve external pixels during processing.
 
     Args:
         array: Real-valued 2D image or (time, y, x) NumPy-compatible stack.
@@ -184,8 +189,32 @@ class ArraySource(Source):
         self.shape = _shape(array.shape)
         if array.dtype.kind not in "biuf":
             raise ValueError("Image pixels must be real numbers")
-        self.array = array.reshape(self.shape)
+        self.array = immutable_array(array.reshape(self.shape))
         self.dtype = array.dtype
+        if type(self) is ArraySource:
+            self._seal()
+
+    @classmethod
+    def borrow(cls, array: ArrayLike) -> ArraySource:
+        """Borrow pixels without copying; caller must preserve them during work.
+
+        Args:
+            array: Array.
+
+
+        Returns:
+            The computed value.
+        """
+        values = np.asarray(array)
+        source = cls.__new__(cls)
+        source.shape = _shape(values.shape)
+        if values.dtype.kind not in "biuf":
+            raise ValueError("Image pixels must be real numbers")
+        source.array = values.reshape(source.shape).view()
+        source.array.flags.writeable = False
+        source.dtype = values.dtype
+        object.__setattr__(source, "_sealed", True)
+        return source
 
     def _frame(self, index: int) -> np.ndarray:
         """Read one original image frame from the bound source.
@@ -199,7 +228,7 @@ class ArraySource(Source):
         return self.array[index]
 
 
-class TiffSource(Source):
+class TiffSource(ImmutableObject, Source):
     """Lazy TIFF reader that opens and closes the file for each requested frame.
 
     Args:
@@ -228,9 +257,9 @@ class TiffSource(Source):
                 mapped = tifffile.memmap(self.path)
                 del mapped
             except ValueError as exc:
-                raise ValueError(
-                    "TIFF must be frame-addressable or memory-mappable"
-                ) from exc
+                raise ValueError("TIFF must be frame-addressable or memory-mappable") from exc
+        if type(self) is TiffSource:
+            self._seal()
 
     def _frame(self, index: int) -> np.ndarray:
         """Read one original image frame from the bound source.
@@ -252,7 +281,7 @@ class TiffSource(Source):
         return np.array(mapped[index], copy=True)
 
 
-class FitsSource(Source):
+class FitsSource(ImmutableObject, Source):
     """Lazy FITS section reader supporting scaled camera pixels.
 
     Args:
@@ -273,18 +302,14 @@ class FitsSource(Source):
         try:
             from astropy.io import fits
         except ImportError as exc:
-            raise ImportError(
-                "Astropy is missing; reinstall MolCore with its runtime dependencies"
-            ) from exc
-        self.path, self.hdu = str(Path(path).resolve()), hdu
+            raise ImportError("Astropy is missing; reinstall MolCore with its runtime dependencies") from exc
+        self.path, self.hdu = (str(Path(path).resolve()), hdu)
         with fits.open(self.path, memmap=False) as file:
             header = file[hdu].header
-            self.shape = _shape(
-                tuple(header[f"NAXIS{i}"] for i in range(header["NAXIS"], 0, -1))
-            )
-            self.dtype = np.dtype(
-                file[hdu].section[(slice(0, 1),) * header["NAXIS"]].dtype
-            )
+            self.shape = _shape(tuple(header[f"NAXIS{i}"] for i in range(header["NAXIS"], 0, -1)))
+            self.dtype = np.dtype(file[hdu].section[(slice(0, 1),) * header["NAXIS"]].dtype)
+        if type(self) is FitsSource:
+            self._seal()
 
     def _frame(self, index: int) -> np.ndarray:
         """Read one original image frame from the bound source.
@@ -304,7 +329,7 @@ class FitsSource(Source):
             return hdu.section[index] if hdu.header["NAXIS"] == 3 else hdu.section[:]
 
 
-class HDF5Source(Source):
+class HDF5Source(ImmutableObject, Source):
     """Reopenable HDF5 image descriptor, safe to pass to spawned workers.
 
     Args:
@@ -321,10 +346,12 @@ class HDF5Source(Source):
         """
         import h5py
 
-        self.path, self.dataset = str(Path(path).resolve()), dataset
+        self.path, self.dataset = (str(Path(path).resolve()), dataset)
         with h5py.File(self.path, "r") as file:
             self.shape = _shape(file[dataset].shape)
             self.dtype = file[dataset].dtype
+        if type(self) is HDF5Source:
+            self._seal()
 
     def _frame(self, index: int) -> np.ndarray:
         """Read one original image frame from the bound source.
@@ -344,7 +371,7 @@ class HDF5Source(Source):
             return data[index] if data.ndim == 3 else data[:]
 
 
-class MissingSource(Source):
+class MissingSource(ImmutableObject, Source):
     """Image geometry retained when pixels are unavailable.
 
     Args:
@@ -354,10 +381,7 @@ class MissingSource(Source):
     """
 
     def __init__(
-        self,
-        shape: tuple[int, ...],
-        dtype: np.dtype | str,
-        reason: str = "Raw images were not saved",
+        self, shape: tuple[int, ...], dtype: np.dtype | str, reason: str = "Raw images were not saved"
     ) -> None:
         """Initialise the object and validate its configuration.
 
@@ -366,7 +390,9 @@ class MissingSource(Source):
             dtype: NumPy-compatible element dtype.
             reason: Reason used by this operation.
         """
-        self.shape, self.dtype, self.reason = _shape(shape), np.dtype(dtype), reason
+        self.shape, self.dtype, self.reason = (_shape(shape), np.dtype(dtype), reason)
+        if type(self) is MissingSource:
+            self._seal()
 
     def _frame(self, index: int) -> np.ndarray:
         """Read one original image frame from the bound source.
@@ -397,9 +423,35 @@ class CachedSource(Source):
         """
         if max_bytes < 0:
             raise ValueError("Cache budget must be nonnegative")
-        self.source, self.max_bytes = source, int(max_bytes)
-        self.shape, self.dtype = source.shape, source.dtype
-        self._cache, self._pid = OrderedDict(), os.getpid()
+        self._source, self.max_bytes = (source, int(max_bytes))
+        self._cache, self._pid = (OrderedDict(), os.getpid())
+
+    @property
+    def source(self) -> ImageSource:
+        """Underlying immutable image binding.
+
+        Returns:
+            The wrapped source descriptor.
+        """
+        return self._source
+
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        """Geometry of the wrapped source.
+
+        Returns:
+            Source frame count, height and width.
+        """
+        return self._source.shape
+
+    @property
+    def dtype(self) -> np.dtype:
+        """Pixel dtype of the wrapped source.
+
+        Returns:
+            The original pixel dtype.
+        """
+        return self._source.dtype
 
     @property
     @logged
@@ -426,7 +478,7 @@ class CachedSource(Source):
         if index in self._cache:
             frame = self._cache.pop(index)
         else:
-            frame = np.array(self.source[index], copy=True)
+            frame = immutable_array(self.source[index])
             if frame.nbytes > self.max_bytes:
                 return frame
             while self._cache and self.cached_bytes + frame.nbytes > self.max_bytes:

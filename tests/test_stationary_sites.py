@@ -2,6 +2,7 @@ from threading import Event
 
 import numpy as np
 import pytest
+from scientific_helpers import compute_scenario
 
 from molcore import Acquisition, ArraySource, ChannelSpec, Dataset, PhotometrySettings
 from molcore.photometry import stationary_site_traces
@@ -23,7 +24,8 @@ def alex_dataset():
 def test_sites_use_working_pixels_and_original_camera_frames():
     dataset = alex_dataset()
     working = ArraySource(np.arange(27).reshape(3, 3, 3) + 100)
-    result = stationary_site_traces(
+    result = compute_scenario(
+        stationary_site_traces,
         dataset,
         "movie",
         "DD",
@@ -31,7 +33,6 @@ def test_sites_use_working_pixels_and_original_camera_frames():
         source=working,
         settings=PhotometrySettings(spot_size=1, buffer=0),
     )
-
     sequence = dataset.photon_sequences[result.sequence_ids[0]]
     assert sequence.molecule_id == "site"
     np.testing.assert_array_equal(sequence.frames, [0, 2, 4])
@@ -42,7 +43,8 @@ def test_sites_use_working_pixels_and_original_camera_frames():
 
 def test_sites_reject_a_mismatched_working_source():
     with pytest.raises(ValueError, match="shape"):
-        stationary_site_traces(
+        compute_scenario(
+            stationary_site_traces,
             alex_dataset(),
             "movie",
             "DD",
@@ -58,7 +60,7 @@ def test_cancelled_sites_do_not_publish():
     stop = Event()
     stop.set()
     with pytest.raises(CancelledError):
-        stationary_site_traces(dataset, "movie", "DD", {"site": (1, 1)}, cancel_event=stop)
+        compute_scenario(stationary_site_traces, dataset, "movie", "DD", {"site": (1, 1)}, cancel_event=stop)
     assert not dataset.photon_sequences.query()
 
 
@@ -67,7 +69,8 @@ def test_fixed_apertures_preserve_window_and_ring_at_the_image_edge():
 
     dataset = Dataset()
     dataset.add_acquisition(Acquisition(ArraySource(np.arange(1, 26).reshape(1, 5, 5)), id="movie"))
-    result = stationary_site_traces(
+    result = compute_scenario(
+        stationary_site_traces,
         dataset,
         "movie",
         "image",
@@ -90,7 +93,8 @@ def test_fixed_sites_keep_psf_amplitude_separate_from_aperture_intensity():
     pixels = 10 + 100 * np.exp(-(xx**2 + yy**2) / 2)
     dataset = Dataset()
     dataset.add_acquisition(Acquisition(ArraySource(pixels), id="movie"))
-    result = stationary_site_traces(
+    result = compute_scenario(
+        stationary_site_traces,
         dataset,
         "movie",
         "image",

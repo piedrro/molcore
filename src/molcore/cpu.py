@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .execution import ProgressReporter
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .execution import ProgressReporter
+    from .types import CancelEvent
 import multiprocessing as mp
 import os
 import queue
 import time
 from collections.abc import Callable, Iterable, Sized
-from concurrent.futures import (
-    FIRST_COMPLETED,
-    CancelledError,
-    ProcessPoolExecutor,
-    wait,
-)
+from concurrent.futures import FIRST_COMPLETED, CancelledError, Future, ProcessPoolExecutor, wait
 from typing import TYPE_CHECKING, Any
 
 from ._logging import logged
@@ -20,11 +25,8 @@ from .types.processing import ProgressUpdate
 
 if TYPE_CHECKING:
     from types import TracebackType
-
-    from .types import CancelEvent
-
-_EVENTS = None
-_STOP = None
+_EVENTS: Any = None
+_STOP: Any = None
 
 
 def _initialize(events: Any, stop: Any) -> None:
@@ -35,13 +37,8 @@ def _initialize(events: Any, stop: Any) -> None:
         stop: Shared cancellation event observed by spawned workers.
     """
     global _EVENTS, _STOP
-    _EVENTS, _STOP = events, stop
-    for name in (
-        "OMP_NUM_THREADS",
-        "OPENBLAS_NUM_THREADS",
-        "MKL_NUM_THREADS",
-        "NUMBA_NUM_THREADS",
-    ):
+    _EVENTS, _STOP = (events, stop)
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMBA_NUM_THREADS"):
         os.environ[name] = "1"
     os.environ["MPLBACKEND"] = "Agg"
 
@@ -61,7 +58,7 @@ class WorkerProgress:
             run_id: Identifier distinguishing this processing run from previous results.
             job_id: Zero-based position of this job in the submitted input stream.
         """
-        self.run_id, self.job_id = run_id, job_id
+        self.run_id, self.job_id = (run_id, job_id)
         self._last = 0.0
 
     @logged
@@ -87,9 +84,7 @@ class WorkerProgress:
             self._last = now
 
 
-def _execute(
-    function: Callable[..., Any], payload: tuple, run_id: str, job_id: int
-) -> Any:
+def _execute(function: Callable[..., Any], payload: tuple, run_id: int, job_id: int) -> Any:
     """Execute.
 
     Args:
@@ -124,9 +119,12 @@ class CpuExecutor:
         A single configured CPU still runs in a spawned child process.
     """
 
-    def __init__(
-        self, num_cpus: int | None = None, *, max_pending: int | None = None
-    ) -> None:
+    _worker_limit: int | None = 61 if os.name == "nt" else None
+    _pool: Any
+    _events: Any
+    _stop: Any
+
+    def __init__(self, num_cpus: int | None = None, *, max_pending: int | None = None) -> None:
         """Initialise the object and validate its configuration.
 
         Args:
@@ -135,25 +133,23 @@ class CpuExecutor:
         """
         available = getattr(os, "process_cpu_count", os.cpu_count)() or 1
         default = max(1, available - 1)
-        if os.name == "nt":
-            default = min(default, 61)
+        if self._worker_limit is not None:
+            default = min(default, self._worker_limit)
         self.num_cpus = default if num_cpus is None else num_cpus
         for value in (self.num_cpus, max_pending if max_pending is not None else 1):
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-                raise ValueError(
-                    "CPU count and pending limit must be positive integers"
-                )
-        if os.name == "nt" and self.num_cpus > 61:
+                raise ValueError("CPU count and pending limit must be positive integers")
+        if self._worker_limit is not None and self.num_cpus > self._worker_limit:
             raise ValueError("Windows ProcessPoolExecutor supports at most 61 CPUs")
         self.max_pending = max_pending or 2 * self.num_cpus
         self._pool = self._events = self._stop = None
-        self._run_id, self._busy = 0, False
+        self._run_id, self._busy = (0, False)
 
     def _ensure_pool(self) -> None:
         """Ensure pool."""
         if self._pool is None:
             context = mp.get_context("spawn")
-            self._events, self._stop = context.Queue(), context.Event()
+            self._events, self._stop = (context.Queue(), context.Event())
             self._pool = ProcessPoolExecutor(
                 max_workers=self.num_cpus,
                 mp_context=context,
@@ -161,32 +157,54 @@ class CpuExecutor:
                 initargs=(self._events, self._stop),
             )
 
+    def _submit(self, function: Any, payload: Any, run_id: int, index: int) -> Any:
+        return self._pool.submit(_execute, function, payload, run_id, index)
+
     @logged
-    def map(
+    def map[InputT, OutputT](
         self,
-        function: Callable,
-        jobs: Iterable,
+        function: Callable[[InputT, ProgressReporter], OutputT],
+        jobs: Iterable[InputT],
         *,
         total: int | None = None,
         progress: Callable[[ProgressUpdate], None] | None = None,
         cancel_event: CancelEvent | None = None,
-    ) -> list[Any]:
-        """Execute bounded jobs, forwarding partial progress and returning input order.
+    ) -> list[OutputT]:
+        """Collect imap outputs in input order.
 
         Args:
-            function: Importable function accepting payload and WorkerProgress.
-            jobs: Finite iterable of picklable payloads, consumed lazily.
-            total: Job count, required for iterables without a length.
-            progress: Callback invoked in this calling process/thread.
-            cancel_event: Caller event exposing is_set(), such as threading.Event.
+            function: Function.
+            jobs: Jobs.
+            total: Total.
+            progress: Progress.
+            cancel_event: Cancel event.
+
 
         Returns:
-            Results ordered like jobs, regardless of completion order.
+            The computed value.
+        """
+        return list(self.imap(function, jobs, total=total, progress=progress, cancel_event=cancel_event))
 
-        Raises:
-            CancelledError: Caller or worker requested cancellation.
-            ValueError: Job count/configuration is invalid.
-            Exception: Worker or callback failed; remaining jobs are cancelled.
+    def imap[InputT, OutputT](
+        self,
+        function: Callable[[InputT, ProgressReporter], OutputT],
+        jobs: Iterable[InputT],
+        *,
+        total: int | None = None,
+        progress: Callable[[ProgressUpdate], None] | None = None,
+        cancel_event: CancelEvent | None = None,
+    ) -> Iterator[OutputT]:
+        """Yield ordered results with bounded pending jobs and completed buffers.
+
+        Args:
+            function: Function.
+            jobs: Jobs.
+            total: Total.
+            progress: Progress.
+            cancel_event: Cancel event.
+
+        Yields:
+            Detached outputs in input order.
         """
         if self._busy:
             raise RuntimeError("An executor cannot run overlapping map calls")
@@ -204,59 +222,68 @@ class CpuExecutor:
 
         check()
         if total == 0:
+            sentinel = object()
+            if next(iter(jobs), sentinel) is not sentinel:
+                raise ValueError("Job iterable contains more jobs than total")
             if progress:
                 progress(ProgressUpdate(0, 0, "Complete"))
-            return []
+            check()
+            return
         self._ensure_pool()
         self._busy = True
         self._run_id += 1
         run_id = self._run_id
-        fractions, results = [0.0] * total, [None] * total
-        iterator, pending, submitted, done_count = iter(jobs), {}, 0, 0
+        pending: dict[Future[OutputT], int] = {}
+        ready: dict[int, OutputT] = {}
+        fractions: dict[int, float] = {}
+        iterator = iter(jobs)
+        submitted = delivered = completed_count = 0
 
         def emit(description: str) -> None:
             """Emit.
 
             Args:
-                description: Human-readable description of the current processing stage.
+                description: Description.
             """
+            check()
             if progress:
-                progress(ProgressUpdate(sum(fractions), total, description))
+                progress(ProgressUpdate(completed_count + sum(fractions.values()), total, description))
+            check()
 
         try:
             emit("Starting")
-            while done_count < total:
+            while delivered < total:
                 check()
-                while len(pending) < self.max_pending and submitted < total:
-                    check()
+                while len(pending) + len(ready) < self.max_pending and submitted < total:
                     try:
                         payload = next(iterator)
                     except StopIteration as exc:
-                        raise ValueError(
-                            "Job iterable contains fewer jobs than total"
-                        ) from exc
-                    future = self._pool.submit(
-                        _execute, function, payload, run_id, submitted
-                    )
+                        raise ValueError("Job iterable contains fewer jobs than total") from exc
+                    check()
+                    future = self._submit(function, payload, run_id, submitted)
                     pending[future] = submitted
+                    fractions[submitted] = 0.0
                     submitted += 1
                 completed, _ = wait(pending, timeout=0.03, return_when=FIRST_COMPLETED)
                 while True:
                     try:
-                        event_run, index, fraction, description = (
-                            self._events.get_nowait()
-                        )
+                        event_run, index, fraction, description = self._events.get_nowait()
                     except queue.Empty:
                         break
-                    if event_run == run_id:
+                    if event_run == run_id and index in fractions:
                         fractions[index] = max(fractions[index], fraction)
                         emit(description)
                 for future in completed:
                     index = pending.pop(future)
-                    results[index] = future.result()
-                    fractions[index] = 1.0
-                    done_count += 1
+                    ready[index] = future.result()
+                    fractions.pop(index)
+                    completed_count += 1
                     emit("Job complete")
+                while delivered in ready:
+                    check()
+                    value = ready.pop(delivered)
+                    delivered += 1
+                    yield value
             check()
             try:
                 next(iterator)
@@ -265,8 +292,6 @@ class CpuExecutor:
             else:
                 raise ValueError("Job iterable contains more jobs than total")
             emit("Complete")
-            check()
-            return results
         except BaseException:
             self._stop.set()
             for future in pending:
