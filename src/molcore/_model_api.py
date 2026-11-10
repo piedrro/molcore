@@ -176,6 +176,24 @@ class DatasetServices:
         self._metadata_revision += 1
 
     @model_mutated(
+        scope=lambda self, acquisition_id, source: mutation_scope(self, acquisition=acquisition_id)
+    )
+    def rebind_source(self, acquisition_id: str, source: Any) -> None:
+        """Replace an equivalent image descriptor while preserving derived data.
+
+        The caller guarantees equivalent pixels, or changes only their availability.
+        Use update_acquisition(source=...) when the pixel values themselves change.
+
+        Args:
+            acquisition_id: Acquisition whose source descriptor is being relocated.
+            source: Equivalent source with identical shape and dtype.
+        """
+        old = self.acquisitions[acquisition_id].source
+        if tuple(source.shape) != tuple(old.shape) or np.dtype(source.dtype) != np.dtype(old.dtype):
+            raise ValueError("Rebound sources must preserve shape and dtype")
+        self._replace_source(acquisition_id, source)
+
+    @model_mutated(
         scope=lambda self, acquisition_id, *, pixel_size=_UNSET, timestamps=_UNSET, metadata=None, source=_UNSET: (
             mutation_scope(self, acquisition=acquisition_id, channel=None)
         )

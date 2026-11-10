@@ -36,6 +36,10 @@ Use `tracks.update_metadata(track_id, values)` to change track parameter annotat
 without replacing its identity or members. `update_acquisition(..., source=source)`
 rebinds pixels with identical shape and dtype, rebuilds channel/sequence views and
 invalidates derived measurements. Keep the old source stable for in-flight snapshots.
+For equivalent pixels or availability-only changes, `rebind_source(acquisition_id,
+source)` updates descriptors without invalidating measurements or crops. The caller
+guarantees pixel equivalence; shape and dtype are validated. Image-free saving uses
+this distinction to preserve scientific results.
 
 `ArraySource(array)` owns an immutable copy. `ArraySource.borrow(array)` opts into
 a borrowed, read-only view: its owner must keep the underlying pixels stable from

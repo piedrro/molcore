@@ -22,6 +22,18 @@ def dataset():
 
 
 class OwnershipTests(unittest.TestCase):
+    def test_descriptor_rebinding_preserves_derived_measurements(self):
+        from molcore import MissingSource
+
+        model = dataset()
+        model.observations.add(
+            acquisition_id="a", channel="image", frame=0, molecule_id="m", intensity=12.0, localization_id=1
+        )
+        model.rebind_source("a", MissingSource((3, 8, 8), np.dtype(float)))
+        self.assertEqual(model.observations.query()["intensity"].tolist(), [12.0])
+        model.update_acquisition("a", source=ArraySource(np.ones((3, 8, 8))))
+        self.assertEqual(model.observations.query().n_rows, 0)
+
     def test_track_metadata_updates_detach_and_preserve_memberships(self):
         model = dataset()
         track = model.tracks.add([1, 2], metadata={"particle": 1})
