@@ -12,6 +12,8 @@ from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from typing import Any
 
+import numpy as np
+
 from ._changes import mutation_scope
 from ._locking import model_mutated
 from .revisions import ChangeSet, DependencyToken
@@ -174,7 +176,7 @@ class DatasetServices:
         self._metadata_revision += 1
 
     @model_mutated(
-        scope=lambda self, acquisition_id, *, pixel_size=_UNSET, timestamps=_UNSET, metadata=None: (
+        scope=lambda self, acquisition_id, *, pixel_size=_UNSET, timestamps=_UNSET, metadata=None, source=_UNSET: (
             mutation_scope(self, acquisition=acquisition_id, channel=None)
         )
     )
@@ -185,6 +187,7 @@ class DatasetServices:
         pixel_size: Any = _UNSET,
         timestamps: Any = _UNSET,
         metadata: Mapping[str, Any] | None = None,
+        source: Any = _UNSET,
     ) -> None:
         """Validate acquisition calibration/timing changes and invalidate derived measurements.
 
@@ -193,15 +196,21 @@ class DatasetServices:
             pixel_size: Nanometres per pixel; None clears the scale, omission retains it.
             timestamps: One finite time per camera frame; None clears timing, omission retains it.
             metadata: JSON metadata entries to merge into acquisition metadata.
+            source: Replacement pixel source with identical shape and dtype; omission retains it.
         """
         from .storage import _json
         from .types import Acquisition, AcquisitionSequence
 
         old = self.acquisitions[acquisition_id]
+        replacement_source = old.source if source is _UNSET else source
+        if tuple(replacement_source.shape) != tuple(old.source.shape) or np.dtype(
+            replacement_source.dtype
+        ) != np.dtype(old.source.dtype):
+            raise ValueError("Replacement sources must preserve shape and dtype")
         updated_metadata = deepcopy({**old.metadata, **(metadata or {})})
         _json(updated_metadata)
         replacement = Acquisition(
-            old.source,
+            replacement_source,
             id=old.id,
             channel_specs=old.channel_specs,
             excitation_sequence=old.excitation_sequence,

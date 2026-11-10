@@ -22,6 +22,35 @@ def dataset():
 
 
 class OwnershipTests(unittest.TestCase):
+    def test_track_metadata_updates_detach_and_preserve_memberships(self):
+        model = dataset()
+        track = model.tracks.add([1, 2], metadata={"particle": 1})
+        captured = model.snapshot()
+        previous_metadata = model.tracks.metadata[track]
+        values = {"particle": 3, "nested": [1]}
+        model.tracks.update_metadata(track, values)
+        values["nested"].append(2)
+        self.assertEqual(model.tracks.metadata[track]["parameters"]["nested"], (1,))
+        self.assertEqual(previous_metadata["parameters"]["particle"], 1)
+        np.testing.assert_array_equal(captured.tracks.query()["id"], [1, 2])
+        np.testing.assert_array_equal(model.tracks.query()["id"], [1, 2])
+        before = model.revision
+        with self.assertRaises(TypeError):
+            model.tracks.update_metadata(track, {"invalid": object()})
+        self.assertEqual(model.revision, before)
+
+    def test_source_rebinding_validates_geometry_and_preserves_captured_pixels(self):
+        model = dataset()
+        captured = model.snapshot()
+        source = ArraySource(np.ones((3, 8, 8)))
+        model.update_acquisition("a", source=source)
+        self.assertIs(model.acquisitions["a"].source, source)
+        self.assertEqual(captured.acquisitions["a"].source[0].sum(), 0)
+        before = model.revision
+        with self.assertRaises(ValueError):
+            model.update_acquisition("a", source=ArraySource(np.ones((3, 9, 8))))
+        self.assertEqual(model.revision, before)
+
     def test_bulk_insertion_preserves_large_mixed_integer_columns(self):
         model = dataset()
 

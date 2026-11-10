@@ -32,6 +32,11 @@ arrays reject mutation. Use `update_metadata`, `rename`, `update_processing`,
 `update_acquisition`, table edit methods and transform mutators. Metadata must be
 JSON-compatible with string keys and finite numbers. NumPy values are accepted.
 
+Use `tracks.update_metadata(track_id, values)` to change track parameter annotations
+without replacing its identity or members. `update_acquisition(..., source=source)`
+rebinds pixels with identical shape and dtype, rebuilds channel/sequence views and
+invalidates derived measurements. Keep the old source stable for in-flight snapshots.
+
 `ArraySource(array)` owns an immutable copy. `ArraySource.borrow(array)` opts into
 a borrowed, read-only view: its owner must keep the underlying pixels stable from
 snapshot capture through computation and application. File sources similarly

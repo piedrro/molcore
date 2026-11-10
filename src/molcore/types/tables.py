@@ -995,6 +995,22 @@ class TrackTable:
 
         return freeze(self._metadata)
 
+    @model_mutated(
+        scope=lambda self, track_id, values, *, replace=False: mutation_scope(self, tracks=[track_id])
+    )
+    def update_metadata(self, track_id: int, values: dict[str, Any], *, replace: bool = False) -> None:
+        """Replace validated track annotations while preserving scientific identity.
+
+        Args:
+            track_id: Existing stable track identifier.
+            values: JSON-compatible parameter annotations.
+            replace: Replace all parameters rather than merge them.
+        """
+        current = self._metadata[track_id]
+        parameters = freeze_metadata(dict(values) if replace else {**current["parameters"], **values})
+        self._metadata = {**self._metadata, track_id: freeze({**current, "parameters": parameters})}
+        self.revision += 1
+
     def __len__(self) -> int:
         """Return the number of available items.
 
