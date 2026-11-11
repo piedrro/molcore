@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from .._alignment_models import MINIMUM_PAIRS, MODEL_CHOICES
 from ..immutable import immutable_record
 from .results import ResultIdentity
 
@@ -18,8 +19,8 @@ class DatasetAlignmentSettings:
     max_trials: int = 1000
 
     def __post_init__(self) -> None:
-        if self.model not in ("translation", "affine", "homography"):
-            raise ValueError("Choose translation, affine or homography")
+        if self.model not in MINIMUM_PAIRS:
+            raise ValueError(f"Choose an alignment model from {MODEL_CHOICES}")
         if self.match_radius is not None and (not np.isfinite(self.match_radius) or self.match_radius <= 0):
             raise ValueError("Matching radius must be finite and positive")
         if not np.isfinite(self.ransac_threshold) or self.ransac_threshold <= 0:

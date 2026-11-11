@@ -192,7 +192,7 @@ def _apply_alignment(
     Args:
         dataset: Live model receiving the selected calibration.
         result: Detached AlignmentResult.
-        model: Translation, affine, or homography fit recorded as provenance.
+        model: Fitted transform model recorded as provenance.
         match_radius: Explicit automatic correspondence radius, when used.
         name: New calibration name; defaults to the acquisition/channel pair.
         expected: Optional pre-computation state token.

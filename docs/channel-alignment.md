@@ -13,14 +13,24 @@ preview = align_channels(
     dataset.snapshot(), "camera-1", "DA", "DD",
     source_ids=acceptor_fiducials,
     target_ids=donor_fiducials,
-    model="homography",  # also "translation" or "affine"
+    model="homography",
     name="optics-2026",
 )
 receipt = dataset.apply(preview)
 dataset.transforms.select("camera-2", "AA", receipt.identifiers["calibration_name"])
 ```
 
-The fiducial ID lists must be paired in corresponding order. Without IDs, pass a positive `match_radius` for mutual nearest-neighbor matching. All three fit models use deterministic RANSAC (default one-pixel inlier threshold, 1,000 trials). `AlignmentResult` exposes the matrix, residual per match, inlier mask, and source and target IDs. A preview does not change the dataset; `dataset.apply` installs a named calibration and selects the source emission group.
+The fiducial ID lists must be paired in corresponding order. Without IDs, pass a positive `match_radius` for mutual nearest-neighbor matching. All models use deterministic RANSAC (default one-pixel inlier threshold, 1,000 trials). `AlignmentResult` exposes the matrix, residual per match, inlier mask, and source and target IDs. A preview does not change the dataset; `dataset.apply` installs a named calibration and selects the source emission group.
+
+| Model | Allowed changes | Minimum pairs |
+| --- | --- | --- |
+| `translation` | Shift | 1 |
+| `rigid` | Shift and rotation | 2 |
+| `similarity` | Shift, rotation, and uniform scale | 2 |
+| `affine` (default) | Shift, rotation, independent scaling, and shear | 3 |
+| `homography` | Affine and perspective effects | 4 |
+
+Rigid and similarity fits require distinct fiducials in both images.
 
 Named calibrations can be selected on other acquisitions when emission path, source and reference geometry, and pixel scale agree. A fitted calibration stores those properties, its fiducial evidence, and `selected_groups` provenance. The latter lists each acquisition, emission path and logical channels currently using the calibration. Imported matrices without geometry metadata remain explicit user supplied calibrations.
 

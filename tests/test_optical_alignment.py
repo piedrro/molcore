@@ -9,7 +9,7 @@ import tifffile
 from scientific_helpers import compute_scenario
 from scipy.ndimage import map_coordinates
 
-from molcore import ArraySource, Calibration, Dataset, alignment
+from molcore import ArraySource, Calibration, Dataset, ExecutionContext, alignment
 from molcore.files import export_tiff, image_acquisition, read_calibration, write_calibration
 
 
@@ -46,6 +46,39 @@ class OpticalAlignmentTests(unittest.TestCase):
     def alex(self, identifier="a"):
         pixels = np.arange(6 * 16 * 32, dtype=np.uint16).reshape(6, 16, 32)
         return image_acquisition(ArraySource(pixels), id=identifier, mode="alex")
+
+    def test_similarity_calibration_round_trip(self):
+        dataset = Dataset()
+        dataset.add_acquisition(self.alex())
+        source = np.array([[2.0, 3.0], [4.0, 3.0], [3.0, 5.0]])
+        matrix = np.array([[0.0, -1.5, 12.0], [1.5, 0.0, 1.0], [0.0, 0.0, 1.0]])
+        target = projected(matrix, source)
+        source_ids = dataset.localizations.add(
+            acquisition_id="a", channel="DA", frame=0, x=source[:, 0], y=source[:, 1]
+        )
+        target_ids = dataset.localizations.add(
+            acquisition_id="a", channel="DD", frame=0, x=target[:, 0], y=target[:, 1]
+        )
+        result = alignment.align_channels(
+            dataset.snapshot(),
+            "a",
+            "DA",
+            "DD",
+            source_ids=source_ids,
+            target_ids=target_ids,
+            model="similarity",
+            name="optics",
+            context=ExecutionContext(num_cpus=1),
+        )
+        dataset.apply(result)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "dataset.h5"
+            dataset.save(path)
+            with Dataset.open(path) as restored:
+                self.assertEqual(restored.calibrations["optics"].metadata["model"], "similarity")
+                np.testing.assert_allclose(restored.transforms.matrix("a", "DA", 0), matrix, atol=1e-12)
+                rows = restored.localizations.query(ids=source_ids, space="corrected")
+                np.testing.assert_allclose(np.column_stack([rows["x"], rows["y"]]), target, atol=1e-12)
 
     def test_presets_and_named_selection_share_emission_across_excitation(self):
         model = Dataset()
@@ -167,11 +200,13 @@ class OpticalAlignmentTests(unittest.TestCase):
             result.matrix,
         )
 
-    def test_translation_and_affine_ransac_reject_outliers_deterministically(self):
+    def test_affine_family_ransac_rejects_outliers_deterministically(self):
         rng = np.random.default_rng(43)
         source = rng.uniform(2, 25, (30, 2))
         matrices = {
             "translation": np.array([[1.0, 0.0, 2.0], [0.0, 1.0, -3.0], [0.0, 0.0, 1.0]]),
+            "rigid": np.array([[0.8, -0.6, 2.0], [0.6, 0.8, -3.0], [0.0, 0.0, 1.0]]),
+            "similarity": np.array([[1.0, -0.75, 2.0], [0.75, 1.0, -3.0], [0.0, 0.0, 1.0]]),
             "affine": np.array([[1.03, 0.04, 2.0], [-0.02, 0.97, -3.0], [0.0, 0.0, 1.0]]),
         }
         for name, matrix in matrices.items():
@@ -189,6 +224,21 @@ class OpticalAlignmentTests(unittest.TestCase):
                 )
                 np.testing.assert_array_equal(second, first)
                 np.testing.assert_array_equal(second_inliers, inliers)
+
+    def test_rigid_and_similarity_two_pair_fits_and_degeneracy(self):
+        source = np.array([[1.0, 2.0], [4.0, 2.0]])
+        for model, scale in (("rigid", 1.0), ("similarity", 1.5)):
+            with self.subTest(model=model):
+                matrix = np.array([[0.0, -scale, 2.0], [scale, 0.0, 3.0], [0.0, 0.0, 1.0]])
+                target = projected(matrix, source)
+                fitted, _, inliers = alignment.fit_transform(source, target, model=model)
+                np.testing.assert_allclose(fitted, matrix, atol=1e-12)
+                np.testing.assert_array_equal(inliers, [True, True])
+                with self.assertRaisesRegex(ValueError, r"2\+"):
+                    alignment.fit_transform(source[:1], target[:1], model=model)
+                for src, dst in ((source[[0, 0]], target), (source, target[[0, 0]])):
+                    with self.assertRaisesRegex(ValueError, "nondegenerate"):
+                        alignment.fit_transform(src, dst, model=model)
 
     def test_projective_poles_are_nan_and_jacobian_is_local(self):
         from molcore.transforms import project_jacobian, project_points

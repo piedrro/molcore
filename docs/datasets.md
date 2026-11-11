@@ -63,7 +63,8 @@ aligned_frame = aligned_movie[0]
 
 Ordered ID lists establish fiducial pairs. Without them, provide a positive
 `DatasetAlignmentSettings.match_radius` for mutual nearest-neighbour matching.
-Available models are translation, affine and projective homography; fitting uses
+The same [five transform models](channel-alignment.md#estimate-and-reuse-a-calibration)
+are available for round alignment. The default is affine. Fitting uses
 deterministic outlier rejection. Automatic matching assumes that corresponding
 features are initially within the selected radius. Results retain paired IDs,
 inliers, residuals and RMS error.

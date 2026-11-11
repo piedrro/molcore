@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from ._alignment_models import MINIMUM_PAIRS, MODEL_CHOICES
 from ._logging import logged
 from ._processing import check_snapshot, executor, snapshot
 from .execution import ExecutionContext, _record_execution
@@ -60,6 +61,23 @@ def _fit_model(source: np.ndarray, target: np.ndarray, model: str) -> np.ndarray
     matrix = np.eye(3)
     if model == "translation":
         matrix[:2, 2] = np.mean(target - source, axis=0)
+    elif model in ("rigid", "similarity"):
+        source_center = source.mean(axis=0)
+        target_center = target.mean(axis=0)
+        source_offsets = source - source_center
+        target_offsets = target - target_center
+        source_energy = np.sum(source_offsets**2)
+        target_energy = np.sum(target_offsets**2)
+        cross_covariance = source_offsets.T @ target_offsets
+        dot = np.trace(cross_covariance)
+        cross = cross_covariance[0, 1] - cross_covariance[1, 0]
+        correlation = np.hypot(dot, cross)
+        tolerance = np.finfo(float).eps * np.sqrt(source_energy) * np.sqrt(target_energy)
+        if correlation <= tolerance:
+            raise ValueError(f"{model.capitalize()} fiducials do not determine a rotation")
+        scale = correlation / source_energy if model == "similarity" else 1.0
+        matrix[:2, :2] = scale * (np.array([[dot, -cross], [cross, dot]]) / correlation)
+        matrix[:2, 2] = target_center - matrix[:2, :2] @ source_center
     else:
         design = np.column_stack([source, np.ones(len(source))])
         coefficients, _, rank, _ = np.linalg.lstsq(design, target, rcond=None)
@@ -82,7 +100,7 @@ def fit_transform(
     Args:
         source: Source fiducial coordinates, shape (n, 2).
         target: Corresponding reference coordinates in matching order.
-        model: Translation, affine or homography model.
+        model: Translation, rigid, similarity, affine, or homography.
         ransac_threshold: Maximum accepted residual in reference pixels.
         max_trials: Maximum number of deterministic RANSAC samples.
 
@@ -94,9 +112,11 @@ def fit_transform(
         raise ValueError("Expected matching (n, 2) point arrays")
     if not np.isfinite(source).all() or not np.isfinite(target).all():
         raise ValueError("Fiducials must be finite")
-    minimum = {"translation": 1, "affine": 3, "homography": 4}.get(model)
-    if minimum is None or len(source) < minimum:
-        raise ValueError("Choose translation (1+), affine (3+), or homography (4+) fiducial pairs")
+    minimum = MINIMUM_PAIRS.get(model)
+    if minimum is None:
+        raise ValueError(f"Choose an alignment model from {MODEL_CHOICES}")
+    if len(source) < minimum:
+        raise ValueError(f"{model.capitalize()} alignment requires {minimum}+ fiducial pairs")
     if (
         not np.isfinite(ransac_threshold)
         or ransac_threshold <= 0
@@ -230,8 +250,10 @@ def _run(
     Returns:
         Result retaining the input format or backend-specific representation.
     """
-    if source_channel == target_channel or model not in ("translation", "affine", "homography"):
-        raise ValueError("Choose distinct channels and translation, affine or homography alignment")
+    if source_channel == target_channel:
+        raise ValueError("Choose distinct channels for alignment")
+    if model not in MINIMUM_PAIRS:
+        raise ValueError(f"Choose an alignment model from {MODEL_CHOICES}")
     matched = source_ids is not None and target_ids is not None
     if (source_ids is None) != (target_ids is None):
         raise ValueError("Supply both source_ids and target_ids, or neither")
@@ -313,7 +335,7 @@ def estimate_alignment(
         target_channel: Channel defining the matched target coordinates.
         source_ids: Optional ordered source fiducial localization IDs.
         target_ids: Corresponding target IDs in matching order.
-        model: Translation, affine, or homography fit.
+        model: Translation, rigid, similarity, affine, or homography fit.
         match_radius: Maximum mutual-nearest distance when IDs are not paired.
     Returns:
         Source-to-target matrix, composed reference matrix and pair residuals.
@@ -373,7 +395,7 @@ def align_channels(
         target_channel: Channel defining correspondence coordinates.
         source_ids: Optional ordered source fiducial IDs.
         target_ids: Corresponding target fiducial IDs.
-        model: Translation, affine, or homography fit.
+        model: Translation, rigid, similarity, affine, or homography fit.
         match_radius: Required maximum matching distance for unpaired tables.
         name: New calibration name; existing names are not overwritten.
     Returns:

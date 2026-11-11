@@ -123,7 +123,7 @@ def rounds():
 
 
 class RoundAlignmentTests(unittest.TestCase):
-    def estimate(self, experiment):
+    def estimate(self, experiment, **options):
         return experiment.alignment.estimate(
             "second",
             "reference",
@@ -134,6 +134,7 @@ class RoundAlignmentTests(unittest.TestCase):
             source_ids=[1, 2, 3, 4],
             reference_ids=[1, 2, 3, 4],
             context=__import__("molcore").ExecutionContext(num_cpus=1),
+            **options,
         )
 
     def test_alignment_maps_all_frames_without_changing_dataset_coordinates(self):
@@ -170,11 +171,16 @@ class RoundAlignmentTests(unittest.TestCase):
 
     def test_alignment_survives_reopening_and_becomes_stale_on_input_edit(self):
         experiment = rounds()
-        experiment.alignment.apply([self.estimate(experiment)])
+        settings = molcore.DatasetAlignmentSettings(model="rigid")
+        result = self.estimate(experiment, settings=settings)
+        experiment.alignment.apply([result])
         with TemporaryDirectory() as directory:
             path = Path(directory) / "experiment.h5"
             experiment.save(path, image_policy="full")
             with molcore.Experiment.open(path) as restored:
+                saved = restored.alignment.records["second"]
+                self.assertEqual(saved.settings.model, "rigid")
+                np.testing.assert_array_equal(saved.matrix, result.matrix)
                 self.assertFalse(restored.alignment.is_stale("second"))
                 self.assertAlmostEqual(restored.alignment.image("second", "movie", "image", 2)[7, 6], 30)
                 restored.datasets["reference"].localizations.move(1, x=5, y=5)

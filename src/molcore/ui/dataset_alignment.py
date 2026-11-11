@@ -13,7 +13,7 @@ from ..execution import ExecutionContext
 from ..staging import experiment_state_token
 from ..transforms import project_points
 from ..types import DatasetAlignmentSettings, StaleResultError
-from ._common import ToolWidget, combo
+from ._common import ToolWidget, alignment_model_combo, combo
 
 if TYPE_CHECKING:
     from qtpy.QtWidgets import QWidget
@@ -33,7 +33,7 @@ class DatasetAlignmentWidget(ToolWidget):
         self.reference_acquisition, self.source_acquisition = (combo([]), combo([]))
         self.reference_channel, self.source_channel = (combo([]), combo([]))
         self.reference_ids, self.source_ids = (QLineEdit(), QLineEdit())
-        self.model = combo(["affine", "translation", "homography"])
+        self.model = alignment_model_combo()
         self.radius, self.threshold = (QDoubleSpinBox(), QDoubleSpinBox())
         for control, value in ((self.radius, 5), (self.threshold, 1)):
             control.setRange(1e-06, 1000000000.0)

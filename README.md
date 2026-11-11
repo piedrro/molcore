@@ -207,7 +207,7 @@ Rejected fits are counted; all-failed fits preserve existing data.
 `alignment.align_channels()` returns a detached calibration result. Apply them
 explicitly with `dataset.apply` or `dataset.apply_all`. Drift uses registered
 reference pixels and is interpolated only within observed coverage. Alignment
-supports translation, affine and homography correspondences; results include
+supports translation, rigid, similarity, affine, and homography fits. Results include
 residuals and compose through the target channel's registration.
 
 Scientific parameters stay in settings; executor, CPU count, progress,

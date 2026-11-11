@@ -38,6 +38,20 @@ if TYPE_CHECKING:
     from .session import UiSession
 
 
+def alignment_model_combo() -> QComboBox:
+    """Select the geometric constraints of a fiducial fit."""
+    from .._alignment_models import MINIMUM_PAIRS
+
+    control = combo(MINIMUM_PAIRS)
+    control.setCurrentText("affine")
+    control.setToolTip(
+        "Translation shifts position (1 pair). Rigid adds rotation (2 pairs). "
+        "Similarity adds uniform scaling (2 pairs). Affine allows independent scaling and shear (3 pairs). "
+        "Homography allows perspective (4 pairs). Counts are minimums."
+    )
+    return control
+
+
 @logged
 def combo(values: Any) -> QComboBox:
     """Combo.

@@ -30,7 +30,7 @@ from ..types.processing import (
     LocalisationSettings,
     SegmentationRequest,
 )
-from ._common import CurvePreview, MaskPreview, SettingsForm, ToolWidget, combo
+from ._common import CurvePreview, MaskPreview, SettingsForm, ToolWidget, alignment_model_combo, combo
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -302,7 +302,7 @@ class ChannelAlignmentWidget(ToolWidget):
         self.source = combo([])
         self.apply_all = QCheckBox("Apply optical calibration to all compatible datasets")
         self.apply_all.setChecked(True)
-        self.model = combo(["affine", "translation", "homography"])
+        self.model = alignment_model_combo()
         self.radius = QDoubleSpinBox()
         self.radius.setRange(1e-06, 1000000000.0)
         self.radius.setDecimals(6)
@@ -320,7 +320,6 @@ class ChannelAlignmentWidget(ToolWidget):
         ):
             form.addRow(label, control)
         self.form.addLayout(form)
-        self.model.setToolTip("Homography uses deterministic RANSAC (1 pixel inlier threshold).")
         self.target.setToolTip(
             "Optical registration applies to every channel sharing the source emission path, across all excitation frames. ALEX DA/AA share one transform into DD/AD."
         )

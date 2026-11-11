@@ -79,6 +79,12 @@ class DatasetUiTests(unittest.TestCase):
         )
         self.assertEqual(widget.source.currentText(), "DA")
         self.assertEqual(widget.target.currentText(), "DD")
+        self.assertEqual(widget.model.currentText(), "affine")
+        self.assertEqual(
+            [widget.model.itemText(i) for i in range(widget.model.count())],
+            ["translation", "rigid", "similarity", "affine", "homography"],
+        )
+        widget.model.setCurrentText("rigid")
         widget.source_ids.setText("1 2 3 4")
         widget.target_ids.setText("5 6 7 8")
         widget.estimate()
@@ -93,6 +99,8 @@ class DatasetUiTests(unittest.TestCase):
             self.assertAlmostEqual(
                 dataset.transforms.matrix("movie", "AA", 1)[0, 2], -2
             )
+        widget.model.setCurrentText("similarity")
+        self.assertIsNone(widget.preview)
         widget.close()
         session.shutdown()
 
@@ -206,6 +214,12 @@ class DatasetUiTests(unittest.TestCase):
 
         session = self.make_session()
         widget = DatasetAlignmentWidget(session)
+        self.assertEqual(widget.model.currentText(), "affine")
+        self.assertEqual(
+            [widget.model.itemText(i) for i in range(widget.model.count())],
+            ["translation", "rigid", "similarity", "affine", "homography"],
+        )
+        widget.model.setCurrentText("similarity")
         widget.reference_dataset.setCurrentText("first")
         widget.source_dataset.setCurrentText("second")
         widget.source_ids.setText("1 2 3 4")
@@ -219,6 +233,9 @@ class DatasetUiTests(unittest.TestCase):
         self.assertIsNotNone(widget.preview, widget.status.text())
         widget.apply_preview()
         self.assertIn("second", session.experiment.alignment.records)
+        self.assertEqual(session.experiment.alignment.records["second"].settings.model, "similarity")
+        widget.model.setCurrentText("rigid")
+        self.assertIsNone(widget.preview)
         widget.reset_alignment()
         self.assertEqual(dict(session.experiment.alignment.records), {})
         widget.close()
