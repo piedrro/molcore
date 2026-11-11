@@ -39,7 +39,11 @@ if TYPE_CHECKING:
 
 
 def alignment_model_combo() -> QComboBox:
-    """Select the geometric constraints of a fiducial fit."""
+    """Select the geometric constraints of a fiducial fit.
+
+    Returns:
+        The model selector with affine selected.
+    """
     from .._alignment_models import MINIMUM_PAIRS
 
     control = combo(MINIMUM_PAIRS)
